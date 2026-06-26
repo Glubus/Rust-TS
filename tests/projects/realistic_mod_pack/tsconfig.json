@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@core/*": ["src/core/*"],
+      "@economy/*": ["src/economy/*"],
+      "@state/*": ["src/state/*"],
+      "@ui/*": ["src/ui/*"]
+    }
+  }
+}

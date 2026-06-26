@@ -1,0 +1,47 @@
+[package]
+name = "ts_embed_vm"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [".", "ts_embed_vm_macros"]
+
+[features]
+default = []
+tokio = ["dep:tokio"]
+async-promise = ["tokio", "rquickjs/futures"]
+derive = ["dep:ts_embed_vm_macros"]
+
+[dependencies]
+oxc = { version = "0.137.0", features = ["codegen", "full", "transformer"] }
+oxc_resolver = "11.21.3"
+rquickjs = { version = "0.12.0", features = ["rust-alloc", "loader"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+blake3 = "1.8.2"
+arc-swap = "1.7.1"
+tokio = { version = "1.52.3", optional = true, features = ["rt-multi-thread", "sync"] }
+ts_embed_vm_macros = { path = "ts_embed_vm_macros", optional = true }
+
+[dev-dependencies]
+criterion = "0.8.2"
+trybuild = "1.0.111"
+
+[[bench]]
+name = "runtime"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 3

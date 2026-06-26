@@ -1,0 +1,9 @@
+error: serde transparent struct must contain exactly one field
+ --> tests/ui/derive_schema/transparent_multi_field.rs:5:27
+  |
+5 |   struct InvalidTransparent {
+  |  ___________________________^
+6 | |     id: u64,
+7 | |     name: String,
+8 | | }
+  | |_^

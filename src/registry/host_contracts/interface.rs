@@ -1,0 +1,49 @@
+#[cfg(feature = "tokio")]
+use crate::contract::AsyncHostFunction;
+use crate::contract::{HostCallback, HostContext, HostContractDescriptor, HostFunction};
+use crate::error::VmError;
+
+/// Access to the host contract registry.
+pub trait HostContractRegistry: Send + Sync {
+    /// Registers one host function contract.
+    fn register_function<T>(&self) -> Result<(), VmError>
+    where
+        T: HostFunction + Send + Sync + 'static;
+
+    /// Registers one async host function contract.
+    #[cfg(feature = "tokio")]
+    fn register_async_function<T>(&self) -> Result<(), VmError>
+    where
+        T: AsyncHostFunction + Send + Sync + 'static;
+
+    /// Registers one async host function contract as a JavaScript Promise bridge.
+    #[cfg(feature = "async-promise")]
+    fn register_async_promise_function<T>(&self) -> Result<(), VmError>
+    where
+        T: AsyncHostFunction + Send + Sync + 'static;
+
+    /// Registers one host callback contract.
+    fn register_callback<T>(&self) -> Result<(), VmError>
+    where
+        T: HostCallback + Send + Sync + 'static;
+
+    /// Registers one host context contract.
+    fn register_context<T>(&self) -> Result<(), VmError>
+    where
+        T: HostContext;
+
+    /// Returns one descriptor by stable contract name.
+    fn get(&self, name: &str) -> Result<Option<HostContractDescriptor>, VmError>;
+
+    /// Returns every stored descriptor.
+    fn list(&self) -> Result<Vec<HostContractDescriptor>, VmError>;
+
+    /// Returns a stable ABI fingerprint seed for cache invalidation.
+    fn abi_seed(&self) -> Result<String, VmError>;
+
+    /// Renders TypeScript declarations from registered ABI and schema metadata.
+    fn typescript_declarations(&self) -> Result<String, VmError>;
+
+    /// Renders an ergonomic TypeScript SDK from registered ABI and schema metadata.
+    fn typescript_sdk(&self) -> Result<String, VmError>;
+}

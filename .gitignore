@@ -1,0 +1,4 @@
+/target
+/.ts-embed-cache
+Cargo.lock
+.idea/

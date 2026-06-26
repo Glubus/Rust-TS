@@ -1,0 +1,7 @@
+error: TsSchema cannot be derived for unions
+ --> tests/ui/derive_schema/union.rs:4:1
+  |
+4 | / union InvalidUnion {
+5 | |     value: u64,
+6 | | }
+  | |_^
