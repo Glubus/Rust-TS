@@ -4,7 +4,8 @@ mod tree;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::{
-    HostContractAbi, HostContractDescriptor, HostFunctionExecution, Schema, TsType,
+    HostContractAbi, HostContractDescriptor, HostFunctionExecution, Schema, TsField, TsLiteral,
+    TsRecordKey, TsType,
 };
 
 use super::declarations::{is_unknown_schema, render_ts_type, schema_type_name};
@@ -116,17 +117,20 @@ impl SdkBuilder {
         let host_function_api = self.host_function_api();
         let host_event_types = self.host_event_types();
         let event_helpers = self.event_helpers();
-        let mut sections = self.schemas.finish();
+        let (schema_sections, models) = self.schemas.finish();
+        let mut sections = schema_sections;
+        sections.extend(render_model_classes(&models));
+        push_if_some(&mut sections, render_model_helpers(&models));
         push_if_some(&mut sections, host_helpers);
         push_if_some(&mut sections, host_function_api);
         push_if_some(&mut sections, host_event_types);
         push_if_some(&mut sections, event_helpers);
         sections.extend(render_context_exports(&self.contexts));
-        sections.extend(render_function_exports(&self.functions));
+        sections.extend(render_domain_exports(&self.functions, &self.events));
         push_if_some(&mut sections, render_events_export(&self.events));
         push_if_some(
             &mut sections,
-            render_sdk_aggregate(&self.functions, &self.events, &self.contexts),
+            render_sdk_aggregate(&self.functions, &self.events, &self.contexts, &models),
         );
 
         if sections.is_empty() {
@@ -182,6 +186,7 @@ impl SdkBuilder {
 struct SchemaSection {
     sections: Vec<String>,
     emitted: BTreeSet<String>,
+    models: BTreeMap<String, TsType>,
 }
 
 impl SchemaSection {
@@ -194,6 +199,11 @@ impl SchemaSection {
             self.push(dependency);
         }
 
+        if matches!(schema.ts_type, TsType::Object(_)) {
+            self.models
+                .insert(schema.name.clone(), schema.ts_type.clone());
+        }
+
         self.sections.push(format!(
             "type {} = {};",
             schema.name,
@@ -201,11 +211,12 @@ impl SchemaSection {
         ));
     }
 
-    fn finish(self) -> Vec<String> {
-        self.sections
+    fn finish(self) -> (Vec<String>, BTreeMap<String, TsType>) {
+        (self.sections, self.models)
     }
 }
 
+#[derive(Clone)]
 struct SdkFunction {
     contract_name: String,
     input_type: String,
@@ -224,13 +235,114 @@ struct SdkEvent {
     event_name: String,
 }
 
+#[derive(Clone)]
+struct SdkEventAlias {
+    event_name: String,
+}
+
+enum SdkDomainBinding {
+    Function(SdkFunction),
+    EventAlias(SdkEventAlias),
+}
+
 struct SdkContext {
     contract_name: String,
     ty: String,
 }
 
-fn render_function_exports(tree: &ObjectTree<SdkFunction>) -> Vec<String> {
-    render_exported_tree(tree, render_function_binding)
+fn render_domain_exports(
+    functions: &ObjectTree<SdkFunction>,
+    events: &ObjectTree<SdkEvent>,
+) -> Vec<String> {
+    let mut tree = ObjectTree::default();
+    push_function_domain_bindings(&mut tree, &functions.roots, String::new());
+    push_event_alias_domain_bindings(&mut tree, events);
+    render_exported_tree(&tree, render_domain_binding)
+}
+
+fn push_function_domain_bindings(
+    output: &mut ObjectTree<SdkDomainBinding>,
+    nodes: &BTreeMap<String, ObjectNode<SdkFunction>>,
+    prefix: String,
+) {
+    for (name, node) in nodes {
+        let path = child_path(&prefix, name);
+        if let Some(function) = &node.binding {
+            output.insert(&path, SdkDomainBinding::Function(function.clone()));
+        }
+        push_function_domain_bindings(output, &node.children, path);
+    }
+}
+
+fn push_event_alias_domain_bindings(
+    output: &mut ObjectTree<SdkDomainBinding>,
+    events: &ObjectTree<SdkEvent>,
+) {
+    for (root, node) in &events.roots {
+        push_event_aliases_for_root(output, root, node, Vec::new());
+    }
+}
+
+fn push_event_aliases_for_root(
+    output: &mut ObjectTree<SdkDomainBinding>,
+    root: &str,
+    node: &ObjectNode<SdkEvent>,
+    segments: Vec<String>,
+) {
+    if let Some(event) = &node.binding
+        && let Some(alias) = event_alias_path(root, &segments)
+    {
+        output.insert(
+            &alias,
+            SdkDomainBinding::EventAlias(SdkEventAlias {
+                event_name: event.event_name.clone(),
+            }),
+        );
+    }
+
+    for (name, child) in &node.children {
+        let mut child_segments = segments.clone();
+        child_segments.push(name.clone());
+        push_event_aliases_for_root(output, root, child, child_segments);
+    }
+}
+
+fn event_alias_path(root: &str, segments: &[String]) -> Option<String> {
+    if segments.is_empty() {
+        return None;
+    }
+
+    Some(format!("{root}.on{}", pascal_case(segments)))
+}
+
+fn child_path(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{prefix}.{name}")
+    }
+}
+
+fn pascal_case(segments: &[String]) -> String {
+    segments
+        .iter()
+        .map(|segment| {
+            segment
+                .split(['-', '_', ' '])
+                .filter(|part| !part.is_empty())
+                .map(capitalize_identifier_part)
+                .collect::<String>()
+        })
+        .collect::<String>()
+}
+
+fn capitalize_identifier_part(part: &str) -> String {
+    let mut chars = part.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+
+    format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
 }
 
 fn render_context_exports(tree: &ObjectTree<SdkContext>) -> Vec<String> {
@@ -267,9 +379,13 @@ fn render_sdk_aggregate(
     functions: &ObjectTree<SdkFunction>,
     events: &ObjectTree<SdkEvent>,
     contexts: &ObjectTree<SdkContext>,
+    models: &BTreeMap<String, TsType>,
 ) -> Option<String> {
     let mut entries = Vec::new();
 
+    if !models.is_empty() {
+        entries.push(format!("{}models,", indent(1)));
+    }
     if !functions.is_empty() {
         entries.push(format!(
             "{}functions: {},",
@@ -298,6 +414,225 @@ fn render_sdk_aggregate(
         "export const tsvmSdk = {{\n{}\n}};",
         entries.join("\n")
     ))
+}
+
+fn render_model_helpers(models: &BTreeMap<String, TsType>) -> Option<String> {
+    if models.is_empty() {
+        return None;
+    }
+
+    let entries = models
+        .iter()
+        .map(|(name, ty)| render_model_helper_entry(name, ty, 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Some(format!("export const models = {{\n{entries}\n}};"))
+}
+
+fn render_model_classes(models: &BTreeMap<String, TsType>) -> Vec<String> {
+    models
+        .iter()
+        .map(|(name, ty)| render_model_class(name, ty))
+        .collect()
+}
+
+fn render_model_class(name: &str, ty: &TsType) -> String {
+    let class_name = model_class_name(name);
+    let predicate = render_value_predicate(ty, "value");
+    format!(
+        "export class {class_name} {{\n\
+  constructor(public readonly value: {name}) {{}}\n\n\
+  static create(value: {name}): {name} {{\n\
+    return value;\n\
+  }}\n\n\
+  static is(value: unknown): value is {name} {{\n\
+    return {predicate};\n\
+  }}\n\n\
+  static wrap(value: {name}): {class_name} {{\n\
+    return new {class_name}(value);\n\
+  }}\n\n\
+  toJSON(): {name} {{\n\
+    return this.value;\n\
+  }}\n\n\
+  valueOf(): {name} {{\n\
+    return this.value;\n\
+  }}\n\
+}}"
+    )
+}
+
+fn render_model_helper_entry(name: &str, ty: &TsType, depth: usize) -> String {
+    let class_name = model_class_name(name);
+    let predicate = render_value_predicate(ty, "value");
+    format!(
+        "{}{}: {{\n{}create(value: {name}): {name} {{\n{}return {class_name}.create(value);\n{}}},\n{}is(value: unknown): value is {name} {{\n{}return {predicate};\n{}}},\n{}wrap(value: {name}): {class_name} {{\n{}return {class_name}.wrap(value);\n{}}},\n{}}},",
+        indent(depth),
+        property_name(name),
+        indent(depth + 1),
+        indent(depth + 2),
+        indent(depth + 1),
+        indent(depth + 1),
+        indent(depth + 2),
+        indent(depth + 1),
+        indent(depth + 1),
+        indent(depth + 2),
+        indent(depth + 1),
+        indent(depth)
+    )
+}
+
+fn model_class_name(name: &str) -> String {
+    format!("{name}Model")
+}
+
+fn render_value_predicate(ty: &TsType, expression: &str) -> String {
+    match ty {
+        TsType::Unknown | TsType::Json | TsType::TypeRef(_) => String::from("true"),
+        TsType::Void => format!("{expression} === undefined"),
+        TsType::Boolean => format!("typeof {expression} === \"boolean\""),
+        TsType::Number => {
+            format!("typeof {expression} === \"number\" && Number.isFinite({expression})")
+        }
+        TsType::String => format!("typeof {expression} === \"string\""),
+        TsType::Null => format!("{expression} === null"),
+        TsType::Literal(literal) => render_literal_predicate(literal, expression),
+        TsType::Object(fields) => render_object_predicate(fields, expression),
+        TsType::Array(item) => {
+            let item_predicate = render_value_predicate(item, "item");
+            format!(
+                "Array.isArray({expression}) && {expression}.every((item: unknown) => {item_predicate})"
+            )
+        }
+        TsType::Tuple(items) => render_tuple_predicate(items, expression),
+        TsType::Enum { tag, variants } => {
+            render_enum_predicate(tag.as_deref(), variants, expression)
+        }
+        TsType::Record { key, value } => render_record_predicate(*key, value, expression),
+        TsType::Union(types) => {
+            let predicates = types
+                .iter()
+                .map(|ty| render_value_predicate(ty, expression))
+                .collect::<Vec<_>>();
+            join_predicates(predicates, " || ")
+        }
+        TsType::Optional(inner) => {
+            format!(
+                "{expression} === undefined || ({})",
+                render_value_predicate(inner, expression)
+            )
+        }
+        TsType::Nullable(inner) => {
+            format!(
+                "{expression} === null || ({})",
+                render_value_predicate(inner, expression)
+            )
+        }
+    }
+}
+
+fn render_literal_predicate(literal: &TsLiteral, expression: &str) -> String {
+    match literal {
+        TsLiteral::String(value) => format!("{expression} === {value:?}"),
+        TsLiteral::Number(value) => format!("{expression} === {value}"),
+        TsLiteral::Boolean(value) => format!("{expression} === {value}"),
+    }
+}
+
+fn render_object_predicate(fields: &[TsField], expression: &str) -> String {
+    let base = format!(
+        "typeof {expression} === \"object\" && {expression} !== null && !Array.isArray({expression})"
+    );
+    let field_predicates = fields
+        .iter()
+        .map(|field| render_field_predicate(field, expression))
+        .collect::<Vec<_>>();
+    join_predicates(
+        std::iter::once(base).chain(field_predicates).collect(),
+        " && ",
+    )
+}
+
+fn render_field_predicate(field: &TsField, expression: &str) -> String {
+    let access = format!(
+        "({expression} as Record<string, unknown>)[{:?}]",
+        field.name
+    );
+    let predicate = render_value_predicate(&field.ty, &access);
+    if field.optional {
+        format!("{access} === undefined || ({predicate})")
+    } else {
+        predicate
+    }
+}
+
+fn render_tuple_predicate(items: &[TsType], expression: &str) -> String {
+    let base = format!(
+        "Array.isArray({expression}) && {expression}.length === {}",
+        items.len()
+    );
+    let item_predicates = items
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| render_value_predicate(ty, &format!("{expression}[{index}]")))
+        .collect::<Vec<_>>();
+    join_predicates(
+        std::iter::once(base).chain(item_predicates).collect(),
+        " && ",
+    )
+}
+
+fn render_enum_predicate(
+    tag: Option<&str>,
+    variants: &[crate::contract::TsEnumVariant],
+    expression: &str,
+) -> String {
+    if variants.iter().all(|variant| variant.fields.is_empty()) {
+        let predicates = variants
+            .iter()
+            .map(|variant| format!("{expression} === {:?}", variant.name))
+            .collect::<Vec<_>>();
+        return join_predicates(predicates, " || ");
+    }
+
+    let tag = tag.unwrap_or("type");
+    let variant_predicates = variants
+        .iter()
+        .map(|variant| {
+            let tag_access = format!("({expression} as Record<string, unknown>)[{tag:?}]");
+            let mut predicates = vec![format!("{tag_access} === {:?}", variant.name)];
+            predicates.extend(
+                variant
+                    .fields
+                    .iter()
+                    .map(|field| render_field_predicate(field, expression)),
+            );
+            format!("({})", join_predicates(predicates, " && "))
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "{} && ({})",
+        render_object_predicate(&[], expression),
+        join_predicates(variant_predicates, " || ")
+    )
+}
+
+fn render_record_predicate(key: TsRecordKey, value: &TsType, expression: &str) -> String {
+    let value_predicate = render_value_predicate(value, "item");
+    let key_predicate = match key {
+        TsRecordKey::String => String::from("true"),
+        TsRecordKey::Number => String::from("Number.isFinite(Number(key))"),
+    };
+    format!(
+        "typeof {expression} === \"object\" && {expression} !== null && !Array.isArray({expression}) && Object.entries({expression} as Record<string, unknown>).every(([key, item]) => {key_predicate} && ({value_predicate}))"
+    )
+}
+
+fn join_predicates(predicates: Vec<String>, separator: &str) -> String {
+    if predicates.is_empty() {
+        return String::from("true");
+    }
+    predicates.join(separator)
 }
 
 fn render_host_function_api(
@@ -549,6 +884,25 @@ fn function_input_argument(function: &SdkFunction) -> String {
 }
 
 fn render_event_binding(name: &str, event: &SdkEvent, depth: usize) -> String {
+    format!(
+        "{}{}(handler: HostEventHandler<{:?}>): void {{\n{}return __ctx.on({:?}, handler);\n{}}},",
+        indent(depth),
+        property_name(name),
+        event.event_name,
+        indent(depth + 1),
+        event.event_name,
+        indent(depth)
+    )
+}
+
+fn render_domain_binding(name: &str, binding: &SdkDomainBinding, depth: usize) -> String {
+    match binding {
+        SdkDomainBinding::Function(function) => render_function_binding(name, function, depth),
+        SdkDomainBinding::EventAlias(event) => render_event_alias_binding(name, event, depth),
+    }
+}
+
+fn render_event_alias_binding(name: &str, event: &SdkEventAlias, depth: usize) -> String {
     format!(
         "{}{}(handler: HostEventHandler<{:?}>): void {{\n{}return __ctx.on({:?}, handler);\n{}}},",
         indent(depth),

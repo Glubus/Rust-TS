@@ -602,8 +602,9 @@ Implemented now:
 - derive maps single-field `#[serde(transparent)]` newtypes to their inner schema shape for ID/value-object contracts
 - derive dependency collection guards recursive named schemas such as `Option<Box<Node>>`
 - derive attributes support `#[serde(untagged)]` for enum unions, with compile-fail coverage for ambiguous unit variants
+- derive attributes support `#[serde(tag = "...")]` and `#[serde(tag = "...", content = "...")]` for discriminated host payload enums, with compile-fail coverage for unsupported internally tagged tuple variants
 - derive infers optional nullable TypeScript fields from `Option<T>` struct fields while keeping bare `Option<T>` schemas nullable values
-- derive macro compile-fail coverage exists for unsupported unions, unsupported serde rename rules, and ambiguous untagged unit variants
+- derive macro compile-fail coverage exists for unsupported unions, unsupported serde rename rules, unsupported enum tagging shapes, and ambiguous untagged unit variants
 
 Remaining derive work:
 
@@ -1365,6 +1366,7 @@ This is especially useful for:
 - schema-driven `.d.ts` output supports nested namespaces, objects, arrays, tuples, records, unions, literals, optional, and nullable types
 - host contract registry renders a generated TypeScript SDK source with `user.find(...)`-style function wrappers, `events.score.update(...)` callback wrappers, and a `tsvmSdk` aggregate export
 - generated TypeScript SDK also exposes a typed generic `call("namespace.function", input)` helper for dynamic contract selection without bypassing schema-derived types
+- generated TypeScript SDK emits lightweight value-object model classes and `models.Type.create/is/wrap(...)` helpers for object schemas above the stable bridge
 - generated SDK internals are split between pipeline orchestration, export tree modeling, and identifier/property rendering helpers
 - host function bridge validation can be configured as disabled, input-only, or input-and-output using contract schemas
 - host function bridge validation resolves schema `TypeRef` entries through named `Schema` dependencies
@@ -1372,6 +1374,7 @@ This is especially useful for:
 - host function bridge validation can optionally reject unknown object fields while staying permissive by default
 - host function bridge validation rejects non-finite numeric record keys such as `NaN`
 - script metadata now distinguishes inline scripts from filesystem-backed projects
+- host contract registry exposes typed registration helpers that derive function input/output and callback payload schemas from `TsSchema`
 
 ### Public API
 
@@ -1402,6 +1405,7 @@ This is especially useful for:
 - runtime event bindings expose their execution lane as sync or async
 - host registry `.dts()` rendering
 - host registry `.types()` alias for declarations and `.sdk()` rendering for generated TypeScript SDK source
+- host registry typed function/callback registration helpers for `TsSchema`-backed payload, input, and output types
 - host registry file export through `write_sdk_files(...)`
 - descriptor-json based `tsvm-sdk` binary for CI/offline artifact generation
 
@@ -1445,6 +1449,7 @@ This is especially useful for:
 - sync worker guard rejecting `AsyncPromise` contracts before script mount
 - stable `.d.ts` rendering from registered contract schemas
 - generated SDK source for sync functions, Promise functions, callback event wrappers, `tsvmSdk` aggregate access, and public manager registry access
+- generated SDK source includes object-schema model classes with constructors, `create`, generated `is` type guards, `wrap`, `toJSON`, and `valueOf` helpers
 - generated SDK source typechecks with `tsc --noEmit` when the TypeScript compiler is available locally
 - SDK/types file export through registry API and the `tsvm-sdk` binary
 - configurable host function input/output validation from registered schemas
@@ -1454,8 +1459,10 @@ This is especially useful for:
 - derive macro emits schema for named structs, tuple structs, generic structs/enums, unit enums, and payload enums behind the `derive` feature
 - derive macro respects V0 serde `rename`, `rename_all`, and `skip` attributes
 - derive macro maps `serde(untagged)` enums to schema unions when the variants carry concrete payload shapes
-- derive macro compile-fail tests cover unsupported unions, unsupported serde rename rules, and ambiguous untagged unit variants
+- derive macro maps `serde(tag = "...")` and `serde(tag = "...", content = "...")` enums to discriminated TypeScript union schemas
+- derive macro compile-fail tests cover unsupported unions, unsupported serde rename rules, unsupported enum tagging shapes, and ambiguous untagged unit variants
 - derived `TsSchema` types can drive a registered host function contract and generated `.d.ts` output
+- typed host registry registration can derive function input/output schemas and callback payload schemas directly from `TsSchema` associated types
 - 400 small scripts mounted across two runners with hot routes and exported calls still working
 - per-worker stats for single-runner snapshots, multi-runner script distribution, sync/async queue visibility, sync/async load/call/emit latency, and QuickJS memory usage
 - runtime snapshot introspection for mounted scripts, hot subscriptions, retention counters, event route bindings, script dependency edges, and project module graphs
@@ -1478,9 +1485,9 @@ This is especially useful for:
 
 ### Contract System
 
-- richer automatic schema generation for payload/input/output types
+- keep refining automatic schema generation for payload/input/output types where host contract boilerplate remains high
 - richer generated validation hooks beyond the current schema-backed runtime validation once derives/proc-macros exist
-- expand the generated SDK beyond the current function/event/context aggregate layer if richer object ergonomics are desired
+- keep refining generated SDK object ergonomics above the stable schema/ABI layer when real usage calls for richer domain helpers
 - postpone rich mutable `HostContext` object models until after V0
 
 ### Robustness And Performance
@@ -1492,28 +1499,28 @@ This is especially useful for:
 
 Latest local Criterion run:
 
-- date: 2026-06-26
-- command: `RUSTC_WRAPPER= rtk cargo bench --bench runtime`
-- environment note: benchmark was run with `RUSTC_WRAPPER=` unset
+- date: 2026-06-28
+- command: `cargo +nightly bench --bench runtime`
+- environment note: benchmark was run on Windows with process RSS unavailable from the current process memory reader
 
 Observed medians/ranges:
 
-- cold inline load: `[524.82 µs, 534.14 µs, 543.54 µs]`
-- hot function call: `[30.076 µs, 30.300 µs, 30.545 µs]`
-- hot event routing: `[24.973 µs, 25.360 µs, 25.780 µs]`
-- SDK generation: `[17.762 µs, 18.101 µs, 18.479 µs]`
-- mount 400 small scripts memory shape: `[301.96 ms, 324.03 ms, 347.58 ms]`
+- cold inline load: `[1.8816 ms, 1.9336 ms, 1.9903 ms]`
+- hot function call: `[101.16 µs, 102.15 µs, 103.26 µs]`
+- hot event routing: `[84.999 µs, 85.753 µs, 86.571 µs]`
+- SDK generation: `[75.850 µs, 77.277 µs, 78.828 µs]`
+- mount 400 small scripts memory shape: `[448.92 ms, 459.18 ms, 470.09 ms]`
 
 Observed isolated process memory curve:
 
-Memory table refreshed with: `RUSTC_WRAPPER= rtk cargo bench --bench runtime`
+Memory table refreshed with: `cargo +nightly bench --bench runtime`
 
 | Scripts | Workers | QuickJS memory limit / worker | RSS after mount | Mount RSS delta | Mount RSS / script | QuickJS sync used | QuickJS pressure |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `100` | `2` | `128 MiB` | `14.17 MiB` | `+9.25 MiB` | `+94.76 KiB` | `5.31 MiB` | `2.07%` |
-| `400` | `2` | `128 MiB` | `33.59 MiB` | `+28.99 MiB` | `+74.22 KiB` | `20.99 MiB` | `8.20%` |
-| `800` | `2` | `128 MiB` | `59.46 MiB` | `+54.78 MiB` | `+70.12 KiB` | `41.89 MiB` | `16.36%` |
-| `1000` | `2` | `128 MiB` | `72.14 MiB` | `+67.76 MiB` | `+69.38 KiB` | `52.23 MiB` | `20.40%` |
+| `100` | `2` | `128 MiB` | unavailable | unavailable | unavailable | `5.55 MiB` | `2.17%` |
+| `400` | `2` | `128 MiB` | unavailable | unavailable | unavailable | `21.95 MiB` | `8.57%` |
+| `800` | `2` | `128 MiB` | unavailable | unavailable | unavailable | `43.81 MiB` | `17.11%` |
+| `1000` | `2` | `128 MiB` | unavailable | unavailable | unavailable | `54.62 MiB` | `21.34%` |
 
 The memory curve is isolated by launching one subprocess per script count. This avoids RSS reuse from earlier scenarios hiding the cost of larger mounts. The benchmark also prints QuickJS sync/async memory usage and aggregate memory pressure from per-worker runtime stats.
 
@@ -1523,4 +1530,4 @@ Important limit note:
 - the `800` script point failed under the default limit with `Allocation failed while creating object`
 - large-script-count hosts must raise `VmOptions::memory_limit_bytes`; the benchmark curve above uses `128 MiB` per worker to measure scale instead of default-limit failure
 
-Criterion reported a cold-load improvement, hot call and hot event routing within the noise threshold, and an SDK generation regression from roughly `14 µs` to `18 µs` after adding the aggregate SDK export. That SDK cost is still cold-path only. The 400-script mount benchmark reported a slower local absolute result around `324 ms`; treat this as environment-sensitive and recheck before using it as a regression root cause.
+Criterion reported slower local absolute results across the runtime benchmarks on this Windows run. The SDK generation benchmark now sits around `77 µs` after adding generated object model classes, `Model.is(...)` guards, and `models.Type.wrap(...)` helpers. That cost is still cold-path only. The 400-script mount benchmark reported a local absolute result around `459 ms`; treat this as environment-sensitive and recheck before using it as a regression root cause.

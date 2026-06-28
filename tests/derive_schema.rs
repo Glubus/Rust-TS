@@ -5,6 +5,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use ts_embed_vm::{
     HostContract, HostContractKind, HostFunction, InMemoryHostContractRegistry, Schema,
     TsEnumVariant, TsField, TsRecordKey, TsSchema, TsType, VmError,
@@ -46,6 +47,8 @@ struct SessionToken {
 }
 
 struct FindSession;
+struct AutoCreateInvoice;
+struct AutoInvoiceCreated;
 
 #[derive(Debug, Deserialize, TsSchema)]
 #[allow(dead_code)]
@@ -57,6 +60,30 @@ struct FindSessionInput {
 #[allow(dead_code)]
 struct FindSessionOutput {
     token: SessionToken,
+}
+
+#[derive(Debug, Deserialize, TsSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct AutoCreateInvoiceInput {
+    account_id: String,
+    total: f32,
+}
+
+#[derive(Debug, Serialize, TsSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct AutoCreateInvoiceOutput {
+    invoice_id: String,
+    accepted: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, TsSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct AutoInvoiceCreatedPayload {
+    invoice_id: String,
+    total: f32,
 }
 
 #[derive(TsSchema)]
@@ -119,6 +146,23 @@ enum LookupInput {
         include_disabled: bool,
     },
     Tags(Vec<String>),
+}
+
+#[derive(TsSchema)]
+#[serde(tag = "kind")]
+#[allow(dead_code)]
+enum InternallyTaggedHostEvent {
+    Connected { user_id: u64 },
+    Disconnected,
+}
+
+#[derive(TsSchema)]
+#[serde(tag = "kind", content = "payload")]
+#[allow(dead_code)]
+enum AdjacentlyTaggedHostEvent {
+    Connected { user_id: u64 },
+    Tags(Vec<String>),
+    Disconnected,
 }
 
 struct CreateInvoice;
@@ -207,6 +251,46 @@ impl HostFunction for FindSession {
     }
 }
 
+impl HostContract for AutoCreateInvoice {
+    const NAME: &'static str = "billing.invoice.autoCreate";
+
+    fn schema() -> Schema {
+        Schema::named("LegacyAutoCreateInvoiceSchema")
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Function
+    }
+}
+
+impl HostFunction for AutoCreateInvoice {
+    type Input = AutoCreateInvoiceInput;
+    type Output = AutoCreateInvoiceOutput;
+
+    fn call(input: Self::Input) -> Result<Self::Output, VmError> {
+        Ok(AutoCreateInvoiceOutput {
+            invoice_id: format!("invoice:{}", input.account_id),
+            accepted: input.total > 0.0,
+        })
+    }
+}
+
+impl HostContract for AutoInvoiceCreated {
+    const NAME: &'static str = "billing.invoice.created";
+
+    fn schema() -> Schema {
+        Schema::named("LegacyAutoInvoiceCreatedSchema")
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Callback
+    }
+}
+
+impl ts_embed_vm::HostCallback for AutoInvoiceCreated {
+    type Payload = AutoInvoiceCreatedPayload;
+}
+
 #[derive(TsSchema)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
@@ -224,6 +308,31 @@ struct SerdePlayerPayload {
     serde_priority_check: String,
     #[serde(skip)]
     internal_seed: u64,
+}
+
+#[derive(TsSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ActorIdentity {
+    actor_id: u64,
+    display_name: String,
+}
+
+#[derive(TsSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct FlattenedActionPayload {
+    action_id: String,
+    #[serde(flatten)]
+    actor: ActorIdentity,
+    confirmed: bool,
+}
+
+#[derive(TsSchema)]
+#[allow(dead_code)]
+struct InvalidPrimitiveFlatten {
+    #[serde(flatten)]
+    value: String,
 }
 
 #[allow(dead_code)]
@@ -274,6 +383,60 @@ fn derive_ts_schema_respects_serde_field_attributes() {
             TsField::required("tsvmName", TsType::String),
         ])
     );
+}
+
+#[test]
+fn derive_ts_schema_flattens_object_fields() {
+    assert_eq!(
+        FlattenedActionPayload::ts_type(),
+        TsType::Object(vec![
+            TsField::required("actionId", TsType::String),
+            TsField::required("actorId", TsType::Number),
+            TsField::required("displayName", TsType::String),
+            TsField::required("confirmed", TsType::Boolean),
+        ])
+    );
+}
+
+#[test]
+#[should_panic(expected = "serde flatten requires a TsSchema object type")]
+fn derive_ts_schema_rejects_non_object_flatten_schema() {
+    let _ = InvalidPrimitiveFlatten::ts_type();
+}
+
+#[test]
+fn derived_schema_validates_json_values_with_ergonomic_hooks() {
+    let valid = json!({
+        "actionId": "act-1",
+        "actorId": 7,
+        "displayName": "Nami",
+        "confirmed": true,
+    });
+    let unknown_field = json!({
+        "actionId": "act-1",
+        "actorId": 7,
+        "displayName": "Nami",
+        "confirmed": true,
+        "actor": { "actorId": 7, "displayName": "Nami" },
+    });
+    let invalid = json!({
+        "actionId": "act-1",
+        "actorId": "bad",
+        "displayName": "Nami",
+        "confirmed": true,
+    });
+
+    FlattenedActionPayload::validate_json(&valid).expect("valid flattened value");
+    FlattenedActionPayload::validate_json(&unknown_field).expect("unknown fields allowed");
+    FlattenedActionPayload::validate_json_strict(&valid).expect("valid strict flattened value");
+
+    let unknown_error = FlattenedActionPayload::validate_json_strict(&unknown_field)
+        .expect_err("strict validation rejects unknown fields");
+    let invalid_error =
+        FlattenedActionPayload::validate_json(&invalid).expect_err("invalid nested type");
+
+    assert!(unknown_error.contains("$.actor: unknown field"));
+    assert!(invalid_error.contains("$.actorId: expected number, got string"));
 }
 
 #[test]
@@ -440,6 +603,50 @@ fn derive_ts_schema_for_serde_untagged_enum() {
 }
 
 #[test]
+fn derive_ts_schema_respects_serde_tagged_enum_attributes() {
+    assert_eq!(
+        InternallyTaggedHostEvent::ts_type(),
+        TsType::Enum {
+            tag: Some(String::from("kind")),
+            variants: vec![
+                TsEnumVariant::payload(
+                    "Connected",
+                    vec![TsField::required("user_id", TsType::Number)],
+                ),
+                TsEnumVariant::unit("Disconnected"),
+            ],
+        }
+    );
+}
+
+#[test]
+fn derive_ts_schema_respects_serde_adjacently_tagged_enum_attributes() {
+    assert_eq!(
+        AdjacentlyTaggedHostEvent::ts_type(),
+        TsType::Enum {
+            tag: Some(String::from("kind")),
+            variants: vec![
+                TsEnumVariant::payload(
+                    "Connected",
+                    vec![TsField::required(
+                        "payload",
+                        TsType::Object(vec![TsField::required("user_id", TsType::Number)]),
+                    )],
+                ),
+                TsEnumVariant::payload(
+                    "Tags",
+                    vec![TsField::required(
+                        "payload",
+                        TsType::Array(Box::new(TsType::String)),
+                    )],
+                ),
+                TsEnumVariant::unit("Disconnected"),
+            ],
+        }
+    );
+}
+
+#[test]
 fn derived_schema_can_drive_host_contract_dts() {
     let registry = InMemoryHostContractRegistry::new();
     registry
@@ -484,4 +691,56 @@ fn transparent_newtypes_drive_host_contract_dts() {
     assert!(sdk.contains("type SessionToken = string;"));
     assert!(sdk.contains("type FindSessionInput = { user_id: UserId; };"));
     assert!(sdk.contains("type FindSessionOutput = { token: SessionToken; };"));
+}
+
+#[test]
+fn typed_function_registration_uses_input_and_output_ts_schema() {
+    let registry = InMemoryHostContractRegistry::new();
+    registry
+        .typed_function::<AutoCreateInvoice>()
+        .expect("register typed derived-schema host function");
+
+    let descriptor = registry
+        .descriptor(AutoCreateInvoice::NAME)
+        .expect("get descriptor")
+        .expect("typed function descriptor");
+    let function = descriptor.function.expect("function metadata");
+    let dts = registry.dts().expect("render declarations");
+    let sdk = registry.sdk().expect("render SDK");
+
+    assert_eq!(descriptor.schema.name, "AutoCreateInvoiceInput");
+    assert_eq!(function.input_schema.name, "AutoCreateInvoiceInput");
+    assert_eq!(function.output_schema.name, "AutoCreateInvoiceOutput");
+    assert!(dts.contains("type AutoCreateInvoiceInput = { accountId: string; total: number; };"));
+    assert!(
+        dts.contains("type AutoCreateInvoiceOutput = { invoiceId: string; accepted: boolean; };")
+    );
+    assert!(dts.contains(
+        "declare namespace billing {\n  namespace invoice {\n    export function autoCreate(input: AutoCreateInvoiceInput): AutoCreateInvoiceOutput;\n  }\n}"
+    ));
+    assert!(sdk.contains("autoCreate(input: AutoCreateInvoiceInput): AutoCreateInvoiceOutput"));
+}
+
+#[test]
+fn typed_callback_registration_uses_payload_ts_schema() {
+    let registry = InMemoryHostContractRegistry::new();
+    registry
+        .typed_callback::<AutoInvoiceCreated>()
+        .expect("register typed derived-schema callback");
+
+    let descriptor = registry
+        .descriptor(AutoInvoiceCreated::NAME)
+        .expect("get descriptor")
+        .expect("typed callback descriptor");
+    let callback = descriptor.callback.expect("callback metadata");
+    let dts = registry.dts().expect("render declarations");
+    let sdk = registry.sdk().expect("render SDK");
+
+    assert_eq!(descriptor.schema.name, "AutoInvoiceCreatedPayload");
+    assert_eq!(callback.payload_schema.name, "AutoInvoiceCreatedPayload");
+    assert!(
+        dts.contains("type AutoInvoiceCreatedPayload = { invoiceId: string; total: number; };")
+    );
+    assert!(dts.contains("\"billing.invoice.created\": AutoInvoiceCreatedPayload;"));
+    assert!(sdk.contains("created(handler: HostEventHandler<\"billing.invoice.created\">): void"));
 }

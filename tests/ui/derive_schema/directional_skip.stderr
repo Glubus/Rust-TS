@@ -1,0 +1,5 @@
+error: directional serde skip attributes are not supported by TsSchema
+ --> tests/ui/derive_schema/directional_skip.rs:6:13
+  |
+6 |     #[serde(skip_serializing)]
+  |             ^^^^^^^^^^^^^^^^

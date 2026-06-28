@@ -49,6 +49,41 @@ impl Schema {
         self.dependencies = dependencies;
         self
     }
+
+    /// Validates one JSON value against this schema.
+    ///
+    /// Unknown object fields are allowed, matching the default host bridge
+    /// validation policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable validation path and reason when the value does
+    /// not match this schema.
+    pub fn validate_json(&self, value: &serde_json::Value) -> Result<(), String> {
+        super::validation::validate_schema_with_options(
+            self,
+            value,
+            super::validation::SchemaValidationOptions {
+                reject_unknown_fields: false,
+            },
+        )
+    }
+
+    /// Validates one JSON value against this schema and rejects unknown object fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable validation path and reason when the value does
+    /// not match this schema or contains undeclared object fields.
+    pub fn validate_json_strict(&self, value: &serde_json::Value) -> Result<(), String> {
+        super::validation::validate_schema_with_options(
+            self,
+            value,
+            super::validation::SchemaValidationOptions {
+                reject_unknown_fields: true,
+            },
+        )
+    }
 }
 
 /// TypeScript type shape emitted from host schemas.

@@ -1,6 +1,6 @@
 #[cfg(feature = "tokio")]
 use crate::contract::AsyncHostFunction;
-use crate::contract::{HostCallback, HostContext, HostContractDescriptor, HostFunction};
+use crate::contract::{HostCallback, HostContext, HostContractDescriptor, HostFunction, TsSchema};
 use crate::error::VmError;
 
 /// Access to the host contract registry.
@@ -9,6 +9,13 @@ pub trait HostContractRegistry: Send + Sync {
     fn register_function<T>(&self) -> Result<(), VmError>
     where
         T: HostFunction + Send + Sync + 'static;
+
+    /// Registers one host function contract using `TsSchema` from its input and output types.
+    fn register_typed_function<T>(&self) -> Result<(), VmError>
+    where
+        T: HostFunction + Send + Sync + 'static,
+        T::Input: TsSchema,
+        T::Output: TsSchema;
 
     /// Registers one async host function contract.
     #[cfg(feature = "tokio")]
@@ -26,6 +33,12 @@ pub trait HostContractRegistry: Send + Sync {
     fn register_callback<T>(&self) -> Result<(), VmError>
     where
         T: HostCallback + Send + Sync + 'static;
+
+    /// Registers one host callback contract using `TsSchema` from its payload type.
+    fn register_typed_callback<T>(&self) -> Result<(), VmError>
+    where
+        T: HostCallback + Send + Sync + 'static,
+        T::Payload: TsSchema;
 
     /// Registers one host context contract.
     fn register_context<T>(&self) -> Result<(), VmError>

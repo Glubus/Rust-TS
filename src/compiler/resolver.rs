@@ -75,7 +75,8 @@ impl ModuleResolver {
     }
 
     fn validate_project_scope(&self, request: &str, resolved_path: &Path) -> Result<(), VmError> {
-        if resolved_path.starts_with(&self.project_root) {
+        let canonical_resolved_path = resolved_path.canonicalize().map_err(VmError::from)?;
+        if canonical_resolved_path.starts_with(&self.project_root) {
             return Ok(());
         }
 
@@ -83,7 +84,7 @@ impl ModuleResolver {
             details: format!(
                 "resolved import `{request}` outside project root {}: {}",
                 self.project_root.display(),
-                resolved_path.display()
+                canonical_resolved_path.display()
             ),
         })
     }

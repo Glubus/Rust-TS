@@ -26,7 +26,13 @@ pub(super) fn expand_ts_schema(input: &DeriveInput) -> Result<proc_macro2::Token
                     "serde transparent is only supported for structs",
                 ));
             }
-            let ts_type = expand_enum_type(data, attrs.rename_all, attrs.untagged)?;
+            let ts_type = expand_enum_type(
+                data,
+                attrs.rename_all,
+                attrs.enum_tag.as_deref(),
+                attrs.enum_content.as_deref(),
+                attrs.untagged,
+            )?;
             let dependencies = expand_enum_dependencies(data)?;
             (ts_type, dependencies)
         }
@@ -162,13 +168,17 @@ fn expand_named_fields_object(
     fields: &Punctuated<syn::Field, Token![,]>,
     rename_all: Option<RenameRule>,
 ) -> Result<proc_macro2::TokenStream> {
-    let fields = fields
+    let field_steps = fields
         .iter()
-        .filter_map(|field| expand_named_struct_field(field, rename_all).transpose())
+        .filter_map(|field| expand_named_struct_field_step(field, rename_all).transpose())
         .collect::<Result<Vec<_>>>()?;
 
     Ok(quote! {
-        ::ts_embed_vm::TsType::Object(vec![#(#fields),*])
+        {
+            let mut fields = Vec::new();
+            #(#field_steps)*
+            ::ts_embed_vm::TsType::Object(fields)
+        }
     })
 }
 
@@ -178,6 +188,7 @@ fn expand_tuple_fields(
     let items = fields
         .iter()
         .map(|field| {
+            reject_flatten_field(field)?;
             let ty = &field.ty;
             Ok(quote! {
                 ::ts_embed_vm::schema_type_ref::<#ty>()
@@ -190,10 +201,43 @@ fn expand_tuple_fields(
     })
 }
 
-fn expand_named_struct_field(
+fn expand_named_struct_field_step(
     field: &syn::Field,
     rename_all: Option<RenameRule>,
 ) -> Result<Option<proc_macro2::TokenStream>> {
+    let Some(field) = expand_named_struct_field(field, rename_all)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(match field {
+        NamedStructField::Regular(field) => quote! {
+            fields.push(#field);
+        },
+        NamedStructField::Flatten { ty } => quote! {
+            match <#ty as ::ts_embed_vm::TsSchema>::ts_type() {
+                ::ts_embed_vm::TsType::Object(flattened_fields) => {
+                    for flattened_field in flattened_fields {
+                        if fields.iter().any(|field: &::ts_embed_vm::TsField| field.name == flattened_field.name) {
+                            panic!("serde flatten produced duplicate TypeScript field `{}`", flattened_field.name);
+                        }
+                        fields.push(flattened_field);
+                    }
+                }
+                _ => panic!("serde flatten requires a TsSchema object type"),
+            }
+        },
+    }))
+}
+
+enum NamedStructField<'a> {
+    Regular(proc_macro2::TokenStream),
+    Flatten { ty: &'a Type },
+}
+
+fn expand_named_struct_field(
+    field: &syn::Field,
+    rename_all: Option<RenameRule>,
+) -> Result<Option<NamedStructField<'_>>> {
     let ident = field
         .ident
         .as_ref()
@@ -202,6 +246,9 @@ fn expand_named_struct_field(
     if attrs.skip {
         return Ok(None);
     }
+    if attrs.flatten {
+        return Ok(Some(NamedStructField::Flatten { ty: &field.ty }));
+    }
 
     let field_name = attrs
         .rename
@@ -209,20 +256,31 @@ fn expand_named_struct_field(
     let ty = &field.ty;
 
     if attrs.optional || is_option_type(ty) {
-        Ok(Some(quote! {
+        Ok(Some(NamedStructField::Regular(quote! {
             ::ts_embed_vm::TsField::optional(
                 #field_name,
                 ::ts_embed_vm::schema_type_ref::<#ty>(),
             )
-        }))
+        })))
     } else {
-        Ok(Some(quote! {
+        Ok(Some(NamedStructField::Regular(quote! {
             ::ts_embed_vm::TsField::required(
                 #field_name,
                 ::ts_embed_vm::schema_type_ref::<#ty>(),
             )
-        }))
+        })))
     }
+}
+
+fn reject_flatten_field(field: &syn::Field) -> Result<()> {
+    let attrs = FieldAttrs::from_field(field)?;
+    if attrs.flatten {
+        return Err(Error::new_spanned(
+            field,
+            "serde flatten is only supported on named struct fields",
+        ));
+    }
+    Ok(())
 }
 
 fn is_option_type(ty: &Type) -> bool {
@@ -240,21 +298,50 @@ fn is_option_type(ty: &Type) -> bool {
 fn expand_enum_type(
     data: &syn::DataEnum,
     rename_all: Option<RenameRule>,
+    tag: Option<&str>,
+    content: Option<&str>,
     untagged: bool,
 ) -> Result<proc_macro2::TokenStream> {
     if untagged {
         return expand_untagged_enum_type(data);
     }
 
+    if let Some(content) = content {
+        return expand_adjacently_tagged_enum_type(data, rename_all, tag, content);
+    }
+
+    let explicit_internal_tag = tag.is_some();
     let variants = data
         .variants
         .iter()
-        .map(|variant| expand_enum_variant(variant, rename_all))
+        .map(|variant| expand_enum_variant(variant, rename_all, explicit_internal_tag))
         .collect::<Result<Vec<_>>>()?;
+    let tag = tag.unwrap_or("type");
 
     Ok(quote! {
         ::ts_embed_vm::TsType::Enum {
-            tag: Some(String::from("type")),
+            tag: Some(String::from(#tag)),
+            variants: vec![#(#variants),*],
+        }
+    })
+}
+
+fn expand_adjacently_tagged_enum_type(
+    data: &syn::DataEnum,
+    rename_all: Option<RenameRule>,
+    tag: Option<&str>,
+    content: &str,
+) -> Result<proc_macro2::TokenStream> {
+    let variants = data
+        .variants
+        .iter()
+        .map(|variant| expand_adjacently_tagged_enum_variant(variant, rename_all, content))
+        .collect::<Result<Vec<_>>>()?;
+    let tag = tag.unwrap_or("type");
+
+    Ok(quote! {
+        ::ts_embed_vm::TsType::Enum {
+            tag: Some(String::from(#tag)),
             variants: vec![#(#variants),*],
         }
     })
@@ -294,6 +381,7 @@ fn expand_untagged_enum_variant(variant: &syn::Variant) -> Result<proc_macro2::T
 fn expand_enum_variant(
     variant: &syn::Variant,
     rename_all: Option<RenameRule>,
+    explicit_internal_tag: bool,
 ) -> Result<proc_macro2::TokenStream> {
     let attrs = VariantAttrs::from_variant(variant)?;
     let name = attrs
@@ -307,19 +395,69 @@ fn expand_enum_variant(
             let fields = fields
                 .named
                 .iter()
-                .filter_map(|field| expand_named_struct_field(field, None).transpose())
+                .filter_map(|field| expand_enum_payload_field(field).transpose())
                 .collect::<Result<Vec<_>>>()?;
             Ok(quote! {
                 ::ts_embed_vm::TsEnumVariant::payload(#name, vec![#(#fields),*])
             })
         }
         Fields::Unnamed(fields) => {
+            if explicit_internal_tag {
+                return Err(Error::new_spanned(
+                    variant,
+                    "serde internally tagged tuple enum variants are not supported",
+                ));
+            }
             let field = tuple_variant_payload_field(&fields.unnamed)?;
             Ok(quote! {
                 ::ts_embed_vm::TsEnumVariant::payload(#name, vec![#field])
             })
         }
     }
+}
+
+fn expand_adjacently_tagged_enum_variant(
+    variant: &syn::Variant,
+    rename_all: Option<RenameRule>,
+    content: &str,
+) -> Result<proc_macro2::TokenStream> {
+    let attrs = VariantAttrs::from_variant(variant)?;
+    let name = attrs
+        .rename
+        .unwrap_or_else(|| rename_variant(&variant.ident, rename_all));
+    match &variant.fields {
+        Fields::Unit => Ok(quote! {
+            ::ts_embed_vm::TsEnumVariant::unit(#name)
+        }),
+        Fields::Named(fields) => {
+            let payload = expand_named_fields_object(&fields.named, None)?;
+            Ok(quote! {
+                ::ts_embed_vm::TsEnumVariant::payload(
+                    #name,
+                    vec![::ts_embed_vm::TsField::required(#content, #payload)],
+                )
+            })
+        }
+        Fields::Unnamed(fields) => {
+            let payload = expand_tuple_payload_type(&fields.unnamed)?;
+            Ok(quote! {
+                ::ts_embed_vm::TsEnumVariant::payload(
+                    #name,
+                    vec![::ts_embed_vm::TsField::required(#content, #payload)],
+                )
+            })
+        }
+    }
+}
+
+fn expand_enum_payload_field(field: &syn::Field) -> Result<Option<proc_macro2::TokenStream>> {
+    reject_flatten_field(field)?;
+    expand_named_struct_field(field, None).map(|field| {
+        field.map(|field| match field {
+            NamedStructField::Regular(field) => field,
+            NamedStructField::Flatten { .. } => unreachable!("flatten rejected before expansion"),
+        })
+    })
 }
 
 fn tuple_variant_payload_field(
@@ -352,6 +490,7 @@ fn expand_tuple_payload_type(
     let items = fields
         .iter()
         .map(|field| {
+            reject_flatten_field(field)?;
             let ty = &field.ty;
             Ok(quote! {
                 ::ts_embed_vm::schema_type_ref::<#ty>()

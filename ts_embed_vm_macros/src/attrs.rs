@@ -8,6 +8,8 @@ use crate::rename::RenameRule;
 pub(super) struct ContainerAttrs {
     pub(super) schema_name: Option<String>,
     pub(super) rename_all: Option<RenameRule>,
+    pub(super) enum_tag: Option<String>,
+    pub(super) enum_content: Option<String>,
     pub(super) untagged: bool,
     pub(super) transparent: bool,
 }
@@ -45,8 +47,32 @@ impl ContainerAttrs {
             if let Some(rename_all) = serde_attrs.rename_all {
                 self.rename_all = Some(rename_all);
             }
+            if let Some(tag) = serde_attrs.tag {
+                self.enum_tag = Some(tag);
+            }
+            if let Some(content) = serde_attrs.content {
+                self.enum_content = Some(content);
+            }
             self.untagged |= serde_attrs.untagged;
             self.transparent |= serde_attrs.transparent;
+        }
+        if self.untagged && (self.enum_tag.is_some() || self.enum_content.is_some()) {
+            return Err(Error::new_spanned(
+                attrs
+                    .iter()
+                    .find(|attr| attr.path().is_ident("serde"))
+                    .expect("serde attrs were iterated above"),
+                "serde untagged cannot be combined with tag or content",
+            ));
+        }
+        if self.enum_content.is_some() && self.enum_tag.is_none() {
+            return Err(Error::new_spanned(
+                attrs
+                    .iter()
+                    .find(|attr| attr.path().is_ident("serde"))
+                    .expect("serde attrs were iterated above"),
+                "serde content requires serde tag",
+            ));
         }
         Ok(())
     }
@@ -56,8 +82,11 @@ impl ContainerAttrs {
 struct SerdeAttrs {
     rename: Option<String>,
     rename_all: Option<RenameRule>,
+    tag: Option<String>,
+    content: Option<String>,
     default: bool,
     skip: bool,
+    flatten: bool,
     untagged: bool,
     transparent: bool,
 }
@@ -74,8 +103,25 @@ impl SerdeAttrs {
                 let value = meta.value()?;
                 let lit: LitStr = value.parse()?;
                 attrs.rename_all = Some(RenameRule::parse(&lit)?);
+            } else if meta.path.is_ident("tag") {
+                let value = meta.value()?;
+                let lit: LitStr = value.parse()?;
+                attrs.tag = Some(lit.value());
+            } else if meta.path.is_ident("content") {
+                let value = meta.value()?;
+                let lit: LitStr = value.parse()?;
+                attrs.content = Some(lit.value());
             } else if meta.path.is_ident("skip") {
                 attrs.skip = true;
+            } else if meta.path.is_ident("flatten") {
+                attrs.flatten = true;
+            } else if meta.path.is_ident("skip_serializing")
+                || meta.path.is_ident("skip_deserializing")
+                || meta.path.is_ident("skip_serializing_if")
+            {
+                return Err(
+                    meta.error("directional serde skip attributes are not supported by TsSchema")
+                );
             } else if meta.path.is_ident("untagged") {
                 attrs.untagged = true;
             } else if meta.path.is_ident("transparent") {
@@ -99,6 +145,7 @@ pub(super) struct FieldAttrs {
     pub(super) rename: Option<String>,
     pub(super) optional: bool,
     pub(super) skip: bool,
+    pub(super) flatten: bool,
 }
 
 impl FieldAttrs {
@@ -135,6 +182,7 @@ impl FieldAttrs {
             }
             attrs.optional |= serde_attrs.default;
             attrs.skip |= serde_attrs.skip;
+            attrs.flatten |= serde_attrs.flatten;
         }
         Ok(attrs)
     }

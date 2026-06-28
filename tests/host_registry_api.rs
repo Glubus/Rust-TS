@@ -1,5 +1,7 @@
 use serde_json::{Value, json};
 use std::process::Command;
+#[cfg(feature = "derive")]
+use ts_embed_vm::TsSchema;
 use ts_embed_vm::{
     HostCallback, HostContext, HostContract, HostContractKind, HostFunction, HostMetadata, Schema,
     TsField, TsType, TsVm, VmContractValidation, VmError, VmUnknownFieldValidation,
@@ -15,6 +17,8 @@ struct OverlayContext;
 struct EchoValidation;
 struct EchoTypeRefValidation;
 struct BadOutputValidation;
+#[cfg(feature = "derive")]
+struct RecordAction;
 
 const HOST_VALIDATION_SCRIPT: &str = include_str!("projects/host_validation/main.ts");
 
@@ -85,6 +89,53 @@ impl HostContract for OverlayContext {
 }
 
 impl HostContext for OverlayContext {}
+
+#[cfg(feature = "derive")]
+#[derive(serde::Deserialize, TsSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ActionActor {
+    actor_id: u64,
+    display_name: String,
+}
+
+#[cfg(feature = "derive")]
+#[derive(serde::Deserialize, TsSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct RecordActionInput {
+    action_id: String,
+    #[serde(flatten)]
+    actor: ActionActor,
+    confirmed: bool,
+}
+
+#[cfg(feature = "derive")]
+impl HostContract for RecordAction {
+    const NAME: &'static str = "action.record";
+
+    fn schema() -> Schema {
+        RecordActionInput::schema()
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Function
+    }
+}
+
+#[cfg(feature = "derive")]
+impl HostFunction for RecordAction {
+    type Input = RecordActionInput;
+    type Output = String;
+
+    fn output_schema() -> Schema {
+        String::schema()
+    }
+
+    fn call(input: Self::Input) -> Result<Self::Output, VmError> {
+        Ok(format!("{}:{}", input.action_id, input.actor.actor_id))
+    }
+}
 
 impl HostContract for EchoValidation {
     const NAME: &'static str = "validation.echo";
@@ -244,11 +295,45 @@ fn manager_registry_generates_sdk_source_from_contracts() {
     assert!(sdk.contains("return __hostCall<FindUserOutput>(\"user.find\", input);"));
     assert!(sdk.contains("export const events = {"));
     assert!(sdk.contains("update(handler: HostEventHandler<\"score.update\">): void"));
+    assert!(sdk.contains("export const score = {"));
+    assert!(sdk.contains("onUpdate(handler: HostEventHandler<\"score.update\">): void"));
     assert!(sdk.contains("export const tsvmSdk = {"));
     assert!(sdk.contains("functions: {"));
     assert!(sdk.contains("call,"));
     assert!(sdk.contains("events,"));
     assert!(sdk.contains("ctx,"));
+}
+
+#[cfg(feature = "derive")]
+#[test]
+fn generated_sdk_uses_flattened_derived_input_schema() {
+    let cache_dir = TestCacheDir::new("host-registry-sdk-flatten");
+    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+
+    vm.registry()
+        .function::<RecordAction>()
+        .expect("register flattened host contract");
+
+    let sdk = vm.registry().sdk().expect("render sdk");
+
+    vm.shutdown().expect("shutdown vm");
+
+    assert!(sdk.contains(
+        "type RecordActionInput = { actionId: string; actorId: number; displayName: string; confirmed: boolean; };"
+    ));
+    assert!(sdk.contains("export const models = {"));
+    assert!(sdk.contains("export class RecordActionInputModel {"));
+    assert!(sdk.contains("constructor(public readonly value: RecordActionInput) {}"));
+    assert!(sdk.contains("static is(value: unknown): value is RecordActionInput"));
+    assert!(sdk.contains("static wrap(value: RecordActionInput): RecordActionInputModel"));
+    assert!(sdk.contains("toJSON(): RecordActionInput"));
+    assert!(sdk.contains("RecordActionInput: {"));
+    assert!(sdk.contains("create(value: RecordActionInput): RecordActionInput"));
+    assert!(sdk.contains("is(value: unknown): value is RecordActionInput"));
+    assert!(sdk.contains("wrap(value: RecordActionInput): RecordActionInputModel"));
+    assert!(sdk.contains("record(input: RecordActionInput): string"));
+    assert!(sdk.contains("return __hostCall<string>(\"action.record\", input);"));
+    assert!(sdk.contains("models,"));
 }
 
 #[test]
@@ -375,8 +460,28 @@ const foundFromAggregate = tsvmSdk.functions.user.find(2);\n\
 foundFromAggregate.toUpperCase();\n\
 const foundFromAggregateCall = tsvmSdk.call(\"user.find\", 4);\n\
 foundFromAggregateCall.toUpperCase();\n\
+const scorePayload = models.ScoreUpdatePayload.create({{ combo: 8 }});\n\
+scorePayload.combo.toFixed();\n\
+if (ScoreUpdatePayloadModel.is({{ combo: 13 }})) {{\n\
+  ScoreUpdatePayloadModel.create({{ combo: 13 }}).combo.toFixed();\n\
+}}\n\
+if (models.ScoreUpdatePayload.is({{ combo: 14 }})) {{\n\
+  models.ScoreUpdatePayload.create({{ combo: 14 }}).combo.toFixed();\n\
+}}\n\
+const scorePayloadModel = models.ScoreUpdatePayload.wrap({{ combo: 10 }});\n\
+scorePayloadModel.value.combo.toFixed();\n\
+scorePayloadModel.toJSON().combo.toFixed();\n\
+const directScorePayloadModel = new ScoreUpdatePayloadModel({{ combo: 11 }});\n\
+directScorePayloadModel.valueOf().combo.toFixed();\n\
+const scorePayloadFromAggregate = tsvmSdk.models.ScoreUpdatePayload.create({{ combo: 9 }});\n\
+scorePayloadFromAggregate.combo.toFixed();\n\
+const scorePayloadModelFromAggregate = tsvmSdk.models.ScoreUpdatePayload.wrap({{ combo: 12 }});\n\
+scorePayloadModelFromAggregate.toJSON().combo.toFixed();\n\
 tsvmSdk.contexts.overlay.visible.valueOf();\n\
 tsvmSdk.events.score.update(event => {{\n\
+  event.combo.toFixed();\n\
+}});\n\
+score.onUpdate(event => {{\n\
   event.combo.toFixed();\n\
 }});\n\
 tsvmSdk.ctx.on(\"score.update\", event => {{\n\
@@ -529,6 +634,62 @@ fn host_contract_validation_can_reject_unknown_input_fields() {
             if details.contains("validation.echo")
                 && details.contains("input validation failed")
                 && details.contains("$.extra: unknown field")
+    ));
+}
+
+#[cfg(feature = "derive")]
+#[test]
+fn host_contract_validation_uses_flattened_derived_input_schema() {
+    let cache_dir = TestCacheDir::new("host-contract-flatten-validation");
+    let mut options = cache_dir.vm_options();
+    options.contract_validation = VmContractValidation::Inputs;
+    options.unknown_field_validation = VmUnknownFieldValidation::Reject;
+    let vm = TsVm::new(options).expect("create vm");
+
+    vm.registry()
+        .function::<RecordAction>()
+        .expect("register flattened host function");
+    vm.load_script(
+        "action-script",
+        r#"
+        export function recordGood() {
+          return action.record({
+            actionId: "act-1",
+            actorId: 7,
+            displayName: "Nami",
+            confirmed: true,
+          });
+        }
+
+        export function recordBad() {
+          return action.record({
+            actionId: "act-1",
+            actorId: 7,
+            displayName: "Nami",
+            confirmed: true,
+            actor: { actorId: 7, displayName: "Nami" },
+          });
+        }
+        "#,
+    )
+    .expect("load action script");
+
+    let result = vm
+        .call_function("action-script", "recordGood", Vec::new())
+        .expect("flattened input should validate");
+    let error = vm
+        .call_function("action-script", "recordBad", Vec::new())
+        .expect_err("nested pre-flatten field should be unknown");
+
+    vm.shutdown().expect("shutdown vm");
+
+    assert_eq!(result, json!("act-1:7"));
+    assert!(matches!(
+        error,
+        VmError::Execution { details }
+            if details.contains("action.record")
+                && details.contains("input validation failed")
+                && details.contains("$.actor: unknown field")
     ));
 }
 

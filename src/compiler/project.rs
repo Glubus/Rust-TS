@@ -143,6 +143,7 @@ fn package_manifests_for_module(
     module_path: &Path,
 ) -> Result<BTreeSet<PathBuf>, VmError> {
     let mut paths = BTreeSet::new();
+    let module_path = module_path.canonicalize().map_err(VmError::from)?;
     let mut current = module_path.parent();
 
     while let Some(dir) = current {

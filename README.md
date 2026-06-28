@@ -51,6 +51,154 @@ Current scope:
 - subscribe to VM events
 - shut down cleanly
 
+## Quickstart In 10 Minutes
+
+Enable the derive feature when you want Rust payload structs to drive the
+generated TypeScript types:
+
+```toml
+[dependencies]
+ts_embed_vm = { version = "0.1.0", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+```
+
+Create a VM, declare host contracts in Rust, and register them through the
+typed helpers:
+
+```rust
+use serde::{Deserialize, Serialize};
+use ts_embed_vm::{
+    HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsSchema, TsVm, VmError,
+    VmOptions,
+};
+
+#[derive(Deserialize, TsSchema)]
+#[serde(rename_all = "camelCase")]
+struct FindUserInput {
+    user_id: u64,
+    include_roles: bool,
+}
+
+#[derive(Serialize, TsSchema)]
+#[serde(rename_all = "camelCase")]
+struct FindUserOutput {
+    user_id: u64,
+    display_name: String,
+    active: bool,
+    roles: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize, TsSchema)]
+#[serde(rename_all = "camelCase")]
+struct UserFoundPayload {
+    user_id: u64,
+    display_name: String,
+    roles: Vec<String>,
+}
+
+struct FindUser;
+struct UserFound;
+
+impl HostContract for FindUser {
+    const NAME: &'static str = "user.find";
+
+    fn schema() -> Schema {
+        FindUserInput::schema()
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Function
+    }
+}
+
+impl HostFunction for FindUser {
+    type Input = FindUserInput;
+    type Output = FindUserOutput;
+
+    fn call(input: Self::Input) -> Result<Self::Output, VmError> {
+        Ok(FindUserOutput {
+            user_id: input.user_id,
+            display_name: format!("user-{}", input.user_id),
+            active: true,
+            roles: if input.include_roles { vec!["admin".into()] } else { Vec::new() },
+        })
+    }
+}
+
+impl HostContract for UserFound {
+    const NAME: &'static str = "user.found";
+
+    fn schema() -> Schema {
+        UserFoundPayload::schema()
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Callback
+    }
+}
+
+impl HostCallback for UserFound {
+    type Payload = UserFoundPayload;
+}
+
+fn main() -> Result<(), VmError> {
+    let mut options = VmOptions::default();
+    options.cache_dir = "target/tsvm-cache".into();
+
+    let vm = TsVm::new(options)?;
+    vm.registry()
+        .typed_function::<FindUser>()?
+        .typed_callback::<UserFound>()?;
+
+    vm.registry().write_sdk_files("target/tsvm-generated")?;
+    vm.load_script("plugin", include_str!("plugin.ts"))?;
+
+    let result = vm.call_function("plugin", "lookup", Vec::new())?;
+    println!("{result}");
+
+    vm.emit_callback::<UserFound>(&UserFoundPayload {
+        user_id: 7,
+        display_name: "user-7".into(),
+        roles: vec!["admin".into()],
+    })?;
+
+    vm.shutdown()
+}
+```
+
+The SDK export writes:
+
+- `tsvm.d.ts` for declarations
+- `tsvm.sdk.ts` for ergonomic helpers such as `user.find(...)`,
+  `ctx.on(...)`, `events.user.found(...)`, `call(...)`, and
+  `models.Type.create/is/wrap(...)`
+
+The script can then use the generated contract shape:
+
+```ts
+let lastFound = "none";
+
+ctx.on("user.found", event => {
+  lastFound = `${event.displayName}:${event.roles.join(",")}`;
+});
+
+export function lookup() {
+  const result = user.find({ userId: 7, includeRoles: true });
+  return `${result.displayName}:${result.roles.length}:${result.active}`;
+}
+
+export function observed() {
+  return lastFound;
+}
+```
+
+See `tests/dogfood_usage.rs` for an executable version that registers typed
+contracts, generates the SDK files, typechecks a small SDK consumer when `tsc`
+is available, and runs the script through `TsVm`.
+
+For a friendlier guide that can be dropped into Docusaurus later, see
+`docs/guides/register-host-functions.md`.
+
 ## Script Contract
 
 The supported script export contract is native ESM:
@@ -85,6 +233,38 @@ Host bridge support in V0:
 - registered contracts render TypeScript declarations from schema/ABI metadata
 - optional Tokio async wrappers are available behind the `tokio` feature
 - experimental `async-promise` feature enables `rquickjs/futures` and includes an AsyncContext host bridge that returns real JavaScript Promises through a manager-owned async worker lane; `emit_async` uses async worker replies for async-lane event delivery, while the main synchronous worker pool still uses the synchronous bridge
+
+V0 limits:
+
+- imports must be statically discoverable; dynamic `import(...)` is rejected
+- `HostContext` is declarative metadata only: it contributes schema,
+  declarations, SDK typing, and ABI identity, but does not inject a mutable Rust
+  object graph into every script
+- `async-promise` is experimental and requires the async worker-lane path; normal
+  sync workers reject Promise-returning host contracts instead of faking a direct
+  return value
+
+## Toolchain And Release Checks
+
+V0.1 pins the repository toolchain in `rust-toolchain.toml`:
+
+- `nightly-2026-03-06`
+- `rustc 1.96.0-nightly`
+- components: `rustfmt`, `clippy`
+
+The realistic MSRV for this snapshot is Rust `1.96`-era nightly. A stable MSRV is
+not promised yet because the project uses Rust 2024 plus current `oxc` and
+`rquickjs` dependencies that move with a recent compiler ecosystem.
+
+The local release-check matrix should cover Windows and Linux before external
+use. CI is intentionally left for a later pass. The feature matrix to keep green
+is:
+
+- default features
+- `derive`
+- `tokio`
+- `async-promise`
+- `all-features`
 
 ## Next Steps
 

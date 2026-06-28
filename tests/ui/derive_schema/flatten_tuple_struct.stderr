@@ -1,0 +1,5 @@
+error: serde flatten is only supported on named struct fields
+ --> tests/ui/derive_schema/flatten_tuple_struct.rs:9:23
+  |
+9 | struct InvalidFlatten(#[serde(flatten)] Inner);
+  |                       ^^^^^^^^^^^^^^^^^^^^^^^

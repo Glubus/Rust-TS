@@ -1,0 +1,5 @@
+error: serde internally tagged tuple enum variants are not supported
+ --> tests/ui/derive_schema/internally_tagged_tuple_variant.rs:6:5
+  |
+6 |     Data(String),
+  |     ^^^^^^^^^^^^

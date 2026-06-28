@@ -28,8 +28,13 @@ use expand::expand_ts_schema;
 /// - `#[serde(rename_all = "camelCase")]`
 /// - `#[serde(default)]`
 /// - `#[serde(skip)]`
+/// - `#[serde(flatten)]` on named struct fields whose schema is an object
 /// - `#[serde(transparent)]` on single-field structs
 /// - `#[serde(untagged)]` on enums
+/// - `#[serde(tag = "...")]` and `#[serde(tag = "...", content = "...")]` on enums
+///
+/// Directional serde skip attributes such as `skip_serializing` are rejected
+/// because V0 derives one schema for both host input and output contracts.
 ///
 /// `Option<T>` fields are emitted as optional nullable TypeScript fields.
 #[proc_macro_derive(TsSchema, attributes(tsvm, serde))]

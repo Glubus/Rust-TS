@@ -39,6 +39,29 @@ pub trait TsSchema {
         Schema::typed(Self::schema_name(), Self::ts_type())
             .with_dependencies(Self::schema_dependencies())
     }
+
+    /// Validates one JSON value against this type's generated schema.
+    ///
+    /// Unknown object fields are allowed, matching the default host bridge
+    /// validation policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable validation path and reason when the value does
+    /// not match this schema.
+    fn validate_json(value: &serde_json::Value) -> Result<(), String> {
+        Self::schema().validate_json(value)
+    }
+
+    /// Validates one JSON value against this type's generated schema and rejects unknown fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable validation path and reason when the value does
+    /// not match this schema or contains undeclared object fields.
+    fn validate_json_strict(value: &serde_json::Value) -> Result<(), String> {
+        Self::schema().validate_json_strict(value)
+    }
 }
 
 /// Pushes the named schema for `T`, plus its own dependencies, when `T` has a stable name.
@@ -415,6 +438,8 @@ impl_number_schema!(f32, f64);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::TsField;
+    use serde_json::json;
 
     struct NamedDependencyBomb;
 
@@ -499,5 +524,30 @@ mod tests {
             schema_type_ref::<NamedDependencyBomb>(),
             TsType::TypeRef(String::from("NamedDependencyBomb"))
         );
+    }
+
+    #[test]
+    fn schema_validation_helpers_validate_json_values() {
+        let schema = Schema::typed(
+            "DemoInput",
+            TsType::Object(vec![TsField::required("id", TsType::Number)]),
+        );
+
+        schema
+            .validate_json(&json!({ "id": 1, "extra": true }))
+            .expect("unknown fields are allowed by default");
+        schema
+            .validate_json_strict(&json!({ "id": 1 }))
+            .expect("declared fields pass strict validation");
+
+        let unknown_error = schema
+            .validate_json_strict(&json!({ "id": 1, "extra": true }))
+            .expect_err("strict validation rejects unknown fields");
+        let type_error = schema
+            .validate_json(&json!({ "id": "bad" }))
+            .expect_err("type validation rejects mismatches");
+
+        assert!(unknown_error.contains("$.extra: unknown field"));
+        assert!(type_error.contains("$.id: expected number, got string"));
     }
 }

@@ -16,11 +16,10 @@ use super::sdk::render_typescript_sdk;
 use crate::config::{VmContractValidation, VmUnknownFieldValidation};
 #[cfg(feature = "tokio")]
 use crate::contract::AsyncHostFunction;
-#[cfg(feature = "async-promise")]
-use crate::contract::HostFunctionExecution;
 use crate::contract::validation::{SchemaValidationOptions, validate_schema_with_options};
 use crate::contract::{
     HostCallback, HostContext, HostContractAbi, HostContractDescriptor, HostFunction,
+    HostFunctionDescriptor, HostFunctionExecution, TsSchema,
 };
 use crate::error::VmError;
 use crate::sdk_files::{
@@ -71,6 +70,17 @@ impl InMemoryHostContractRegistry {
         Ok(self)
     }
 
+    /// Registers one host function using `TsSchema` from its input/output types and returns the registry for chaining.
+    pub fn typed_function<T>(&self) -> Result<&Self, VmError>
+    where
+        T: HostFunction + Send + Sync + 'static,
+        T::Input: TsSchema,
+        T::Output: TsSchema,
+    {
+        self.register_typed_function::<T>()?;
+        Ok(self)
+    }
+
     /// Registers one async host function contract and returns the registry for chaining.
     #[cfg(feature = "tokio")]
     pub fn async_function<T>(&self) -> Result<&Self, VmError>
@@ -97,6 +107,16 @@ impl InMemoryHostContractRegistry {
         T: HostCallback + Send + Sync + 'static,
     {
         self.register_callback::<T>()?;
+        Ok(self)
+    }
+
+    /// Registers one host callback using `TsSchema` from its payload type and returns the registry for chaining.
+    pub fn typed_callback<T>(&self) -> Result<&Self, VmError>
+    where
+        T: HostCallback + Send + Sync + 'static,
+        T::Payload: TsSchema,
+    {
+        self.register_typed_callback::<T>()?;
         Ok(self)
     }
 
@@ -280,6 +300,19 @@ fn validation_options(
     }
 }
 
+fn typed_function_descriptor<T>() -> HostFunctionDescriptor
+where
+    T: HostFunction,
+    T::Input: TsSchema,
+    T::Output: TsSchema,
+{
+    HostFunctionDescriptor {
+        input_schema: T::Input::schema(),
+        output_schema: T::Output::schema(),
+        execution: HostFunctionExecution::Sync,
+    }
+}
+
 impl HostContractRegistry for InMemoryHostContractRegistry {
     fn register_function<T>(&self) -> Result<(), VmError>
     where
@@ -287,6 +320,25 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
     {
         let mut descriptor = T::descriptor();
         let function = T::function_descriptor();
+        descriptor.abi = HostContractAbi::Function {
+            input: function.input_schema.clone(),
+            output: function.output_schema.clone(),
+            execution: function.execution,
+        };
+        descriptor.function = Some(function);
+        self.insert_descriptor(descriptor)?;
+        self.function_bindings.insert_static::<T>()
+    }
+
+    fn register_typed_function<T>(&self) -> Result<(), VmError>
+    where
+        T: HostFunction + Send + Sync + 'static,
+        T::Input: TsSchema,
+        T::Output: TsSchema,
+    {
+        let mut descriptor = T::descriptor();
+        let function = typed_function_descriptor::<T>();
+        descriptor.schema = function.input_schema.clone();
         descriptor.abi = HostContractAbi::Function {
             input: function.input_schema.clone(),
             output: function.output_schema.clone(),
@@ -346,6 +398,24 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
     {
         let mut descriptor = T::descriptor();
         let callback = T::callback_descriptor();
+        descriptor.abi = HostContractAbi::Callback {
+            payload: callback.payload_schema.clone(),
+            delivery: callback.delivery,
+            hot: callback.hot,
+        };
+        descriptor.callback = Some(callback);
+        self.insert_descriptor(descriptor)
+    }
+
+    fn register_typed_callback<T>(&self) -> Result<(), VmError>
+    where
+        T: HostCallback + Send + Sync + 'static,
+        T::Payload: TsSchema,
+    {
+        let mut descriptor = T::descriptor();
+        let mut callback = T::callback_descriptor();
+        callback.payload_schema = T::Payload::schema();
+        descriptor.schema = callback.payload_schema.clone();
         descriptor.abi = HostContractAbi::Callback {
             payload: callback.payload_schema.clone(),
             delivery: callback.delivery,
