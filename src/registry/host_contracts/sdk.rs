@@ -119,6 +119,7 @@ impl SdkBuilder {
         let event_helpers = self.event_helpers();
         let (schema_sections, models) = self.schemas.finish();
         let mut sections = schema_sections;
+        push_if_some(&mut sections, render_model_runtime_helpers(&models));
         sections.extend(render_model_classes(&models));
         push_if_some(&mut sections, render_model_helpers(&models));
         push_if_some(&mut sections, host_helpers);
@@ -437,9 +438,47 @@ fn render_model_classes(models: &BTreeMap<String, TsType>) -> Vec<String> {
         .collect()
 }
 
-fn render_model_class(name: &str, ty: &TsType) -> String {
-    let class_name = model_class_name(name);
+fn render_model_runtime_helpers(models: &BTreeMap<String, TsType>) -> Option<String> {
+    if models.is_empty() {
+        return None;
+    }
+
+    let predicates = models
+        .iter()
+        .map(|(name, ty)| render_model_predicate_function(name, ty))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    Some(format!(
+        "function __isRecord(value: unknown): value is Record<string, unknown> {{\n\
+  return typeof value === \"object\" && value !== null && !Array.isArray(value);\n\
+}}\n\n\
+function __field(value: unknown, key: string): unknown {{\n\
+  return __isRecord(value) ? value[key] : undefined;\n\
+}}\n\n\
+function __isArrayOf(value: unknown, predicate: (item: unknown) => boolean): boolean {{\n\
+  return Array.isArray(value) && value.every(predicate);\n\
+}}\n\n\
+function __isRecordOf(value: unknown, predicate: (item: unknown, key: string) => boolean): boolean {{\n\
+  return __isRecord(value) && Object.entries(value).every(([key, item]) => predicate(item, key));\n\
+}}\n\n\
+{predicates}"
+    ))
+}
+
+fn render_model_predicate_function(name: &str, ty: &TsType) -> String {
+    let predicate_name = model_predicate_name(name);
     let predicate = render_value_predicate(ty, "value");
+    format!(
+        "function {predicate_name}(value: unknown): value is {name} {{\n\
+  return {predicate};\n\
+}}"
+    )
+}
+
+fn render_model_class(name: &str, _ty: &TsType) -> String {
+    let class_name = model_class_name(name);
+    let predicate_name = model_predicate_name(name);
     format!(
         "export class {class_name} {{\n\
   constructor(public readonly value: {name}) {{}}\n\n\
@@ -447,7 +486,7 @@ fn render_model_class(name: &str, ty: &TsType) -> String {
     return value;\n\
   }}\n\n\
   static is(value: unknown): value is {name} {{\n\
-    return {predicate};\n\
+    return {predicate_name}(value);\n\
   }}\n\n\
   static wrap(value: {name}): {class_name} {{\n\
     return new {class_name}(value);\n\
@@ -462,11 +501,11 @@ fn render_model_class(name: &str, ty: &TsType) -> String {
     )
 }
 
-fn render_model_helper_entry(name: &str, ty: &TsType, depth: usize) -> String {
+fn render_model_helper_entry(name: &str, _ty: &TsType, depth: usize) -> String {
     let class_name = model_class_name(name);
-    let predicate = render_value_predicate(ty, "value");
+    let predicate_name = model_predicate_name(name);
     format!(
-        "{}{}: {{\n{}create(value: {name}): {name} {{\n{}return {class_name}.create(value);\n{}}},\n{}is(value: unknown): value is {name} {{\n{}return {predicate};\n{}}},\n{}wrap(value: {name}): {class_name} {{\n{}return {class_name}.wrap(value);\n{}}},\n{}}},",
+        "{}{}: {{\n{}create(value: {name}): {name} {{\n{}return {class_name}.create(value);\n{}}},\n{}is(value: unknown): value is {name} {{\n{}return {predicate_name}(value);\n{}}},\n{}wrap(value: {name}): {class_name} {{\n{}return {class_name}.wrap(value);\n{}}},\n{}}},",
         indent(depth),
         property_name(name),
         indent(depth + 1),
@@ -480,6 +519,10 @@ fn render_model_helper_entry(name: &str, ty: &TsType, depth: usize) -> String {
         indent(depth + 1),
         indent(depth)
     )
+}
+
+fn model_predicate_name(name: &str) -> String {
+    format!("__is{}", identifier(name))
 }
 
 fn model_class_name(name: &str) -> String {
@@ -500,9 +543,7 @@ fn render_value_predicate(ty: &TsType, expression: &str) -> String {
         TsType::Object(fields) => render_object_predicate(fields, expression),
         TsType::Array(item) => {
             let item_predicate = render_value_predicate(item, "item");
-            format!(
-                "Array.isArray({expression}) && {expression}.every((item: unknown) => {item_predicate})"
-            )
+            format!("__isArrayOf({expression}, item => {item_predicate})")
         }
         TsType::Tuple(items) => render_tuple_predicate(items, expression),
         TsType::Enum { tag, variants } => {
@@ -540,9 +581,7 @@ fn render_literal_predicate(literal: &TsLiteral, expression: &str) -> String {
 }
 
 fn render_object_predicate(fields: &[TsField], expression: &str) -> String {
-    let base = format!(
-        "typeof {expression} === \"object\" && {expression} !== null && !Array.isArray({expression})"
-    );
+    let base = format!("__isRecord({expression})");
     let field_predicates = fields
         .iter()
         .map(|field| render_field_predicate(field, expression))
@@ -554,10 +593,7 @@ fn render_object_predicate(fields: &[TsField], expression: &str) -> String {
 }
 
 fn render_field_predicate(field: &TsField, expression: &str) -> String {
-    let access = format!(
-        "({expression} as Record<string, unknown>)[{:?}]",
-        field.name
-    );
+    let access = format!("__field({expression}, {:?})", field.name);
     let predicate = render_value_predicate(&field.ty, &access);
     if field.optional {
         format!("{access} === undefined || ({predicate})")
@@ -574,7 +610,9 @@ fn render_tuple_predicate(items: &[TsType], expression: &str) -> String {
     let item_predicates = items
         .iter()
         .enumerate()
-        .map(|(index, ty)| render_value_predicate(ty, &format!("{expression}[{index}]")))
+        .map(|(index, ty)| {
+            render_value_predicate(ty, &format!("({expression} as unknown[])[{index}]"))
+        })
         .collect::<Vec<_>>();
     join_predicates(
         std::iter::once(base).chain(item_predicates).collect(),
@@ -599,7 +637,7 @@ fn render_enum_predicate(
     let variant_predicates = variants
         .iter()
         .map(|variant| {
-            let tag_access = format!("({expression} as Record<string, unknown>)[{tag:?}]");
+            let tag_access = format!("__field({expression}, {tag:?})");
             let mut predicates = vec![format!("{tag_access} === {:?}", variant.name)];
             predicates.extend(
                 variant
@@ -623,9 +661,7 @@ fn render_record_predicate(key: TsRecordKey, value: &TsType, expression: &str) -
         TsRecordKey::String => String::from("true"),
         TsRecordKey::Number => String::from("Number.isFinite(Number(key))"),
     };
-    format!(
-        "typeof {expression} === \"object\" && {expression} !== null && !Array.isArray({expression}) && Object.entries({expression} as Record<string, unknown>).every(([key, item]) => {key_predicate} && ({value_predicate}))"
-    )
+    format!("__isRecordOf({expression}, (item, key) => {key_predicate} && ({value_predicate}))")
 }
 
 fn join_predicates(predicates: Vec<String>, separator: &str) -> String {
