@@ -3,11 +3,11 @@ mod support;
 use std::fs;
 use std::sync::{Arc, Barrier};
 
-use serde_json::json;
-use ts_embed_vm::{
-    HostCallback, HostContract, HostContractKind, Schema, ScriptRetentionPolicy, TsField, TsType,
-    TsVm, VmError, VmOptions,
+use rustts::{
+    HostCallback, HostContract, HostContractKind, RustTs, Schema, ScriptRetentionPolicy, TsField,
+    TsType, VmError, VmOptions,
 };
+use serde_json::json;
 
 use support::TestCacheDir;
 
@@ -60,7 +60,7 @@ impl HostCallback for ScoreUpdate {
     type Payload = serde_json::Value;
 }
 
-fn register_score_update(vm: &TsVm) {
+fn register_score_update(vm: &RustTs) {
     vm.registry()
         .callback::<ScoreUpdate>()
         .expect("register score update callback");
@@ -69,7 +69,7 @@ fn register_score_update(vm: &TsVm) {
 #[test]
 fn repeated_project_reloads_keep_graph_and_routes_consistent() {
     let cache_dir = TestCacheDir::new("stress-project-reload");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     register_score_update(&vm);
     let project_root = cache_dir.path().join("project");
     let entry_path = project_root.join("main.ts");
@@ -109,7 +109,7 @@ fn repeated_event_dispatch_keeps_hot_routes_stable() {
     let mut options = cache_dir.vm_options();
     options.worker_threads = 2;
     options.max_scripts_per_worker = 64;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
     register_score_update(&vm);
 
     for index in 0..20 {
@@ -143,7 +143,7 @@ fn repeated_event_dispatch_keeps_hot_routes_stable() {
 #[test]
 fn concurrent_host_calls_and_events_keep_routes_and_stats_consistent() {
     let cache_dir = TestCacheDir::new("stress-concurrent-host-calls-events");
-    let vm = Arc::new(TsVm::new(concurrent_stress_options(&cache_dir)).expect("create vm"));
+    let vm = Arc::new(RustTs::new(concurrent_stress_options(&cache_dir)).expect("create vm"));
     register_score_update(&vm);
 
     load_concurrent_stress_scripts(&vm);
@@ -170,7 +170,7 @@ fn concurrent_host_calls_and_events_keep_routes_and_stats_consistent() {
 #[test]
 fn concurrent_distinct_script_loads_keep_registry_and_workers_consistent() {
     let cache_dir = TestCacheDir::new("stress-concurrent-distinct-loads");
-    let vm = Arc::new(TsVm::new(concurrent_load_options(&cache_dir)).expect("create vm"));
+    let vm = Arc::new(RustTs::new(concurrent_load_options(&cache_dir)).expect("create vm"));
 
     run_concurrent_distinct_script_loads(Arc::clone(&vm));
 
@@ -195,7 +195,7 @@ fn concurrent_distinct_script_loads_keep_registry_and_workers_consistent() {
 #[test]
 fn concurrent_same_script_reloads_keep_single_active_instance() {
     let cache_dir = TestCacheDir::new("stress-concurrent-same-script-reloads");
-    let vm = Arc::new(TsVm::new(concurrent_load_options(&cache_dir)).expect("create vm"));
+    let vm = Arc::new(RustTs::new(concurrent_load_options(&cache_dir)).expect("create vm"));
 
     run_concurrent_same_script_reloads(Arc::clone(&vm));
 
@@ -220,7 +220,7 @@ fn concurrent_same_script_reloads_keep_single_active_instance() {
 #[test]
 fn concurrent_oneshot_calls_demount_without_leaking_active_instances() {
     let cache_dir = TestCacheDir::new("stress-concurrent-oneshot-calls");
-    let vm = Arc::new(TsVm::new(concurrent_load_options(&cache_dir)).expect("create vm"));
+    let vm = Arc::new(RustTs::new(concurrent_load_options(&cache_dir)).expect("create vm"));
 
     run_concurrent_oneshot_calls(Arc::clone(&vm));
 
@@ -248,7 +248,7 @@ fn concurrent_oneshot_calls_demount_without_leaking_active_instances() {
 #[test]
 fn concurrent_dependency_refs_release_without_leaking_retention() {
     let cache_dir = TestCacheDir::new("stress-concurrent-dependency-refs");
-    let vm = Arc::new(TsVm::new(concurrent_load_options(&cache_dir)).expect("create vm"));
+    let vm = Arc::new(RustTs::new(concurrent_load_options(&cache_dir)).expect("create vm"));
 
     run_concurrent_dependency_ref_rounds(Arc::clone(&vm));
 
@@ -271,7 +271,7 @@ fn concurrent_dependency_refs_release_without_leaking_retention() {
 #[test]
 fn concurrent_dependency_edges_release_without_leaking_refs_or_edges() {
     let cache_dir = TestCacheDir::new("stress-concurrent-dependency-edges");
-    let vm = Arc::new(TsVm::new(concurrent_load_options(&cache_dir)).expect("create vm"));
+    let vm = Arc::new(RustTs::new(concurrent_load_options(&cache_dir)).expect("create vm"));
 
     load_dependency_edge_consumers(&vm);
     run_concurrent_dependency_edge_rounds(Arc::clone(&vm));
@@ -294,7 +294,7 @@ fn concurrent_dependency_edges_release_without_leaking_refs_or_edges() {
 #[test]
 fn concurrent_listener_unloads_and_emits_clear_hot_routes_without_leaks() {
     let cache_dir = TestCacheDir::new("stress-concurrent-unload-emits");
-    let vm = Arc::new(TsVm::new(concurrent_load_options(&cache_dir)).expect("create vm"));
+    let vm = Arc::new(RustTs::new(concurrent_load_options(&cache_dir)).expect("create vm"));
     register_score_update(&vm);
 
     load_concurrent_unload_listeners(&vm);
@@ -321,7 +321,7 @@ fn concurrent_listener_unloads_and_emits_clear_hot_routes_without_leaks() {
 #[test]
 fn concurrent_project_reloads_and_emits_keep_hot_route_available() {
     let cache_dir = TestCacheDir::new("stress-concurrent-project-reload-emits");
-    let vm = Arc::new(TsVm::new(concurrent_reload_options(&cache_dir)).expect("create vm"));
+    let vm = Arc::new(RustTs::new(concurrent_reload_options(&cache_dir)).expect("create vm"));
     register_score_update(&vm);
     let project = Arc::new(ConcurrentReloadProject::create(&cache_dir));
 
@@ -378,7 +378,7 @@ fn concurrent_load_options(cache_dir: &TestCacheDir) -> VmOptions {
     options
 }
 
-fn load_concurrent_stress_scripts(vm: &TsVm) {
+fn load_concurrent_stress_scripts(vm: &RustTs) {
     for index in 0..CONCURRENT_MATH_SCRIPTS {
         vm.load_script(format!("math-{index}"), BASIC_SCRIPT)
             .expect("load math script");
@@ -389,7 +389,7 @@ fn load_concurrent_stress_scripts(vm: &TsVm) {
     }
 }
 
-fn run_concurrent_distinct_script_loads(vm: Arc<TsVm>) {
+fn run_concurrent_distinct_script_loads(vm: Arc<RustTs>) {
     let start_barrier = Arc::new(Barrier::new(CONCURRENT_LOAD_THREADS));
     let mut handles = Vec::with_capacity(CONCURRENT_LOAD_THREADS);
 
@@ -407,7 +407,7 @@ fn run_concurrent_distinct_script_loads(vm: Arc<TsVm>) {
     }
 }
 
-fn load_distinct_scripts_for_thread(vm: &TsVm, thread_index: usize) {
+fn load_distinct_scripts_for_thread(vm: &RustTs, thread_index: usize) {
     for load_index in 0..CONCURRENT_LOADS_PER_THREAD {
         let script_id = concurrent_load_script_id(thread_index, load_index);
         vm.load_script(script_id, BASIC_SCRIPT)
@@ -415,7 +415,7 @@ fn load_distinct_scripts_for_thread(vm: &TsVm, thread_index: usize) {
     }
 }
 
-fn assert_concurrently_loaded_scripts_are_callable(vm: &TsVm) {
+fn assert_concurrently_loaded_scripts_are_callable(vm: &RustTs) {
     for thread_index in 0..CONCURRENT_LOAD_THREADS {
         let script_id = concurrent_load_script_id(thread_index, 0);
         let result = vm
@@ -437,7 +437,7 @@ fn expected_concurrent_load_count() -> usize {
     CONCURRENT_LOAD_THREADS * CONCURRENT_LOADS_PER_THREAD
 }
 
-fn run_concurrent_same_script_reloads(vm: Arc<TsVm>) {
+fn run_concurrent_same_script_reloads(vm: Arc<RustTs>) {
     let start_barrier = Arc::new(Barrier::new(CONCURRENT_SAME_SCRIPT_RELOAD_THREADS));
     let mut handles = Vec::with_capacity(CONCURRENT_SAME_SCRIPT_RELOAD_THREADS);
 
@@ -457,7 +457,7 @@ fn run_concurrent_same_script_reloads(vm: Arc<TsVm>) {
     }
 }
 
-fn reload_shared_script_for_thread(vm: &TsVm, thread_index: usize) {
+fn reload_shared_script_for_thread(vm: &RustTs, thread_index: usize) {
     for reload_index in 0..CONCURRENT_SAME_SCRIPT_RELOADS_PER_THREAD {
         let version = thread_index * CONCURRENT_SAME_SCRIPT_RELOADS_PER_THREAD + reload_index;
         vm.load_script("shared", version_script(version))
@@ -473,7 +473,7 @@ fn expected_concurrent_same_script_reload_count() -> usize {
     CONCURRENT_SAME_SCRIPT_RELOAD_THREADS * CONCURRENT_SAME_SCRIPT_RELOADS_PER_THREAD
 }
 
-fn run_concurrent_oneshot_calls(vm: Arc<TsVm>) {
+fn run_concurrent_oneshot_calls(vm: Arc<RustTs>) {
     let start_barrier = Arc::new(Barrier::new(CONCURRENT_ONESHOT_THREADS));
     let mut handles = Vec::with_capacity(CONCURRENT_ONESHOT_THREADS);
 
@@ -491,7 +491,7 @@ fn run_concurrent_oneshot_calls(vm: Arc<TsVm>) {
     }
 }
 
-fn run_oneshot_worker(vm: &TsVm, thread_index: usize) {
+fn run_oneshot_worker(vm: &RustTs, thread_index: usize) {
     for call_index in 0..CONCURRENT_ONESHOT_CALLS_PER_THREAD {
         let left = thread_index as i64;
         let right = call_index as i64;
@@ -510,7 +510,7 @@ fn expected_concurrent_oneshot_call_count() -> usize {
     CONCURRENT_ONESHOT_THREADS * CONCURRENT_ONESHOT_CALLS_PER_THREAD
 }
 
-fn run_concurrent_dependency_ref_rounds(vm: Arc<TsVm>) {
+fn run_concurrent_dependency_ref_rounds(vm: Arc<RustTs>) {
     for round in 0..CONCURRENT_DEPENDENCY_ROUNDS {
         vm.load_script_with_policy(
             dependency_ref_script_id(round),
@@ -523,7 +523,7 @@ fn run_concurrent_dependency_ref_rounds(vm: Arc<TsVm>) {
     }
 }
 
-fn run_concurrent_dependency_ref_round(vm: Arc<TsVm>, round: usize) {
+fn run_concurrent_dependency_ref_round(vm: Arc<RustTs>, round: usize) {
     let retain_barrier = Arc::new(Barrier::new(CONCURRENT_DEPENDENCY_THREADS));
     let release_barrier = Arc::new(Barrier::new(CONCURRENT_DEPENDENCY_THREADS));
     let mut handles = Vec::with_capacity(CONCURRENT_DEPENDENCY_THREADS);
@@ -545,7 +545,7 @@ fn run_concurrent_dependency_ref_round(vm: Arc<TsVm>, round: usize) {
 }
 
 fn run_dependency_ref_worker(
-    vm: &TsVm,
+    vm: &RustTs,
     round: usize,
     thread_index: usize,
     retain_barrier: &Barrier,
@@ -570,7 +570,7 @@ fn run_dependency_ref_worker(
         .expect("release dependency ref concurrently");
 }
 
-fn assert_dependency_ref_script_was_demounted(vm: &TsVm, round: usize) {
+fn assert_dependency_ref_script_was_demounted(vm: &RustTs, round: usize) {
     let script_id = dependency_ref_script_id(round);
     let error = vm
         .call_function(&script_id, "sum", vec![json!({ "left": 1, "right": 1 })])
@@ -585,14 +585,14 @@ fn dependency_ref_script_id(round: usize) -> String {
     format!("dependency-ref-{round}")
 }
 
-fn load_dependency_edge_consumers(vm: &TsVm) {
+fn load_dependency_edge_consumers(vm: &RustTs) {
     for consumer_index in 0..CONCURRENT_DEPENDENCY_EDGE_CONSUMERS {
         vm.load_script(dependency_edge_consumer_id(consumer_index), BASIC_SCRIPT)
             .expect("load dependency edge consumer");
     }
 }
 
-fn run_concurrent_dependency_edge_rounds(vm: Arc<TsVm>) {
+fn run_concurrent_dependency_edge_rounds(vm: Arc<RustTs>) {
     for round in 0..CONCURRENT_DEPENDENCY_EDGE_ROUNDS {
         vm.load_script_with_policy(
             dependency_edge_script_id(round),
@@ -605,7 +605,7 @@ fn run_concurrent_dependency_edge_rounds(vm: Arc<TsVm>) {
     }
 }
 
-fn run_concurrent_dependency_edge_round(vm: Arc<TsVm>, round: usize) {
+fn run_concurrent_dependency_edge_round(vm: Arc<RustTs>, round: usize) {
     let retain_barrier = Arc::new(Barrier::new(CONCURRENT_DEPENDENCY_EDGE_CONSUMERS));
     let release_barrier = Arc::new(Barrier::new(CONCURRENT_DEPENDENCY_EDGE_CONSUMERS));
     let mut handles = Vec::with_capacity(CONCURRENT_DEPENDENCY_EDGE_CONSUMERS);
@@ -633,7 +633,7 @@ fn run_concurrent_dependency_edge_round(vm: Arc<TsVm>, round: usize) {
 }
 
 fn run_dependency_edge_worker(
-    vm: &TsVm,
+    vm: &RustTs,
     round: usize,
     consumer_index: usize,
     retain_barrier: &Barrier,
@@ -660,7 +660,7 @@ fn run_dependency_edge_worker(
         .expect("release dependency edge concurrently");
 }
 
-fn assert_dependency_edge_script_was_demounted(vm: &TsVm, round: usize) {
+fn assert_dependency_edge_script_was_demounted(vm: &RustTs, round: usize) {
     let script_id = dependency_edge_script_id(round);
     let error = vm
         .call_function(&script_id, "sum", vec![json!({ "left": 1, "right": 1 })])
@@ -679,7 +679,7 @@ fn dependency_edge_script_id(round: usize) -> String {
     format!("dependency-edge-{round}")
 }
 
-fn load_concurrent_unload_listeners(vm: &TsVm) {
+fn load_concurrent_unload_listeners(vm: &RustTs) {
     for listener_index in 0..CONCURRENT_UNLOAD_LISTENER_SCRIPTS {
         vm.load_script(
             concurrent_unload_listener_id(listener_index),
@@ -689,7 +689,7 @@ fn load_concurrent_unload_listeners(vm: &TsVm) {
     }
 }
 
-fn run_concurrent_listener_unloads_and_emits(vm: Arc<TsVm>) {
+fn run_concurrent_listener_unloads_and_emits(vm: Arc<RustTs>) {
     let participant_count = CONCURRENT_UNLOAD_LISTENER_SCRIPTS + CONCURRENT_UNLOAD_EMITTER_THREADS;
     let start_barrier = Arc::new(Barrier::new(participant_count));
     let mut handles =
@@ -705,7 +705,7 @@ fn run_concurrent_listener_unloads_and_emits(vm: Arc<TsVm>) {
 
 fn spawn_concurrent_listener_unload_workers(
     handles: &mut Vec<std::thread::JoinHandle<()>>,
-    vm: &Arc<TsVm>,
+    vm: &Arc<RustTs>,
     start_barrier: &Arc<Barrier>,
 ) {
     for listener_index in 0..CONCURRENT_UNLOAD_LISTENER_SCRIPTS {
@@ -721,7 +721,7 @@ fn spawn_concurrent_listener_unload_workers(
 
 fn spawn_concurrent_unload_emit_workers(
     handles: &mut Vec<std::thread::JoinHandle<()>>,
-    vm: &Arc<TsVm>,
+    vm: &Arc<RustTs>,
     start_barrier: &Arc<Barrier>,
 ) {
     for thread_index in 0..CONCURRENT_UNLOAD_EMITTER_THREADS {
@@ -734,7 +734,7 @@ fn spawn_concurrent_unload_emit_workers(
     }
 }
 
-fn run_concurrent_unload_emit_worker(vm: &TsVm, thread_index: usize) {
+fn run_concurrent_unload_emit_worker(vm: &RustTs, thread_index: usize) {
     for iteration in 0..CONCURRENT_UNLOAD_EMITS_PER_THREAD {
         let result = vm.emit(
             "score.update",
@@ -760,7 +760,7 @@ fn concurrent_unload_listener_id(listener_index: usize) -> String {
     format!("unload-listener-{listener_index}")
 }
 
-fn run_concurrent_host_operations(vm: Arc<TsVm>) {
+fn run_concurrent_host_operations(vm: Arc<RustTs>) {
     let start_barrier = Arc::new(Barrier::new(CONCURRENT_THREAD_COUNT));
     let mut handles = Vec::with_capacity(CONCURRENT_THREAD_COUNT);
 
@@ -778,7 +778,7 @@ fn run_concurrent_host_operations(vm: Arc<TsVm>) {
     }
 }
 
-fn run_concurrent_host_worker(vm: &TsVm, thread_index: usize) {
+fn run_concurrent_host_worker(vm: &RustTs, thread_index: usize) {
     for iteration in 0..CONCURRENT_ITERATIONS {
         let script_index = (thread_index + iteration) % CONCURRENT_MATH_SCRIPTS;
         let left = thread_index as i64;
@@ -805,7 +805,7 @@ fn run_concurrent_host_worker(vm: &TsVm, thread_index: usize) {
     }
 }
 
-fn assert_worker_call_and_emit_stats(stats: &ts_embed_vm::VmStats) {
+fn assert_worker_call_and_emit_stats(stats: &rustts::VmStats) {
     let total_worker_calls = stats
         .workers
         .iter()
@@ -854,7 +854,10 @@ impl ConcurrentReloadProject {
     }
 }
 
-fn run_concurrent_project_reloads_and_emits(vm: Arc<TsVm>, project: Arc<ConcurrentReloadProject>) {
+fn run_concurrent_project_reloads_and_emits(
+    vm: Arc<RustTs>,
+    project: Arc<ConcurrentReloadProject>,
+) {
     let participant_count = CONCURRENT_RELOAD_EMITTER_THREADS + 1;
     let start_barrier = Arc::new(Barrier::new(participant_count));
     let reload_handle = spawn_reload_worker(Arc::clone(&vm), Arc::clone(&project), &start_barrier);
@@ -867,7 +870,7 @@ fn run_concurrent_project_reloads_and_emits(vm: Arc<TsVm>, project: Arc<Concurre
 }
 
 fn spawn_reload_worker(
-    vm: Arc<TsVm>,
+    vm: Arc<RustTs>,
     project: Arc<ConcurrentReloadProject>,
     start_barrier: &Arc<Barrier>,
 ) -> std::thread::JoinHandle<()> {
@@ -883,7 +886,7 @@ fn spawn_reload_worker(
 }
 
 fn spawn_emit_workers(
-    vm: Arc<TsVm>,
+    vm: Arc<RustTs>,
     start_barrier: &Arc<Barrier>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     let mut handles = Vec::with_capacity(CONCURRENT_RELOAD_EMITTER_THREADS);
@@ -898,7 +901,7 @@ fn spawn_emit_workers(
     handles
 }
 
-fn run_concurrent_reload_emit_worker(vm: &TsVm, thread_index: usize) {
+fn run_concurrent_reload_emit_worker(vm: &RustTs, thread_index: usize) {
     for iteration in 0..CONCURRENT_RELOAD_EMITS_PER_THREAD {
         let delivered = vm
             .emit(

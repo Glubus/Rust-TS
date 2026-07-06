@@ -296,7 +296,7 @@ mod tests {
             .expect("system clock before unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "tsvm-resolver-{name}-{}-{nanos}",
+            "rustts-resolver-{name}-{}-{nanos}",
             std::process::id()
         ))
     }

@@ -1,10 +1,10 @@
 mod support;
 
-use serde_json::json;
-use ts_embed_vm::{
-    HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsField, TsType, TsVm,
+use rustts::{
+    HostCallback, HostContract, HostContractKind, HostFunction, RustTs, Schema, TsField, TsType,
     VmError,
 };
+use serde_json::json;
 
 use support::TestCacheDir;
 
@@ -67,7 +67,7 @@ impl HostCallback for ScoreUpdate {
 #[test]
 fn realistic_mod_pack_uses_aliases_host_calls_events_and_state() {
     let cache_dir = TestCacheDir::new("realistic-mod-pack");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     vm.registry()
         .function::<FindUser>()
         .and_then(|registry| registry.callback::<ScoreUpdate>())

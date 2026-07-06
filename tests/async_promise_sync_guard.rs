@@ -2,9 +2,9 @@
 
 mod support;
 
-use ts_embed_vm::{
-    AsyncHostFunction, HostContract, HostContractKind, HostFunctionExecution, Schema, TsType, TsVm,
-    VmError,
+use rustts::{
+    AsyncHostFunction, HostContract, HostContractKind, HostFunctionExecution, RustTs, Schema,
+    TsType, VmError,
 };
 
 use support::TestCacheDir;
@@ -55,7 +55,7 @@ fn sync_worker_rejects_async_promise_functions_instead_of_exposing_fake_direct_v
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("async-promise-sync-guard");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
         vm.registry()
             .async_promise_function::<AsyncFindUser>()

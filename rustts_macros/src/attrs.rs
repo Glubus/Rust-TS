@@ -17,14 +17,14 @@ pub(super) struct ContainerAttrs {
 impl ContainerAttrs {
     pub(super) fn from_input(input: &DeriveInput) -> Result<Self> {
         let mut attrs = Self::default();
-        attrs.apply_tsvm_attrs(&input.attrs)?;
+        attrs.apply_rustts_attrs(&input.attrs)?;
         attrs.apply_serde_attrs(&input.attrs)?;
         Ok(attrs)
     }
 
-    fn apply_tsvm_attrs(&mut self, attrs: &[Attribute]) -> Result<()> {
-        for attr in attrs.iter().filter(|attr| attr.path().is_ident("tsvm")) {
-            for meta in parse_tsvm_attr(attr)? {
+    fn apply_rustts_attrs(&mut self, attrs: &[Attribute]) -> Result<()> {
+        for attr in attrs.iter().filter(|attr| attr.path().is_ident("rustts")) {
+            for meta in parse_rustts_attr(attr)? {
                 match meta {
                     Meta::NameValue(value) if value.path.is_ident("name") => {
                         self.schema_name = Some(string_lit_value(&value.value)?);
@@ -33,7 +33,10 @@ impl ContainerAttrs {
                         self.schema_name = Some(string_lit_value(&value.value)?);
                     }
                     other => {
-                        return Err(Error::new_spanned(other, "unsupported tsvm type attribute"));
+                        return Err(Error::new_spanned(
+                            other,
+                            "unsupported rustts type attribute",
+                        ));
                     }
                 }
             }
@@ -154,9 +157,9 @@ impl FieldAttrs {
         for attr in field
             .attrs
             .iter()
-            .filter(|attr| attr.path().is_ident("tsvm"))
+            .filter(|attr| attr.path().is_ident("rustts"))
         {
-            for meta in parse_tsvm_attr(attr)? {
+            for meta in parse_rustts_attr(attr)? {
                 match meta {
                     Meta::Path(path) if path.is_ident("optional") => attrs.optional = true,
                     Meta::NameValue(value) if value.path.is_ident("rename") => {
@@ -165,7 +168,7 @@ impl FieldAttrs {
                     other => {
                         return Err(Error::new_spanned(
                             other,
-                            "unsupported tsvm field attribute",
+                            "unsupported rustts field attribute",
                         ));
                     }
                 }
@@ -196,7 +199,7 @@ pub(super) struct VariantAttrs {
 impl VariantAttrs {
     pub(super) fn from_variant(variant: &syn::Variant) -> Result<Self> {
         let mut attrs = Self {
-            rename: parse_tsvm_variant_rename(&variant.attrs)?,
+            rename: parse_rustts_variant_rename(&variant.attrs)?,
         };
         for attr in variant
             .attrs
@@ -218,10 +221,10 @@ impl VariantAttrs {
     }
 }
 
-fn parse_tsvm_variant_rename(attrs: &[Attribute]) -> Result<Option<String>> {
+fn parse_rustts_variant_rename(attrs: &[Attribute]) -> Result<Option<String>> {
     let mut rename = None;
-    for attr in attrs.iter().filter(|attr| attr.path().is_ident("tsvm")) {
-        for meta in parse_tsvm_attr(attr)? {
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("rustts")) {
+        for meta in parse_rustts_attr(attr)? {
             match meta {
                 Meta::NameValue(value) if value.path.is_ident("rename") => {
                     rename = Some(string_lit_value(&value.value)?);
@@ -229,7 +232,7 @@ fn parse_tsvm_variant_rename(attrs: &[Attribute]) -> Result<Option<String>> {
                 other => {
                     return Err(Error::new_spanned(
                         other,
-                        "unsupported tsvm enum variant attribute",
+                        "unsupported rustts enum variant attribute",
                     ));
                 }
             }
@@ -238,7 +241,7 @@ fn parse_tsvm_variant_rename(attrs: &[Attribute]) -> Result<Option<String>> {
     Ok(rename)
 }
 
-fn parse_tsvm_attr(attr: &syn::Attribute) -> Result<Punctuated<Meta, Token![,]>> {
+fn parse_rustts_attr(attr: &syn::Attribute) -> Result<Punctuated<Meta, Token![,]>> {
     attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
 }
 

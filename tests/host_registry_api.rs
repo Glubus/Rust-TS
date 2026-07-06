@@ -1,11 +1,11 @@
+#[cfg(feature = "derive")]
+use rustts::TsSchema;
+use rustts::{
+    HostCallback, HostContext, HostContract, HostContractKind, HostFunction, HostMetadata, RustTs,
+    Schema, TsField, TsType, VmContractValidation, VmError, VmUnknownFieldValidation,
+};
 use serde_json::{Value, json};
 use std::process::Command;
-#[cfg(feature = "derive")]
-use ts_embed_vm::TsSchema;
-use ts_embed_vm::{
-    HostCallback, HostContext, HostContract, HostContractKind, HostFunction, HostMetadata, Schema,
-    TsField, TsType, TsVm, VmContractValidation, VmError, VmUnknownFieldValidation,
-};
 
 mod support;
 
@@ -243,7 +243,7 @@ fn validation_input_schema() -> Schema {
 #[test]
 fn manager_registry_supports_fluent_contract_registration() {
     let cache_dir = TestCacheDir::new("host-registry-api");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.registry()
         .callback::<ScoreUpdate>()
@@ -286,7 +286,7 @@ fn manager_registry_supports_fluent_contract_registration() {
 #[test]
 fn manager_registry_generates_sdk_source_from_contracts() {
     let cache_dir = TestCacheDir::new("host-registry-sdk");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.registry()
         .callback::<ScoreUpdate>()
@@ -311,7 +311,7 @@ fn manager_registry_generates_sdk_source_from_contracts() {
     assert!(sdk.contains("update(handler: HostEventHandler<\"score.update\">): void"));
     assert!(sdk.contains("export const score = {"));
     assert!(sdk.contains("onUpdate(handler: HostEventHandler<\"score.update\">): void"));
-    assert!(sdk.contains("export const tsvmSdk = {"));
+    assert!(sdk.contains("export const rusttsSdk = {"));
     assert!(sdk.contains("functions: {"));
     assert!(sdk.contains("call,"));
     assert!(sdk.contains("events,"));
@@ -322,7 +322,7 @@ fn manager_registry_generates_sdk_source_from_contracts() {
 #[test]
 fn generated_sdk_uses_flattened_derived_input_schema() {
     let cache_dir = TestCacheDir::new("host-registry-sdk-flatten");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.registry()
         .function::<RecordAction>()
@@ -353,7 +353,7 @@ fn generated_sdk_uses_flattened_derived_input_schema() {
 #[test]
 fn host_context_v0_is_declarative_sdk_surface_only() {
     let cache_dir = TestCacheDir::new("host-context-v0-declarative");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.registry()
         .context::<OverlayContext>()
@@ -366,7 +366,7 @@ fn host_context_v0_is_declarative_sdk_surface_only() {
     assert!(sdk.contains(
         "export const overlay = (globalThis as unknown as Record<string, unknown>)[\"overlay\"] as OverlayContext;"
     ));
-    assert!(sdk.contains("export const tsvmSdk = {"));
+    assert!(sdk.contains("export const rusttsSdk = {"));
     assert!(sdk.contains("contexts: {"));
     assert!(sdk.contains("overlay,"));
     assert!(!sdk.contains("__hostCall"));
@@ -377,7 +377,7 @@ fn host_context_v0_is_declarative_sdk_surface_only() {
 fn manager_registry_writes_sdk_files() {
     let cache_dir = TestCacheDir::new("host-registry-sdk-files");
     let output_dir = cache_dir.path().join("generated");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.registry()
         .callback::<ScoreUpdate>()
@@ -392,18 +392,18 @@ fn manager_registry_writes_sdk_files() {
 
     let types = std::fs::read_to_string(&written.types_path).expect("read types");
     let sdk = std::fs::read_to_string(&written.sdk_path).expect("read sdk");
-    assert_eq!(written.types_path, output_dir.join("tsvm.d.ts"));
-    assert_eq!(written.sdk_path, output_dir.join("tsvm.sdk.ts"));
+    assert_eq!(written.types_path, output_dir.join("rustts.d.ts"));
+    assert_eq!(written.sdk_path, output_dir.join("rustts.sdk.ts"));
     assert!(types.contains("declare namespace user"));
     assert!(sdk.contains("export const user = {"));
 }
 
 #[test]
-fn tsvm_sdk_binary_writes_files_from_descriptor_json() {
+fn rustts_sdk_binary_writes_files_from_descriptor_json() {
     let cache_dir = TestCacheDir::new("host-registry-sdk-bin");
     let descriptors_path = cache_dir.path().join("descriptors.json");
     let output_dir = cache_dir.path().join("out");
-    let registry = ts_embed_vm::InMemoryHostContractRegistry::new();
+    let registry = rustts::InMemoryHostContractRegistry::new();
     registry
         .callback::<ScoreUpdate>()
         .and_then(|registry| registry.function::<FindUser>())
@@ -415,26 +415,26 @@ fn tsvm_sdk_binary_writes_files_from_descriptor_json() {
     )
     .expect("write descriptors");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_tsvm-sdk"))
+    let output = Command::new(env!("CARGO_BIN_EXE_rustts-sdk"))
         .arg(&descriptors_path)
         .arg(&output_dir)
         .output()
-        .expect("run tsvm-sdk");
+        .expect("run rustts-sdk");
 
     assert!(
         output.status.success(),
-        "tsvm-sdk failed\nstdout:\n{}\nstderr:\n{}",
+        "rustts-sdk failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output_dir.join("tsvm.d.ts").exists());
-    assert!(output_dir.join("tsvm.sdk.ts").exists());
+    assert!(output_dir.join("rustts.d.ts").exists());
+    assert!(output_dir.join("rustts.sdk.ts").exists());
 }
 
 #[test]
 fn generated_sdk_typechecks_when_tsc_is_available() {
     let cache_dir = TestCacheDir::new("host-registry-sdk-tsc");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.registry()
         .callback::<ScoreUpdate>()
@@ -470,9 +470,9 @@ overlay.visible.valueOf();\n\
 events.score.update(event => {{\n\
   event.combo.toFixed();\n\
 }});\n\
-const foundFromAggregate = tsvmSdk.functions.user.find(2);\n\
+const foundFromAggregate = rusttsSdk.functions.user.find(2);\n\
 foundFromAggregate.toUpperCase();\n\
-const foundFromAggregateCall = tsvmSdk.call(\"user.find\", 4);\n\
+const foundFromAggregateCall = rusttsSdk.call(\"user.find\", 4);\n\
 foundFromAggregateCall.toUpperCase();\n\
 const scorePayload = models.ScoreUpdatePayload.create({{ combo: 8 }});\n\
 scorePayload.combo.toFixed();\n\
@@ -487,18 +487,18 @@ scorePayloadModel.value.combo.toFixed();\n\
 scorePayloadModel.toJSON().combo.toFixed();\n\
 const directScorePayloadModel = new ScoreUpdatePayloadModel({{ combo: 11 }});\n\
 directScorePayloadModel.valueOf().combo.toFixed();\n\
-const scorePayloadFromAggregate = tsvmSdk.models.ScoreUpdatePayload.create({{ combo: 9 }});\n\
+const scorePayloadFromAggregate = rusttsSdk.models.ScoreUpdatePayload.create({{ combo: 9 }});\n\
 scorePayloadFromAggregate.combo.toFixed();\n\
-const scorePayloadModelFromAggregate = tsvmSdk.models.ScoreUpdatePayload.wrap({{ combo: 12 }});\n\
+const scorePayloadModelFromAggregate = rusttsSdk.models.ScoreUpdatePayload.wrap({{ combo: 12 }});\n\
 scorePayloadModelFromAggregate.toJSON().combo.toFixed();\n\
-tsvmSdk.contexts.overlay.visible.valueOf();\n\
-tsvmSdk.events.score.update(event => {{\n\
+rusttsSdk.contexts.overlay.visible.valueOf();\n\
+rusttsSdk.events.score.update(event => {{\n\
   event.combo.toFixed();\n\
 }});\n\
 score.onUpdate(event => {{\n\
   event.combo.toFixed();\n\
 }});\n\
-tsvmSdk.ctx.on(\"score.update\", event => {{\n\
+rusttsSdk.ctx.on(\"score.update\", event => {{\n\
   event.combo.toFixed();\n\
 }});\n"
     )
@@ -521,7 +521,7 @@ fn host_contract_input_validation_is_configurable() {
     let cache_dir = TestCacheDir::new("host-contract-input-validation");
     let mut options = cache_dir.vm_options();
     options.contract_validation = VmContractValidation::Inputs;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
 
     vm.registry()
         .function::<EchoValidation>()
@@ -549,7 +549,7 @@ fn host_contract_input_validation_resolves_type_ref_dependencies() {
     let cache_dir = TestCacheDir::new("host-contract-input-validation-typeref");
     let mut options = cache_dir.vm_options();
     options.contract_validation = VmContractValidation::Inputs;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
 
     vm.registry()
         .function::<EchoTypeRefValidation>()
@@ -575,7 +575,7 @@ fn host_contract_input_validation_resolves_type_ref_dependencies() {
 #[test]
 fn host_contract_validation_disabled_keeps_bridge_permissive() {
     let cache_dir = TestCacheDir::new("host-contract-validation-disabled");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.registry()
         .function::<EchoValidation>()
@@ -596,7 +596,7 @@ fn host_contract_output_validation_can_be_enabled_for_debug() {
     let cache_dir = TestCacheDir::new("host-contract-output-validation");
     let mut options = cache_dir.vm_options();
     options.contract_validation = VmContractValidation::InputsAndOutputs;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
 
     vm.registry()
         .function::<BadOutputValidation>()
@@ -624,7 +624,7 @@ fn host_contract_validation_can_reject_unknown_input_fields() {
     let mut options = cache_dir.vm_options();
     options.contract_validation = VmContractValidation::Inputs;
     options.unknown_field_validation = VmUnknownFieldValidation::Reject;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
 
     vm.registry()
         .function::<EchoValidation>()
@@ -658,7 +658,7 @@ fn host_contract_validation_uses_flattened_derived_input_schema() {
     let mut options = cache_dir.vm_options();
     options.contract_validation = VmContractValidation::Inputs;
     options.unknown_field_validation = VmUnknownFieldValidation::Reject;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
 
     vm.registry()
         .function::<RecordAction>()
@@ -712,7 +712,7 @@ fn host_contract_validation_allows_unknown_input_fields_by_default() {
     let cache_dir = TestCacheDir::new("host-contract-unknown-fields-default");
     let mut options = cache_dir.vm_options();
     options.contract_validation = VmContractValidation::Inputs;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
 
     vm.registry()
         .function::<EchoValidation>()

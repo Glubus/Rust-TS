@@ -4,11 +4,11 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use serde_json::json;
-use ts_embed_vm::{
-    DeliveryMode, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsField,
-    TsType, TsVm, VmError, VmOptions, VmProcessMemoryStats, VmQuickJsMemoryStats, VmStats,
+use rustts::{
+    DeliveryMode, HostCallback, HostContract, HostContractKind, HostFunction, RustTs, Schema,
+    TsField, TsType, VmError, VmOptions, VmProcessMemoryStats, VmQuickJsMemoryStats, VmStats,
 };
+use serde_json::json;
 
 const BASIC_SCRIPT: &str = include_str!("../tests/projects/basic_math/main.ts");
 const EVENT_LISTENER_SCRIPT: &str = include_str!("../tests/projects/event_listener/main.ts");
@@ -16,7 +16,7 @@ const MANY_SMALL_SCRIPT_COUNT: usize = 400;
 const MEMORY_REPORT_SCRIPT_COUNTS: &[usize] = &[100, 400, 800, 1000];
 const MEMORY_REPORT_WORKER_THREADS: usize = 2;
 const MEMORY_REPORT_MEMORY_LIMIT_BYTES: usize = 128 * 1024 * 1024;
-const MEMORY_REPORT_CHILD_ENV: &str = "TSVM_MEMORY_REPORT_SCRIPT_COUNT";
+const MEMORY_REPORT_CHILD_ENV: &str = "RUSTTS_MEMORY_REPORT_SCRIPT_COUNT";
 const BYTES_PER_KIB: f64 = 1024.0;
 const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 
@@ -185,7 +185,7 @@ fn max_scripts_per_worker_for(script_count: usize) -> usize {
         .max(64)
 }
 
-fn load_many_small_scripts(vm: &TsVm, script_count: usize) {
+fn load_many_small_scripts(vm: &RustTs, script_count: usize) {
     for index in 0..script_count {
         vm.load_script(format!("script-{index}"), BASIC_SCRIPT)
             .expect("load small script");
@@ -480,12 +480,16 @@ impl HostCallback for BenchScoreUpdate {
     }
 }
 
-fn new_vm(label: &str) -> TsVm {
+fn new_vm(label: &str) -> RustTs {
     new_vm_with_capacity(label, 1, 64)
 }
 
-fn new_vm_with_capacity(label: &str, worker_threads: usize, max_scripts_per_worker: usize) -> TsVm {
-    TsVm::new(VmOptions {
+fn new_vm_with_capacity(
+    label: &str,
+    worker_threads: usize,
+    max_scripts_per_worker: usize,
+) -> RustTs {
+    RustTs::new(VmOptions {
         worker_threads,
         cache_dir: unique_cache_dir(label),
         max_scripts_per_worker,
@@ -494,8 +498,8 @@ fn new_vm_with_capacity(label: &str, worker_threads: usize, max_scripts_per_work
     .expect("create vm")
 }
 
-fn new_vm_for_memory_report(label: &str, script_count: usize) -> TsVm {
-    TsVm::new(VmOptions {
+fn new_vm_for_memory_report(label: &str, script_count: usize) -> RustTs {
+    RustTs::new(VmOptions {
         worker_threads: MEMORY_REPORT_WORKER_THREADS,
         cache_dir: unique_cache_dir(label),
         max_scripts_per_worker: max_scripts_per_worker_for(script_count),
@@ -510,7 +514,7 @@ fn unique_cache_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_nanos();
-    std::env::temp_dir().join(format!("ts-embed-vm-{label}-{nanos}"))
+    std::env::temp_dir().join(format!("rustts-{label}-{nanos}"))
 }
 
 criterion_group!(benches, runtime_benchmarks);

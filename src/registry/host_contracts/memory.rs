@@ -7,6 +7,7 @@ use std::future::Future;
 #[cfg(feature = "async-promise")]
 use std::pin::Pin;
 
+use rquickjs::{Ctx, Result as JsResult, Value as JsValue};
 use serde_json::Value;
 
 use super::bindings::FunctionBindingStore;
@@ -20,7 +21,7 @@ use crate::contract::AsyncHostFunction;
 use crate::contract::validation::{SchemaValidationOptions, validate_schema_with_options};
 use crate::contract::{
     HostCallback, HostContext, HostContractAbi, HostContractDescriptor, HostFunction,
-    HostFunctionDescriptor, HostFunctionExecution, TsSchema,
+    HostFunctionDescriptor, HostFunctionExecution, TsSchema, js_value_to_json, json_to_js_value,
 };
 use crate::error::VmError;
 use crate::sdk_files::{
@@ -204,6 +205,24 @@ impl InMemoryHostContractRegistry {
         Ok(Some(output))
     }
 
+    pub(crate) fn invoke_function_js<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        name: &str,
+        input: JsValue<'js>,
+    ) -> JsResult<Option<JsValue<'js>>> {
+        if self.validation.validates_inputs() || self.validation.validates_outputs() {
+            let input = js_value_to_json(ctx, input)?;
+            return self
+                .invoke_function(name, input)
+                .map_err(js_host_error)?
+                .map(|output| json_to_js_value(ctx, output))
+                .transpose();
+        }
+
+        self.function_bindings.invoke_js(ctx, name, input)
+    }
+
     #[cfg(feature = "async-promise")]
     pub(crate) fn invoke_function_async(
         &self,
@@ -359,7 +378,7 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         };
         descriptor.function = Some(function);
         self.insert_descriptor(descriptor)?;
-        self.function_bindings.insert_static::<T>()
+        self.function_bindings.insert_typed_static::<T>()
     }
 
     #[cfg(feature = "tokio")]
@@ -472,4 +491,8 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
     fn typescript_sdk(&self) -> Result<String, VmError> {
         Ok(render_typescript_sdk(&self.list()?))
     }
+}
+
+fn js_host_error(error: impl ToString) -> rquickjs::Error {
+    rquickjs::Error::new_from_js_message("host", "function", error.to_string())
 }

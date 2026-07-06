@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Function, Promise, promise::Promised};
-use serde_json::json;
-use ts_embed_vm::{
+use rustts::{
     AsyncHostFunction, AsyncScriptRuntime, HostContract, HostContractKind,
     InMemoryHostContractRegistry, Schema, TsType, VmError, VmOptions, install_async_host_bridge,
 };
+use serde_json::json;
 
 struct AsyncFindUser;
 

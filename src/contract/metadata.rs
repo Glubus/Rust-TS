@@ -102,6 +102,8 @@ pub enum TsType {
     String,
     /// Arbitrary JSON-compatible value.
     Json,
+    /// Native byte buffer exposed to TypeScript as `Uint8Array`.
+    Uint8Array,
     /// Null value.
     Null,
     /// Named TypeScript type reference.

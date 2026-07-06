@@ -31,6 +31,11 @@
   };
 
   const invokeHost = (contractName, args) => {
+    if (!returnsPromise && globalThis.__host.callValue) {
+      const payload = args.length <= 1 ? args[0] : args;
+      return globalThis.__host.callValue(contractName, payload === undefined ? null : payload);
+    }
+
     const response = globalThis.__host[bridgeMethod](contractName, hostPayload(args));
     if (returnsPromise) {
       return response.then((json) => JSON.parse(json));

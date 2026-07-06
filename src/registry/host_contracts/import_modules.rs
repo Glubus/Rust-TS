@@ -138,7 +138,7 @@ fn render_binding(binding: &HostModuleBinding) -> String {
             execution,
         } => render_function_binding(contract_name, *execution),
         HostModuleBinding::Callback { event_name } => {
-            format!("handler => globalThis.__tsvm_on({event_name:?}, handler)")
+            format!("handler => globalThis.__rustts_on({event_name:?}, handler)")
         }
         HostModuleBinding::Context { contract_name } => {
             format!("globalThis[{contract_name:?}]")
@@ -149,7 +149,9 @@ fn render_binding(binding: &HostModuleBinding) -> String {
 fn render_function_binding(contract_name: &str, execution: HostFunctionExecution) -> String {
     match execution {
         HostFunctionExecution::Sync | HostFunctionExecution::AsyncBlockingJs => {
-            format!("input => __hostOutput(__host.call({contract_name:?}, __hostInput(input)))")
+            format!(
+                "input => __host.callValue ? __host.callValue({contract_name:?}, input === undefined ? null : input) : __hostOutput(__host.call({contract_name:?}, __hostInput(input)))"
+            )
         }
         HostFunctionExecution::AsyncPromise => {
             format!(

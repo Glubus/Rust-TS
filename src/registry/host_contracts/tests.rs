@@ -358,7 +358,7 @@ fn sdk_generates_function_wrapper_from_contract_model() {
     assert!(sdk.contains("export const user = {"));
     assert!(sdk.contains("find(input: FindUserInput): FindUserOutput"));
     assert!(sdk.contains("return __hostCall<FindUserOutput>(\"user.find\", input);"));
-    assert!(sdk.contains("export const tsvmSdk = {"));
+    assert!(sdk.contains("export const rusttsSdk = {"));
     assert!(sdk.contains("functions: {"));
     assert!(sdk.contains("user,"));
 }
@@ -377,7 +377,7 @@ fn sdk_generates_event_wrapper_from_callback_contracts() {
     assert!(sdk.contains("export const events = {"));
     assert!(sdk.contains("callback(handler: HostEventHandler<\"demo.callback\">): void"));
     assert!(sdk.contains("return __ctx.on(\"demo.callback\", handler);"));
-    assert!(sdk.contains("export const tsvmSdk = {"));
+    assert!(sdk.contains("export const rusttsSdk = {"));
     assert!(sdk.contains("events,"));
     assert!(sdk.contains("ctx,"));
 }
@@ -457,5 +457,5 @@ fn sdk_renders_promise_return_only_for_async_promise_contracts() {
     assert!(sdk.contains("async function __hostCallAsync<T>"));
     assert!(sdk.contains("find(input: FindUserInput): Promise<FindUserOutput>"));
     assert!(sdk.contains("return __hostCallAsync<FindUserOutput>(\"user.find\", input);"));
-    assert!(sdk.contains("export const tsvmSdk = {"));
+    assert!(sdk.contains("export const rusttsSdk = {"));
 }

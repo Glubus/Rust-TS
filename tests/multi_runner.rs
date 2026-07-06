@@ -1,7 +1,7 @@
 mod support;
 
+use rustts::{HostCallback, HostContract, HostContractKind, RustTs, Schema, TsField, TsType};
 use serde_json::json;
-use ts_embed_vm::{HostCallback, HostContract, HostContractKind, Schema, TsField, TsType, TsVm};
 
 use support::TestCacheDir;
 
@@ -36,7 +36,7 @@ fn distinct_scripts_are_distributed_across_workers() {
     let cache_dir = TestCacheDir::new("multi-runner-distribution");
     let mut options = cache_dir.vm_options();
     options.worker_threads = 2;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
 
     let first = vm.load_script("alpha", DEMO_SCRIPT).expect("load alpha");
     let second = vm.load_script("beta", DEMO_SCRIPT).expect("load beta");
@@ -56,7 +56,7 @@ fn reloading_same_script_keeps_preferred_worker_affinity() {
     let cache_dir = TestCacheDir::new("reload-worker-affinity");
     let mut options = cache_dir.vm_options();
     options.worker_threads = 2;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
 
     let first = vm.load_script("alpha", DEMO_SCRIPT).expect("load alpha");
     vm.unload_script("alpha").expect("unload alpha");
@@ -74,7 +74,7 @@ fn many_scripts_across_runners_keep_hot_routes_and_calls_working() {
     options.worker_threads = 2;
     options.max_scripts_per_worker = 80;
     options.queue_capacity = 256;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
     vm.registry()
         .callback::<ScoreUpdate>()
         .expect("register score update callback");

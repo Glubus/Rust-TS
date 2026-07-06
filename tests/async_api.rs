@@ -2,12 +2,12 @@
 
 mod support;
 
+use rustts::{
+    AsyncHostFunction, HostContract, HostContractKind, HostFunctionExecution, RustTs, Schema,
+    TsType, VmError,
+};
 use serde_json::json;
 use support::TestCacheDir;
-use ts_embed_vm::{
-    AsyncHostFunction, HostContract, HostContractKind, HostFunctionExecution, Schema, TsType, TsVm,
-    VmError,
-};
 
 const BASIC_SCRIPT: &str = include_str!("projects/basic_math/main.ts");
 const ASYNC_HOST_BRIDGE_SCRIPT: &str = include_str!("projects/async_host_bridge/main.ts");
@@ -52,7 +52,7 @@ fn tokio_async_api_loads_and_calls_script() {
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("tokio-async-api");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
         vm.load_script_async("math", BASIC_SCRIPT)
             .await
@@ -77,7 +77,7 @@ fn tokio_async_host_function_is_callable_from_script() {
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("tokio-async-host-function");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
         vm.registry()
             .async_function::<AsyncFindUser>()

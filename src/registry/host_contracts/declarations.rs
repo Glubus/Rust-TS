@@ -211,6 +211,7 @@ pub(super) fn render_ts_type(ty: &TsType) -> String {
         TsType::Number => String::from("number"),
         TsType::String => String::from("string"),
         TsType::Json => String::from("unknown"),
+        TsType::Uint8Array => String::from("Uint8Array"),
         TsType::Null => String::from("null"),
         TsType::TypeRef(name) => name.clone(),
         TsType::Literal(literal) => render_literal(literal),

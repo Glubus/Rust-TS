@@ -3,12 +3,12 @@ mod support;
 use std::fs;
 use std::path::Path;
 
-use serde_json::json;
-use ts_embed_vm::{
-    HostCallback, HostContract, HostContractKind, HostFunction, RuntimeExecutionLane,
-    RuntimeMaterializationState, Schema, ScriptMaterializationState, ScriptRetentionPolicy,
-    ScriptSourceKind, TsType, TsVm, VmError, VmEvent,
+use rustts::{
+    HostCallback, HostContract, HostContractKind, HostFunction, NativeBytes, RuntimeExecutionLane,
+    RuntimeMaterializationState, RustTs, Schema, ScriptMaterializationState, ScriptRetentionPolicy,
+    ScriptSourceKind, TsSchema, TsType, VmError, VmEvent,
 };
+use serde_json::json;
 
 use support::TestCacheDir;
 
@@ -58,6 +58,7 @@ const THROWING_SCRIPT: &str = include_str!("projects/throwing/main.ts");
 struct FindUser;
 struct FindInvoice;
 struct ScoreUpdate;
+struct ReadNativeBytes;
 
 impl HostContract for FindUser {
     const NAME: &'static str = "user.find";
@@ -113,6 +114,39 @@ impl HostFunction for FindInvoice {
     }
 }
 
+impl HostContract for ReadNativeBytes {
+    const NAME: &'static str = "bench.bytes.native";
+
+    fn schema() -> Schema {
+        Schema::typed("ReadNativeBytesInput", TsType::Json)
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Function
+    }
+}
+
+impl HostFunction for ReadNativeBytes {
+    type Input = serde_json::Value;
+    type Output = NativeBytes;
+
+    fn output_schema() -> Schema {
+        NativeBytes::schema()
+    }
+
+    fn call(input: Self::Input) -> Result<Self::Output, VmError> {
+        let byte_count = input
+            .get("byteCount")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize;
+        Ok(NativeBytes::new(make_test_bytes(byte_count)))
+    }
+}
+
+fn make_test_bytes(byte_count: usize) -> Vec<u8> {
+    (0..byte_count).map(|index| (index % 251) as u8).collect()
+}
+
 impl HostContract for ScoreUpdate {
     const NAME: &'static str = "score.update";
     const IMPORT_MODULE: &'static str = "test";
@@ -134,7 +168,7 @@ impl HostCallback for ScoreUpdate {
 #[test]
 fn load_call_unload_emits_expected_events() {
     let cache_dir = TestCacheDir::new("load-call-unload");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     let subscription = vm.subscribe();
 
     let snapshot = vm.load_script("math", DEMO_SCRIPT).expect("load script");
@@ -178,7 +212,7 @@ fn load_call_unload_emits_expected_events() {
 #[test]
 fn cache_artifact_is_reused_for_same_source() {
     let cache_dir = TestCacheDir::new("cache-reuse");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     let first = vm
         .load_script("math-a", DEMO_SCRIPT)
@@ -200,7 +234,7 @@ fn cache_artifact_is_reused_for_same_source() {
 #[test]
 fn describe_script_tracks_inline_lifecycle_state() {
     let cache_dir = TestCacheDir::new("describe-inline-script");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script("math", DEMO_SCRIPT).expect("load script");
     let mounted = vm
@@ -224,7 +258,7 @@ fn describe_script_tracks_inline_lifecycle_state() {
 #[test]
 fn list_scripts_returns_registered_entries_sorted() {
     let cache_dir = TestCacheDir::new("list-scripts");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script_project("project", MULTI_MODULE_ENTRY)
         .expect("load project script");
@@ -250,7 +284,7 @@ fn list_scripts_returns_registered_entries_sorted() {
 #[test]
 fn runtime_snapshot_exposes_routes_retention_and_module_graph() {
     let cache_dir = TestCacheDir::new("runtime-snapshot");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     vm.registry()
         .callback::<ScoreUpdate>()
         .expect("register score update callback");
@@ -348,7 +382,7 @@ fn runtime_snapshot_exposes_routes_retention_and_module_graph() {
 #[test]
 fn stats_track_multiple_scripts_on_same_vm() {
     let cache_dir = TestCacheDir::new("multi-script-stats");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script("math-a", DEMO_SCRIPT)
         .expect("load first script");
@@ -374,7 +408,7 @@ fn stats_track_multiple_scripts_on_same_vm() {
 #[test]
 fn calling_after_unload_returns_not_found() {
     let cache_dir = TestCacheDir::new("call-after-unload");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script("math", DEMO_SCRIPT).expect("load script");
     vm.unload_script("math").expect("unload script");
@@ -394,7 +428,7 @@ fn calling_after_unload_returns_not_found() {
 #[test]
 fn javascript_errors_include_message_and_stack() {
     let cache_dir = TestCacheDir::new("js-error-details");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script("throwing", THROWING_SCRIPT)
         .expect("load throwing script");
@@ -414,7 +448,7 @@ fn javascript_errors_include_message_and_stack() {
 #[test]
 fn demount_when_idle_unloads_after_call() {
     let cache_dir = TestCacheDir::new("demount-when-idle");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     let subscription = vm.subscribe();
 
     vm.load_script_with_policy("math", DEMO_SCRIPT, ScriptRetentionPolicy::DemountWhenIdle)
@@ -448,7 +482,7 @@ fn demount_when_idle_unloads_after_call() {
 #[test]
 fn dependency_ref_keeps_demount_when_idle_script_mounted() {
     let cache_dir = TestCacheDir::new("dependency-ref-lifecycle");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script_with_policy("math", DEMO_SCRIPT, ScriptRetentionPolicy::DemountWhenIdle)
         .expect("load retained script");
@@ -479,7 +513,7 @@ fn dependency_ref_keeps_demount_when_idle_script_mounted() {
 #[test]
 fn dependency_edge_keeps_dependency_script_mounted() {
     let cache_dir = TestCacheDir::new("dependency-edge-lifecycle");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script("consumer", VERSION_SCRIPT)
         .expect("load consumer script");
@@ -517,7 +551,7 @@ fn dependency_edge_keeps_dependency_script_mounted() {
 #[test]
 fn call_function_once_executes_and_releases_script() {
     let cache_dir = TestCacheDir::new("call-function-once");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     let subscription = vm.subscribe();
 
     let result = vm
@@ -561,7 +595,7 @@ fn call_function_once_executes_and_releases_script() {
 #[test]
 fn script_can_call_registered_host_function() {
     let cache_dir = TestCacheDir::new("host-function-bridge");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     vm.registry()
         .function::<FindUser>()
         .expect("register host function");
@@ -580,7 +614,7 @@ fn script_can_call_registered_host_function() {
 #[test]
 fn host_function_bridge_uses_imported_namespace_resolution() {
     let cache_dir = TestCacheDir::new("lazy-host-function-bridge");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     vm.registry()
         .function::<FindUser>()
         .and_then(|registry| registry.function::<FindInvoice>())
@@ -605,9 +639,79 @@ fn host_function_bridge_uses_imported_namespace_resolution() {
 }
 
 #[test]
+fn typed_host_function_can_return_native_bytes_as_uint8array() {
+    const SCRIPT: &str = r#"
+export function inspectNativeBytes(byteCount: number) {
+  const bytes = (globalThis as any).__host.callValue("bench.bytes.native", { byteCount });
+  return {
+    isView: ArrayBuffer.isView(bytes),
+    constructorName: bytes.constructor.name,
+    length: bytes.length,
+    first: bytes[0],
+    fourth: bytes[3],
+    sampled: bytes[0] + bytes[4096],
+  };
+}
+
+export function inspectJsonFallback(byteCount: number) {
+  const bytes = JSON.parse((globalThis as any).__host.call(
+    "bench.bytes.native",
+    JSON.stringify({ byteCount }),
+  ));
+  return {
+    isArray: Array.isArray(bytes),
+    length: bytes.length,
+    first: bytes[0],
+    fourth: bytes[3],
+  };
+}
+"#;
+
+    let cache_dir = TestCacheDir::new("native-bytes-host-bridge");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    vm.registry()
+        .typed_function::<ReadNativeBytes>()
+        .expect("register native bytes host function");
+    let declarations = vm.registry().types().expect("render declarations");
+    assert!(declarations.contains("type NativeBytes = Uint8Array;"));
+
+    vm.load_script("native-bytes", SCRIPT)
+        .expect("load native bytes script");
+    let native = vm
+        .call_function("native-bytes", "inspectNativeBytes", vec![json!(8192)])
+        .expect("inspect native bytes");
+    let fallback = vm
+        .call_function("native-bytes", "inspectJsonFallback", vec![json!(8)])
+        .expect("inspect json fallback");
+
+    vm.shutdown().expect("shutdown vm");
+
+    assert_eq!(
+        native,
+        json!({
+            "isView": true,
+            "constructorName": "Uint8Array",
+            "length": 8192,
+            "first": 0,
+            "fourth": 3,
+            "sampled": 80,
+        })
+    );
+    assert_eq!(
+        fallback,
+        json!({
+            "isArray": true,
+            "length": 8,
+            "first": 0,
+            "fourth": 3,
+        })
+    );
+}
+
+#[test]
 fn load_script_project_resolves_relative_imports() {
     let cache_dir = TestCacheDir::new("load-script-project");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     let snapshot = vm
         .load_script_project("project", MULTI_MODULE_ENTRY)
@@ -642,7 +746,7 @@ fn load_script_project_resolves_relative_imports() {
 #[test]
 fn load_script_project_resolves_index_modules() {
     let cache_dir = TestCacheDir::new("load-script-project-index");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script_project("project", INDEX_MODULE_ENTRY)
         .expect("load project with index modules");
@@ -658,7 +762,7 @@ fn load_script_project_resolves_index_modules() {
 #[test]
 fn load_script_project_executes_native_esm_import_forms() {
     let cache_dir = TestCacheDir::new("load-script-project-esm-forms");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script_project("project", ESM_FORMS_ENTRY)
         .expect("load project with native ESM forms");
@@ -678,7 +782,7 @@ fn load_script_project_executes_native_esm_import_forms() {
 #[test]
 fn load_script_project_isolates_module_state_between_scripts() {
     let cache_dir = TestCacheDir::new("project-module-state-isolation");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script_project("project-a", STATEFUL_PROJECT_ENTRY)
         .expect("load first stateful project");
@@ -704,7 +808,7 @@ fn load_script_project_isolates_module_state_between_scripts() {
 #[test]
 fn load_script_project_reload_resets_module_state_for_same_script_id() {
     let cache_dir = TestCacheDir::new("project-module-state-reload");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script_project("project", STATEFUL_PROJECT_ENTRY)
         .expect("load stateful project");
@@ -730,7 +834,7 @@ fn load_script_project_reload_resets_module_state_for_same_script_id() {
 #[test]
 fn load_script_project_ignores_type_only_module_references() {
     let cache_dir = TestCacheDir::new("load-script-project-type-only");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script_project("project", TYPE_ONLY_RUNTIME_ENTRY)
         .expect("load project with missing type-only modules");
@@ -746,7 +850,7 @@ fn load_script_project_ignores_type_only_module_references() {
 #[test]
 fn load_script_project_resolves_tsconfig_aliases() {
     let cache_dir = TestCacheDir::new("load-script-project-tsconfig-alias");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script_project("project", TSCONFIG_ALIAS_ENTRY)
         .expect("load project with tsconfig aliases");
@@ -768,7 +872,7 @@ fn load_script_project_resolves_tsconfig_aliases() {
 #[test]
 fn load_script_project_resolves_package_imports_from_local_node_modules() {
     let cache_dir = TestCacheDir::new("load-script-project-package-import");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.load_script_project("project", PACKAGE_IMPORT_ENTRY)
         .expect("load project with package import");
@@ -786,7 +890,7 @@ fn load_script_project_resolves_package_imports_from_local_node_modules() {
 #[test]
 fn load_script_project_reuses_module_graph_cache_for_same_project() {
     let cache_dir = TestCacheDir::new("project-cache-reuse");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     let first = vm
         .load_script_project("project-a", MULTI_MODULE_ENTRY)
@@ -806,7 +910,7 @@ fn load_script_project_reuses_module_graph_cache_for_same_project() {
 #[test]
 fn load_script_project_invalidates_cache_when_dependency_changes() {
     let cache_dir = TestCacheDir::new("project-cache-invalidation");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     let project_root = cache_dir.path().join("project");
     let src_dir = project_root.join("src");
     let entry_path = project_root.join("main.ts");
@@ -850,7 +954,7 @@ fn load_script_project_invalidates_cache_when_dependency_changes() {
 #[test]
 fn load_script_project_invalidates_cache_when_package_manifest_changes() {
     let cache_dir = TestCacheDir::new("project-package-cache-invalidation");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     let project_root = cache_dir.path().join("project");
     let package_dir = project_root.join("node_modules").join("demo-pkg");
     let entry_path = project_root.join("main.ts");
@@ -896,7 +1000,7 @@ fn load_script_project_invalidates_cache_when_package_manifest_changes() {
 #[test]
 fn load_script_project_rejects_unresolved_package_imports() {
     let cache_dir = TestCacheDir::new("project-bare-import");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     let error = vm
         .load_script_project("project", INVALID_BARE_IMPORT_ENTRY)
@@ -914,7 +1018,7 @@ fn load_script_project_rejects_unresolved_package_imports() {
 #[test]
 fn load_script_project_rejects_dynamic_imports() {
     let cache_dir = TestCacheDir::new("project-dynamic-import");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     let error = vm
         .load_script_project("project", DYNAMIC_IMPORT_ENTRY)
@@ -932,7 +1036,7 @@ fn load_script_project_rejects_dynamic_imports() {
 #[test]
 fn load_script_rejects_dynamic_imports_before_cache_lookup() {
     let cache_dir = TestCacheDir::new("inline-dynamic-import");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     let error = vm
         .load_script(
@@ -957,7 +1061,7 @@ fn load_script_rejects_dynamic_imports_before_cache_lookup() {
 #[test]
 fn call_function_once_project_executes_and_releases_module_graph() {
     let cache_dir = TestCacheDir::new("call-function-once-project");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     let result = vm
         .call_function_once_project(

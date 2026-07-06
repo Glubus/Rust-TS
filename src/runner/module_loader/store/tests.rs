@@ -27,12 +27,12 @@ fn project_graph_uses_runtime_scoped_module_ids() {
         )
         .expect("insert project graph");
 
-    assert_eq!(graph.entry_module_id, "tsvm://graph/7//app/main.ts");
+    assert_eq!(graph.entry_module_id, "rustts://graph/7//app/main.ts");
     assert_eq!(graph.module_ids.len(), 2);
     let resolved = store
-        .resolve("tsvm://graph/7//app/main.ts", "./dep")
+        .resolve("rustts://graph/7//app/main.ts", "./dep")
         .expect("resolve runtime module");
-    assert_eq!(resolved, "tsvm://graph/7//app/dep.ts");
+    assert_eq!(resolved, "rustts://graph/7//app/dep.ts");
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn removing_graph_clears_sources_and_resolutions() {
         .expect("remove graph modules");
 
     let error = store
-        .resolve("tsvm://graph/7//app/main.ts", "./dep")
+        .resolve("rustts://graph/7//app/main.ts", "./dep")
         .expect_err("graph resolution removed");
     assert!(matches!(error, rquickjs::Error::Resolving { .. }));
 }

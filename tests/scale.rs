@@ -1,7 +1,7 @@
 mod support;
 
+use rustts::{HostCallback, HostContract, HostContractKind, RustTs, Schema, TsField, TsType};
 use serde_json::json;
-use ts_embed_vm::{HostCallback, HostContract, HostContractKind, Schema, TsField, TsType, TsVm};
 
 use support::TestCacheDir;
 
@@ -38,7 +38,7 @@ fn mounts_400_small_scripts_on_two_runners_and_keeps_hot_routes() {
     options.worker_threads = 2;
     options.max_scripts_per_worker = 256;
     options.queue_capacity = 512;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
     vm.registry()
         .callback::<ScoreUpdate>()
         .expect("register score update callback");

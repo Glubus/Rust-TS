@@ -5,11 +5,11 @@ mod support;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use serde_json::json;
-use ts_embed_vm::{
-    AsyncHostFunction, HostContract, HostContractKind, RuntimeExecutionLane, Schema,
-    ScriptMaterializationState, TsType, TsVm, VmError, VmEvent,
+use rustts::{
+    AsyncHostFunction, HostCallback, HostContract, HostContractKind, RuntimeExecutionLane, RustTs,
+    Schema, ScriptMaterializationState, TsType, VmError, VmEvent,
 };
+use serde_json::json;
 
 use support::TestCacheDir;
 
@@ -69,6 +69,32 @@ static MAX_ACTIVE_SLOW_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 struct AsyncFindUser;
 struct AsyncSlowFindUser;
+struct ScoreUpdate;
+
+impl HostContract for ScoreUpdate {
+    const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
+
+    fn schema() -> Schema {
+        Schema::typed(
+            "ScoreUpdatePayload",
+            TsType::Object(vec![rustts::TsField {
+                name: String::from("combo"),
+                ty: TsType::Number,
+                optional: false,
+            }]),
+        )
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Callback
+    }
+}
+
+impl HostCallback for ScoreUpdate {
+    type Payload = serde_json::Value;
+}
 
 impl HostContract for AsyncFindUser {
     const NAME: &'static str = "user.find";
@@ -161,7 +187,7 @@ fn manager_compiles_caches_and_loads_async_worker_lane_script() {
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("async-promise-manager");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
         let subscription = vm.subscribe();
         vm.registry()
             .async_promise_function::<AsyncFindUser>()
@@ -199,7 +225,7 @@ fn manager_compiles_caches_and_loads_async_worker_lane_script() {
             loaded_event,
             VmEvent::AsyncScriptLoaded {
                 script_id: String::from("async-ts"),
-                source_kind: ts_embed_vm::ScriptSourceKind::Inline,
+                source_kind: rustts::ScriptSourceKind::Inline,
                 cache_key: script.cache_key().to_owned(),
             }
         );
@@ -248,7 +274,7 @@ fn manager_compiles_caches_and_loads_async_worker_lane_project() {
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("async-promise-manager-project");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
         let subscription = vm.subscribe();
         vm.registry()
             .async_promise_function::<AsyncFindUser>()
@@ -292,7 +318,7 @@ fn manager_compiles_caches_and_loads_async_worker_lane_project() {
             loaded_event,
             VmEvent::AsyncScriptLoaded {
                 script_id: String::from("async-project"),
-                source_kind: ts_embed_vm::ScriptSourceKind::Project,
+                source_kind: rustts::ScriptSourceKind::Project,
                 cache_key: script.cache_key().to_owned(),
             }
         );
@@ -343,7 +369,7 @@ fn realistic_async_mod_pack_uses_host_promises_events_state_and_graphs() {
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("realistic-async-mod-pack");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
         vm.registry()
             .async_promise_function::<AsyncFindUser>()
             .expect("register async promise function");
@@ -418,7 +444,7 @@ fn manager_distributes_async_scripts_across_async_worker_lanes() {
         let cache_dir = TestCacheDir::new("async-promise-worker-lanes");
         let mut options = cache_dir.vm_options();
         options.worker_threads = 2;
-        let vm = TsVm::new(options).expect("create vm");
+        let vm = RustTs::new(options).expect("create vm");
         vm.registry()
             .async_promise_function::<AsyncFindUser>()
             .expect("register async promise function");
@@ -457,7 +483,7 @@ fn manager_routes_host_events_to_async_worker_lane_subscriptions() {
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("async-promise-event-routing");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
         vm.registry()
             .async_promise_function::<AsyncFindUser>()
             .expect("register async promise function");
@@ -530,7 +556,7 @@ fn async_worker_lane_host_promises_run_concurrently() {
     runtime.block_on(async {
         reset_slow_call_counters();
         let cache_dir = TestCacheDir::new("async-promise-concurrent-host-calls");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
         vm.registry()
             .async_promise_function::<AsyncSlowFindUser>()
             .expect("register slow async promise function");
@@ -562,7 +588,10 @@ fn emit_async_routes_to_sync_and_async_worker_lanes() {
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("async-promise-mixed-event-routing");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+        vm.registry()
+            .callback::<ScoreUpdate>()
+            .expect("register score callback");
 
         vm.load_script("sync-listener", SYNC_EVENT_SCRIPT)
             .expect("load sync listener");
@@ -601,7 +630,7 @@ fn async_managed_script_can_be_called_from_tokio_spawned_task() {
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("async-promise-send-handle");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
         vm.registry()
             .async_promise_function::<AsyncFindUser>()
             .expect("register async promise function");
@@ -630,7 +659,7 @@ fn dropping_stale_async_handle_does_not_demount_newer_same_id_entry() {
 
     runtime.block_on(async {
         let cache_dir = TestCacheDir::new("async-promise-stale-drop");
-        let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
         vm.registry()
             .async_promise_function::<AsyncFindUser>()
             .expect("register async promise function");

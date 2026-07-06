@@ -1,9 +1,9 @@
-use ts_embed_vm::{TsVm, VmOptions};
+use rustts::{RustTs, VmOptions};
 
 const DEMO_SCRIPT: &str = include_str!("../../assets/demo_math.ts");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let vm = TsVm::new(VmOptions {
+    let vm = RustTs::new(VmOptions {
         worker_threads: 0,
         ..VmOptions::default()
     })?;

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-use ts_embed_vm::{
+use rustts::{
     HostContract, HostContractKind, HostFunction, InMemoryHostContractRegistry, Schema, TsField,
     TsSchema, TsType, VmError,
 };
+use serde::{Deserialize, Serialize};
 
 struct FindUsers;
 
