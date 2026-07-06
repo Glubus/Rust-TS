@@ -1,11 +1,6 @@
----
-title: Welcome
-sidebar_position: 1
----
+# RustTS
 
-# ts-embed-vm
-
-`ts-embed-vm` lets a Rust application embed TypeScript scripts, expose Rust host
+`RustTS` lets a Rust application embed TypeScript scripts, expose Rust host
 APIs to those scripts, and generate TypeScript declarations plus a small SDK from
 the Rust-side contract registry.
 
@@ -17,7 +12,8 @@ The short version:
 - Scripts subscribe to callbacks with `ctx.on("user.found", ...)`, generated
   event wrappers such as `events.user.found(...)`, or friendly domain aliases
   such as `user.onFound(...)`.
-- The generated files are regular TypeScript: `tsvm.d.ts` and `tsvm.sdk.ts`.
+- The generated files are regular TypeScript. The host application chooses the
+  file names, for example `my_sdk.d.ts` and `my_sdk.ts`.
 
 ## What You Can Build
 
