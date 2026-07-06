@@ -28,6 +28,7 @@ pub(crate) struct ProjectCompileOutput {
 pub(crate) fn compile_project(
     compiler: &mut CompilerService,
     entry_path: &Path,
+    external_modules: &BTreeSet<String>,
 ) -> Result<ProjectCompileOutput, VmError> {
     let entry_path = normalize_entry_path(entry_path)?;
     let resolver = ModuleResolver::for_entry(&entry_path)?;
@@ -37,6 +38,7 @@ pub(crate) fn compile_project(
         compiler,
         &resolver,
         &entry_path,
+        external_modules,
         &mut visited,
         &mut cache_parts,
     )?;
@@ -57,6 +59,7 @@ fn compile_module_recursive(
     compiler: &mut CompilerService,
     resolver: &ModuleResolver,
     path: &Path,
+    external_modules: &BTreeSet<String>,
     visited: &mut BTreeMap<PathBuf, CompiledModule>,
     cache_parts: &mut Vec<(String, String)>,
 ) -> Result<(), VmError> {
@@ -73,6 +76,10 @@ fn compile_module_recursive(
     let mut dependencies = BTreeSet::<PathBuf>::new();
 
     for request in requests {
+        if external_modules.contains(&request) {
+            resolved_requests.insert(request.clone(), request);
+            continue;
+        }
         let resolved_path = resolver.resolve_request(path, &request)?;
         resolved_requests.insert(request, module_id(&resolved_path)?);
         dependencies.insert(resolved_path);
@@ -88,7 +95,14 @@ fn compile_module_recursive(
     );
 
     for dependency in dependencies {
-        compile_module_recursive(compiler, resolver, &dependency, visited, cache_parts)?;
+        compile_module_recursive(
+            compiler,
+            resolver,
+            &dependency,
+            external_modules,
+            visited,
+            cache_parts,
+        )?;
     }
 
     Ok(())

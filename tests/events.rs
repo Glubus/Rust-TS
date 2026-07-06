@@ -22,6 +22,8 @@ struct FirstScoreUpdate;
 
 impl HostContract for ScoreUpdate {
     const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
 
     fn schema() -> Schema {
         Schema::typed(
@@ -41,6 +43,8 @@ impl HostCallback for ScoreUpdate {
 
 impl HostContract for FirstScoreUpdate {
     const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
 
     fn schema() -> Schema {
         ScoreUpdate::schema()
@@ -59,10 +63,17 @@ impl HostCallback for FirstScoreUpdate {
     }
 }
 
+fn register_score_update(vm: &TsVm) {
+    vm.registry()
+        .callback::<ScoreUpdate>()
+        .expect("register score update callback");
+}
+
 #[test]
 fn emit_callback_updates_script_state() {
     let cache_dir = TestCacheDir::new("emit-callback");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
         .expect("load listener");
@@ -88,6 +99,7 @@ fn emit_callback_updates_script_state() {
 fn emit_publishes_lifecycle_event() {
     let cache_dir = TestCacheDir::new("emit-event-stream");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    register_score_update(&vm);
     let subscription = vm.subscribe();
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
@@ -112,6 +124,7 @@ fn emit_publishes_lifecycle_event() {
 fn emit_targets_only_subscribed_scripts() {
     let cache_dir = TestCacheDir::new("emit-targeted-routing");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
         .expect("load listener");
@@ -139,6 +152,9 @@ fn emit_targets_only_subscribed_scripts() {
 fn typed_callback_delivery_first_targets_one_script() {
     let cache_dir = TestCacheDir::new("emit-first-callback");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    vm.registry()
+        .callback::<FirstScoreUpdate>()
+        .expect("register first score update callback");
 
     vm.load_script("listener-a", EVENT_LISTENER_SCRIPT)
         .expect("load first listener");
@@ -158,6 +174,7 @@ fn typed_callback_delivery_first_targets_one_script() {
 fn stats_expose_manager_latency_counters() {
     let cache_dir = TestCacheDir::new("manager-latency-counters");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
         .expect("load listener");
@@ -208,6 +225,7 @@ fn stats_expose_latency_histograms_when_enabled() {
     let mut options = cache_dir.vm_options();
     options.latency_histograms = true;
     let vm = TsVm::new(options).expect("create vm");
+    register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
         .expect("load listener");
@@ -231,6 +249,7 @@ fn stats_expose_latency_histograms_when_enabled() {
 fn stats_expose_memory_shape_counters() {
     let cache_dir = TestCacheDir::new("memory-shape-counters");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
         .expect("load listener");
@@ -256,6 +275,7 @@ fn stats_classify_quickjs_memory_pressure_when_thresholds_are_configured() {
     options.memory_pressure_thresholds =
         Some(VmMemoryPressureThresholds::from_basis_points(0, u64::MAX));
     let vm = TsVm::new(options).expect("create vm");
+    register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
         .expect("load listener");
@@ -276,6 +296,7 @@ fn stats_classify_quickjs_memory_pressure_when_thresholds_are_configured() {
 fn stats_leave_quickjs_memory_pressure_alert_disabled_by_default() {
     let cache_dir = TestCacheDir::new("memory-pressure-thresholds-disabled");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
         .expect("load listener");

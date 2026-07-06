@@ -3,9 +3,10 @@ import { addScore, currentScore, resetScore } from "@core/score";
 import { createInvoiceLabel } from "@economy/invoice";
 import { sessionSnapshot, tickSession } from "@state/session";
 import { overlayState, pushOverlayMessage } from "@ui/overlay";
+import { score } from "test";
 import type { DamageEvent } from "./types";
 
-ctx.on("score.update", event => {
+score.onUpdate(event => {
   tickSession();
   addScore(event.combo);
   pushOverlayMessage(`combo:${event.combo}`);

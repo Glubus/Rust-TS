@@ -53,7 +53,8 @@ impl ScriptManager {
             .compiler
             .lock()
             .map_err(|_| VmError::WorkerPanicked)?;
-        let project = compiler.compile_project(entry_path)?;
+        let external_modules = self.inner.host_contract_registry.import_module_names()?;
+        let project = compiler.compile_project(entry_path, &external_modules)?;
         let host_abi = self.inner.host_contract_registry.cache_abi_seed()?;
         let cache_identity = CacheIdentity::project(&project.cache_seed, &host_abi);
         let cache_key = self.inner.cache.cache_key(&cache_identity)?;

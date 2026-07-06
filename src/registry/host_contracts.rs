@@ -2,6 +2,7 @@
 
 mod bindings;
 mod declarations;
+mod import_modules;
 mod interface;
 mod memory;
 mod sdk;

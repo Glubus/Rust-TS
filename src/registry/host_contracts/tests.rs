@@ -4,8 +4,8 @@ use super::{HostContractRegistry, InMemoryHostContractRegistry};
 use crate::contract::{
     HostCallback, HostCallbackDescriptor, HostContext, HostContract, HostContractAbi,
     HostContractDescriptor, HostContractKind, HostFunction, HostFunctionDescriptor,
-    HostFunctionExecution, HostMetadata, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey,
-    TsType,
+    HostFunctionExecution, HostImportBinding, HostMetadata, Schema, TsEnumVariant, TsField,
+    TsLiteral, TsRecordKey, TsType,
 };
 use crate::error::VmError;
 
@@ -16,6 +16,8 @@ struct DemoContext;
 
 impl HostContract for DemoFunction {
     const NAME: &'static str = "demo.function";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["demo", "function"];
 
     fn schema() -> Schema {
         Schema::typed("DemoFunctionInput", TsType::Void)
@@ -44,6 +46,8 @@ impl HostFunction for DemoFunction {
 
 impl HostContract for GeneratedFunction {
     const NAME: &'static str = "user.find";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
     fn schema() -> Schema {
         Schema::typed("FindUserInput", TsType::Number)
@@ -69,6 +73,8 @@ impl HostFunction for GeneratedFunction {
 
 impl HostContract for DemoCallback {
     const NAME: &'static str = "demo.callback";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["demo", "callback"];
 
     fn schema() -> Schema {
         Schema::typed(
@@ -88,6 +94,8 @@ impl HostCallback for DemoCallback {
 
 impl HostContract for DemoContext {
     const NAME: &'static str = "demo.context";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["demo", "context"];
 
     fn schema() -> Schema {
         Schema::typed(
@@ -220,6 +228,8 @@ struct ComplexGeneratedFunction;
 
 impl HostContract for ComplexGeneratedFunction {
     const NAME: &'static str = "billing.invoice.create";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["billing", "invoice", "create"];
 
     fn schema() -> Schema {
         Schema::typed(
@@ -390,6 +400,10 @@ fn dts_renders_promise_return_only_for_async_promise_contracts() {
             name: String::from("user.find"),
             tags: Vec::new(),
         },
+        import: HostImportBinding {
+            module: String::from("test"),
+            export_path: vec![String::from("user"), String::from("find")],
+        },
         callback: Option::<HostCallbackDescriptor>::None,
         function: Some(HostFunctionDescriptor {
             input_schema: Schema::typed("FindUserInput", TsType::Number),
@@ -420,6 +434,10 @@ fn sdk_renders_promise_return_only_for_async_promise_contracts() {
         metadata: HostMetadata {
             name: String::from("user.find"),
             tags: Vec::new(),
+        },
+        import: HostImportBinding {
+            module: String::from("test"),
+            export_path: vec![String::from("user"), String::from("find")],
         },
         callback: Option::<HostCallbackDescriptor>::None,
         function: Some(HostFunctionDescriptor {

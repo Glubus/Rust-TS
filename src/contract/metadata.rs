@@ -227,6 +227,15 @@ pub struct HostMetadata {
     pub tags: Vec<String>,
 }
 
+/// ESM import binding exposed by the host module loader.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostImportBinding {
+    /// Virtual ESM module name, such as `"oppw4"`.
+    pub module: String,
+    /// Export path inside the module, such as `["character", "find"]`.
+    pub export_path: Vec<String>,
+}
+
 /// Top-level contract category.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum HostContractKind {
@@ -249,6 +258,8 @@ pub struct HostContractDescriptor {
     pub schema: Schema,
     /// Extra metadata.
     pub metadata: HostMetadata,
+    /// Required ESM import binding for scripts.
+    pub import: HostImportBinding,
     /// Callback-specific routing metadata.
     pub callback: Option<HostCallbackDescriptor>,
     /// Function-specific call metadata.

@@ -7,11 +7,8 @@ use rquickjs::{
 };
 use serde_json::Value;
 
-use crate::contract::{HostContractDescriptor, HostContractKind, HostFunctionExecution};
 use crate::error::VmError;
 use crate::registry::InMemoryHostContractRegistry;
-
-const HOST_LAZY_BINDINGS_TEMPLATE: &str = include_str!("../../assets/host_lazy_bindings.js");
 
 /// Installs the experimental AsyncContext host bridge.
 ///
@@ -39,7 +36,6 @@ fn install_host_items(
         )
         .map_err(js_error)?;
     globals.set("__host", raw_host).map_err(js_error)?;
-    install_host_function_namespaces(&ctx, host_registry)?;
     Ok(())
 }
 
@@ -55,42 +51,6 @@ fn build_call_async_function<'js>(
         }),
     )
     .map_err(js_error)
-}
-
-fn install_host_function_namespaces(
-    ctx: &Ctx<'_>,
-    host_registry: Arc<InMemoryHostContractRegistry>,
-) -> Result<(), VmError> {
-    let contract_names = host_registry
-        .descriptors()?
-        .into_iter()
-        .filter(is_async_promise_bridge_function)
-        .map(|descriptor| descriptor.name)
-        .collect::<Vec<_>>();
-    install_host_function_namespaces_from_names(ctx, &contract_names)
-}
-
-fn is_async_promise_bridge_function(descriptor: &HostContractDescriptor) -> bool {
-    if descriptor.kind != HostContractKind::Function {
-        return false;
-    }
-
-    descriptor
-        .function
-        .as_ref()
-        .is_some_and(|function| function.execution == HostFunctionExecution::AsyncPromise)
-}
-
-fn install_host_function_namespaces_from_names(
-    ctx: &Ctx<'_>,
-    contract_names: &[String],
-) -> Result<(), VmError> {
-    if contract_names.is_empty() {
-        return Ok(());
-    }
-    ctx.eval::<(), _>(build_lazy_binding_source(contract_names, "callAsync", true))
-        .map_err(js_error)?;
-    Ok(())
 }
 
 async fn invoke_host_function_async(
@@ -117,22 +77,6 @@ fn js_host_error(error: impl ToString) -> JsError {
     JsError::new_from_js_message("host", "function", error.to_string())
 }
 
-fn build_lazy_binding_source(
-    contract_names: &[String],
-    bridge_method: &str,
-    returns_promise: bool,
-) -> String {
-    let contracts = serde_json::to_string(contract_names).expect("serialize contract names");
-    let bridge_method = serde_json::to_string(bridge_method).expect("serialize bridge method");
-    HOST_LAZY_BINDINGS_TEMPLATE
-        .replace("__contracts__", &contracts)
-        .replace("__bridge_method__", &bridge_method)
-        .replace(
-            "__returns_promise__",
-            if returns_promise { "true" } else { "false" },
-        )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +87,8 @@ mod tests {
 
     impl HostContract for AsyncFindUser {
         const NAME: &'static str = "user.find";
+        const IMPORT_MODULE: &'static str = "test";
+        const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
         fn schema() -> Schema {
             Schema::typed("FindUserInput", TsType::Number)

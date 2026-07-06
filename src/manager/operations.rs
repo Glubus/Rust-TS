@@ -131,6 +131,12 @@ impl ScriptManager {
 }
 
 pub(crate) fn module_dependency_edges(compiled: &CompiledScript) -> Vec<(String, String)> {
+    let module_ids = compiled
+        .modules
+        .iter()
+        .map(|module| module.module_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
     compiled
         .modules
         .iter()
@@ -138,6 +144,7 @@ pub(crate) fn module_dependency_edges(compiled: &CompiledScript) -> Vec<(String,
             module
                 .resolved_requests
                 .values()
+                .filter(|dependency| module_ids.contains(dependency.as_str()))
                 .map(|dependency| (module.module_id.clone(), dependency.clone()))
         })
         .collect()

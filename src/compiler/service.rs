@@ -1,5 +1,6 @@
 //! Compiler service and artifact assembly.
 
+use std::collections::BTreeSet;
 use std::mem;
 use std::path::{Path, PathBuf};
 
@@ -97,8 +98,9 @@ impl CompilerService {
     pub(crate) fn compile_project(
         &mut self,
         entry_path: &Path,
+        external_modules: &BTreeSet<String>,
     ) -> Result<ProjectCompileOutput, VmError> {
-        compile_project(self, entry_path)
+        compile_project(self, entry_path, external_modules)
     }
 
     pub(crate) fn build_project_script(

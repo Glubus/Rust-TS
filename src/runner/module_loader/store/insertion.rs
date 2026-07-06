@@ -8,6 +8,10 @@ use crate::runner::module_loader::graph::{
     RuntimeModuleGraph, build_runtime_module_id_map, runtime_module_id,
 };
 
+pub(super) fn insert_host_modules(store: &mut ModuleStoreInner, modules: BTreeMap<String, String>) {
+    store.sources.extend(modules);
+}
+
 pub(super) fn insert_inline(
     store: &mut ModuleStoreInner,
     script_id: &str,
@@ -79,7 +83,7 @@ fn insert_project_resolutions(
     module_id_map: &HashMap<String, String>,
 ) -> Result<(), VmError> {
     for (request, resolved) in resolved_requests {
-        let runtime_resolved_id = runtime_module_id_for(module_id_map, &resolved)?;
+        let runtime_resolved_id = module_id_map.get(&resolved).cloned().unwrap_or(resolved);
         store
             .resolutions
             .insert((runtime_module_id.to_owned(), request), runtime_resolved_id);

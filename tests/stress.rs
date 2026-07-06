@@ -4,7 +4,10 @@ use std::fs;
 use std::sync::{Arc, Barrier};
 
 use serde_json::json;
-use ts_embed_vm::{ScriptRetentionPolicy, TsVm, VmError, VmOptions};
+use ts_embed_vm::{
+    HostCallback, HostContract, HostContractKind, Schema, ScriptRetentionPolicy, TsField, TsType,
+    TsVm, VmError, VmOptions,
+};
 
 use support::TestCacheDir;
 
@@ -34,10 +37,40 @@ const CONCURRENT_UNLOAD_LISTENER_SCRIPTS: usize = 16;
 const CONCURRENT_UNLOAD_EMITTER_THREADS: usize = 4;
 const CONCURRENT_UNLOAD_EMITS_PER_THREAD: usize = 30;
 
+struct ScoreUpdate;
+
+impl HostContract for ScoreUpdate {
+    const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
+
+    fn schema() -> Schema {
+        Schema::typed(
+            "ScorePayload",
+            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
+        )
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Callback
+    }
+}
+
+impl HostCallback for ScoreUpdate {
+    type Payload = serde_json::Value;
+}
+
+fn register_score_update(vm: &TsVm) {
+    vm.registry()
+        .callback::<ScoreUpdate>()
+        .expect("register score update callback");
+}
+
 #[test]
 fn repeated_project_reloads_keep_graph_and_routes_consistent() {
     let cache_dir = TestCacheDir::new("stress-project-reload");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    register_score_update(&vm);
     let project_root = cache_dir.path().join("project");
     let entry_path = project_root.join("main.ts");
     let value_path = project_root.join("value.ts");
@@ -77,6 +110,7 @@ fn repeated_event_dispatch_keeps_hot_routes_stable() {
     options.worker_threads = 2;
     options.max_scripts_per_worker = 64;
     let vm = TsVm::new(options).expect("create vm");
+    register_score_update(&vm);
 
     for index in 0..20 {
         vm.load_script(format!("listener-{index}"), EVENT_LISTENER_SCRIPT)
@@ -110,6 +144,7 @@ fn repeated_event_dispatch_keeps_hot_routes_stable() {
 fn concurrent_host_calls_and_events_keep_routes_and_stats_consistent() {
     let cache_dir = TestCacheDir::new("stress-concurrent-host-calls-events");
     let vm = Arc::new(TsVm::new(concurrent_stress_options(&cache_dir)).expect("create vm"));
+    register_score_update(&vm);
 
     load_concurrent_stress_scripts(&vm);
     run_concurrent_host_operations(Arc::clone(&vm));
@@ -260,6 +295,7 @@ fn concurrent_dependency_edges_release_without_leaking_refs_or_edges() {
 fn concurrent_listener_unloads_and_emits_clear_hot_routes_without_leaks() {
     let cache_dir = TestCacheDir::new("stress-concurrent-unload-emits");
     let vm = Arc::new(TsVm::new(concurrent_load_options(&cache_dir)).expect("create vm"));
+    register_score_update(&vm);
 
     load_concurrent_unload_listeners(&vm);
     run_concurrent_listener_unloads_and_emits(Arc::clone(&vm));
@@ -286,6 +322,7 @@ fn concurrent_listener_unloads_and_emits_clear_hot_routes_without_leaks() {
 fn concurrent_project_reloads_and_emits_keep_hot_route_available() {
     let cache_dir = TestCacheDir::new("stress-concurrent-project-reload-emits");
     let vm = Arc::new(TsVm::new(concurrent_reload_options(&cache_dir)).expect("create vm"));
+    register_score_update(&vm);
     let project = Arc::new(ConcurrentReloadProject::create(&cache_dir));
 
     project.write_version(0);

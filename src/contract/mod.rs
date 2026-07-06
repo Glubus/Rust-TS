@@ -18,7 +18,7 @@ pub use context::HostContext;
 pub use function::HostFunction;
 pub use metadata::{
     DeliveryMode, HostCallbackDescriptor, HostContractAbi, HostContractDescriptor,
-    HostContractKind, HostFunctionDescriptor, HostFunctionExecution, HostMetadata, Schema,
-    TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsType,
+    HostContractKind, HostFunctionDescriptor, HostFunctionExecution, HostImportBinding,
+    HostMetadata, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsType,
 };
 pub use schema::{TsSchema, push_schema_dependency, schema_type_ref};

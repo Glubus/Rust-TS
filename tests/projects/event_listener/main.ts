@@ -1,8 +1,10 @@
-ctx.on("score.update", event => {
+import { score } from "test";
+
+score.onUpdate(event => {
   globalThis.lastScore = event.combo;
 });
 
-ctx.on("score.update", event => {
+score.onUpdate(event => {
   globalThis.lastScoreDoubled = event.combo * 2;
 });
 

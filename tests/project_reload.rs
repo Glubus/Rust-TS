@@ -3,17 +3,43 @@ mod support;
 use std::fs;
 
 use serde_json::json;
-use ts_embed_vm::TsVm;
+use ts_embed_vm::{HostCallback, HostContract, HostContractKind, Schema, TsField, TsType, TsVm};
 
 use support::TestCacheDir;
 
 const PROJECT_MAIN_V1: &str = include_str!("projects/reloadable_project/main_v1.ts");
 const PROJECT_MAIN_V2: &str = include_str!("projects/reloadable_project/main_v2.ts");
 
+struct ScoreUpdate;
+
+impl HostContract for ScoreUpdate {
+    const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
+
+    fn schema() -> Schema {
+        Schema::typed(
+            "ScorePayload",
+            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
+        )
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Callback
+    }
+}
+
+impl HostCallback for ScoreUpdate {
+    type Payload = serde_json::Value;
+}
+
 #[test]
 fn project_reload_replaces_dependency_graph_and_preserves_hot_route() {
     let cache_dir = TestCacheDir::new("project-reload-graph");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    vm.registry()
+        .callback::<ScoreUpdate>()
+        .expect("register score update callback");
     let project_root = cache_dir.path().join("project");
     let entry_path = project_root.join("main.ts");
     let value_path = project_root.join("value.ts");

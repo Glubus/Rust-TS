@@ -1,6 +1,7 @@
 import { current } from "./value";
+import { score } from "test";
 
-ctx.on("score.update", event => {
+score.onUpdate(event => {
   globalThis.lastScore = event.combo + current;
 });
 

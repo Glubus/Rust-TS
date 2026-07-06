@@ -1,5 +1,6 @@
 //! In-memory module source and resolution store.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use rquickjs::{Ctx, Error, Module, Result as JsResult};
@@ -25,6 +26,15 @@ pub(crate) struct WorkerModuleStore {
 }
 
 impl WorkerModuleStore {
+    pub(crate) fn insert_host_modules(
+        &self,
+        modules: BTreeMap<String, String>,
+    ) -> std::result::Result<(), VmError> {
+        let mut guard = self.lock_store()?;
+        insertion::insert_host_modules(&mut guard, modules);
+        Ok(())
+    }
+
     pub(crate) fn insert_inline(
         &self,
         script_id: &str,

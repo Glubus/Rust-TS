@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use super::bindings::FunctionBindingStore;
 use super::declarations::render_typescript_declarations;
+use super::import_modules::render_host_import_modules;
 use super::interface::HostContractRegistry;
 use super::sdk::render_typescript_sdk;
 use crate::config::{VmContractValidation, VmUnknownFieldValidation};
@@ -141,6 +142,18 @@ impl InMemoryHostContractRegistry {
 
     pub(crate) fn cache_abi_seed(&self) -> Result<String, VmError> {
         self.abi_seed()
+    }
+
+    pub(crate) fn import_module_names(&self) -> Result<BTreeSet<String>, VmError> {
+        Ok(self
+            .descriptors()?
+            .into_iter()
+            .map(|descriptor| descriptor.import.module)
+            .collect())
+    }
+
+    pub(crate) fn import_modules(&self) -> Result<BTreeMap<String, String>, VmError> {
+        Ok(render_host_import_modules(&self.descriptors()?))
     }
 
     /// Renders TypeScript declarations from registered host contracts.

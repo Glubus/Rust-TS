@@ -1,11 +1,20 @@
 //! Base host contract trait.
 
-use super::{HostContractAbi, HostContractDescriptor, HostContractKind, HostMetadata, Schema};
+use super::{
+    HostContractAbi, HostContractDescriptor, HostContractKind, HostImportBinding, HostMetadata,
+    Schema,
+};
 
 /// Base contract trait. Traits produce the contract model, not just runtime hooks.
 pub trait HostContract {
     /// Stable contract identity.
     const NAME: &'static str;
+
+    /// Virtual ESM module name used by scripts.
+    const IMPORT_MODULE: &'static str;
+
+    /// Export path inside [`Self::IMPORT_MODULE`].
+    const EXPORT_PATH: &'static [&'static str];
 
     /// Returns the schema metadata of this contract.
     fn schema() -> Schema;
@@ -28,6 +37,13 @@ pub trait HostContract {
             kind: Self::kind(),
             schema: Self::schema(),
             metadata: Self::metadata(),
+            import: HostImportBinding {
+                module: Self::IMPORT_MODULE.to_owned(),
+                export_path: Self::EXPORT_PATH
+                    .iter()
+                    .map(|segment| (*segment).to_owned())
+                    .collect(),
+            },
             callback: None,
             function: None,
             abi: HostContractAbi::Unknown,
@@ -44,6 +60,8 @@ mod tests {
 
     impl HostContract for DemoContract {
         const NAME: &'static str = "demo.contract";
+        const IMPORT_MODULE: &'static str = "demo";
+        const EXPORT_PATH: &'static [&'static str] = &["contract"];
 
         fn schema() -> Schema {
             Schema::named("DemoSchema")

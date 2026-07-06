@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde_json::json;
 use ts_embed_vm::{
-    HostContract, HostContractKind, HostFunction, RuntimeExecutionLane,
+    HostCallback, HostContract, HostContractKind, HostFunction, RuntimeExecutionLane,
     RuntimeMaterializationState, Schema, ScriptMaterializationState, ScriptRetentionPolicy,
     ScriptSourceKind, TsType, TsVm, VmError, VmEvent,
 };
@@ -57,9 +57,12 @@ const THROWING_SCRIPT: &str = include_str!("projects/throwing/main.ts");
 
 struct FindUser;
 struct FindInvoice;
+struct ScoreUpdate;
 
 impl HostContract for FindUser {
     const NAME: &'static str = "user.find";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
     fn schema() -> Schema {
         Schema::typed("FindUserInput", TsType::Number)
@@ -85,6 +88,8 @@ impl HostFunction for FindUser {
 
 impl HostContract for FindInvoice {
     const NAME: &'static str = "billing.invoice.find";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["billing", "invoice", "find"];
 
     fn schema() -> Schema {
         Schema::typed("FindInvoiceInput", TsType::Number)
@@ -106,6 +111,24 @@ impl HostFunction for FindInvoice {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("invoice-{input}"))
     }
+}
+
+impl HostContract for ScoreUpdate {
+    const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
+
+    fn schema() -> Schema {
+        Schema::typed("ScorePayload", TsType::Json)
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Callback
+    }
+}
+
+impl HostCallback for ScoreUpdate {
+    type Payload = serde_json::Value;
 }
 
 #[test]
@@ -228,6 +251,9 @@ fn list_scripts_returns_registered_entries_sorted() {
 fn runtime_snapshot_exposes_routes_retention_and_module_graph() {
     let cache_dir = TestCacheDir::new("runtime-snapshot");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    vm.registry()
+        .callback::<ScoreUpdate>()
+        .expect("register score update callback");
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
         .expect("load listener");
@@ -552,7 +578,7 @@ fn script_can_call_registered_host_function() {
 }
 
 #[test]
-fn host_function_bridge_uses_lazy_namespace_resolution() {
+fn host_function_bridge_uses_imported_namespace_resolution() {
     let cache_dir = TestCacheDir::new("lazy-host-function-bridge");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
     vm.registry()

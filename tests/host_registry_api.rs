@@ -24,6 +24,8 @@ const HOST_VALIDATION_SCRIPT: &str = include_str!("projects/host_validation/main
 
 impl HostContract for FindUser {
     const NAME: &'static str = "user.find";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
     fn schema() -> Schema {
         Schema::typed("FindUserInput", TsType::Number)
@@ -56,6 +58,8 @@ impl HostFunction for FindUser {
 
 impl HostContract for ScoreUpdate {
     const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
 
     fn schema() -> Schema {
         Schema::typed(
@@ -75,6 +79,8 @@ impl HostCallback for ScoreUpdate {
 
 impl HostContract for OverlayContext {
     const NAME: &'static str = "overlay";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["overlay"];
 
     fn schema() -> Schema {
         Schema::typed(
@@ -113,6 +119,8 @@ struct RecordActionInput {
 #[cfg(feature = "derive")]
 impl HostContract for RecordAction {
     const NAME: &'static str = "action.record";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["action", "record"];
 
     fn schema() -> Schema {
         RecordActionInput::schema()
@@ -139,6 +147,8 @@ impl HostFunction for RecordAction {
 
 impl HostContract for EchoValidation {
     const NAME: &'static str = "validation.echo";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["validation", "echo"];
 
     fn schema() -> Schema {
         validation_input_schema()
@@ -164,6 +174,8 @@ impl HostFunction for EchoValidation {
 
 impl HostContract for EchoTypeRefValidation {
     const NAME: &'static str = "validation.echoRef";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["validation", "echoRef"];
 
     fn schema() -> Schema {
         Schema::typed(
@@ -196,6 +208,8 @@ impl HostFunction for EchoTypeRefValidation {
 
 impl HostContract for BadOutputValidation {
     const NAME: &'static str = "validation.badOutput";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["validation", "badOutput"];
 
     fn schema() -> Schema {
         Schema::typed("BadOutputInput", TsType::Number)

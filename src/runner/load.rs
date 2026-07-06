@@ -25,6 +25,7 @@ pub(crate) fn load_script_into_runtime(
     ensure_host_contracts_supported(state.host_registry.as_ref(), state.bridge_capability)?;
     remove_existing_script_modules(state, &id)?;
     let graph_id = state.next_module_graph_id();
+    install_host_modules(state)?;
     let graph = install_modules(
         state,
         &id,
@@ -37,6 +38,12 @@ pub(crate) fn load_script_into_runtime(
     let subscriptions = collect_script_subscriptions(&context)?;
     insert_loaded_script(state, id, context, graph);
     Ok(subscriptions)
+}
+
+fn install_host_modules(state: &WorkerState) -> Result<(), VmError> {
+    state
+        .module_store
+        .insert_host_modules(state.host_registry.import_modules()?)
 }
 
 pub(crate) fn unload_loaded_script(

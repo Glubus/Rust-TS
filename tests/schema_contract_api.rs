@@ -43,6 +43,8 @@ impl TsSchema for FindUsersOutput {
 
 impl HostContract for FindUsers {
     const NAME: &'static str = "user.findMany";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["user", "findMany"];
 
     fn schema() -> Schema {
         FindUsersInput::schema()

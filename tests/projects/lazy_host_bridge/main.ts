@@ -1,3 +1,5 @@
+import { billing, user } from "test";
+
 export function inspectBindings(id: number) {
   return {
     userFindType: typeof user.find,

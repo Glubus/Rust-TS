@@ -1,7 +1,10 @@
 mod support;
 
 use serde_json::json;
-use ts_embed_vm::{HostContract, HostContractKind, HostFunction, Schema, TsType, TsVm, VmError};
+use ts_embed_vm::{
+    HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsField, TsType, TsVm,
+    VmError,
+};
 
 use support::TestCacheDir;
 
@@ -11,9 +14,12 @@ const REALISTIC_MOD_PACK_ENTRY: &str = concat!(
 );
 
 struct FindUser;
+struct ScoreUpdate;
 
 impl HostContract for FindUser {
     const NAME: &'static str = "user.find";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
     fn schema() -> Schema {
         Schema::typed("FindUserInput", TsType::Number)
@@ -37,12 +43,34 @@ impl HostFunction for FindUser {
     }
 }
 
+impl HostContract for ScoreUpdate {
+    const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
+
+    fn schema() -> Schema {
+        Schema::typed(
+            "ScorePayload",
+            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
+        )
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Callback
+    }
+}
+
+impl HostCallback for ScoreUpdate {
+    type Payload = serde_json::Value;
+}
+
 #[test]
 fn realistic_mod_pack_uses_aliases_host_calls_events_and_state() {
     let cache_dir = TestCacheDir::new("realistic-mod-pack");
     let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
     vm.registry()
         .function::<FindUser>()
+        .and_then(|registry| registry.callback::<ScoreUpdate>())
         .expect("register host function");
 
     vm.load_script_project("raid-mod", REALISTIC_MOD_PACK_ENTRY)

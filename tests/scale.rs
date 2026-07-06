@@ -1,12 +1,35 @@
 mod support;
 
 use serde_json::json;
-use ts_embed_vm::TsVm;
+use ts_embed_vm::{HostCallback, HostContract, HostContractKind, Schema, TsField, TsType, TsVm};
 
 use support::TestCacheDir;
 
 const DEMO_SCRIPT: &str = include_str!("projects/basic_math/main.ts");
 const EVENT_LISTENER_SCRIPT: &str = include_str!("projects/event_listener/main.ts");
+
+struct ScoreUpdate;
+
+impl HostContract for ScoreUpdate {
+    const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
+
+    fn schema() -> Schema {
+        Schema::typed(
+            "ScorePayload",
+            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
+        )
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Callback
+    }
+}
+
+impl HostCallback for ScoreUpdate {
+    type Payload = serde_json::Value;
+}
 
 #[test]
 fn mounts_400_small_scripts_on_two_runners_and_keeps_hot_routes() {
@@ -16,6 +39,9 @@ fn mounts_400_small_scripts_on_two_runners_and_keeps_hot_routes() {
     options.max_scripts_per_worker = 256;
     options.queue_capacity = 512;
     let vm = TsVm::new(options).expect("create vm");
+    vm.registry()
+        .callback::<ScoreUpdate>()
+        .expect("register score update callback");
 
     for index in 0..400 {
         let source = if index % 10 == 0 {
