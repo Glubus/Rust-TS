@@ -1,3 +1,3 @@
 //! Public API surface.
 
-pub use crate::manager::ScriptManager as TsVm;
+pub use crate::manager::ScriptManager as RustTs;

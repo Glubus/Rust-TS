@@ -1,0 +1,14 @@
+[book]
+title = "RustTS"
+description = "Embed TypeScript scripting into Rust applications with generated host contracts."
+authors = ["RustTS contributors"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/"
+edit-url-template = ""

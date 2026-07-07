@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 use std::path::PathBuf;
 
-use ts_embed_vm::{HostContractDescriptor, SdkFileNames, write_host_sdk_files_with_names};
+use rustts::{HostContractDescriptor, SdkFileNames, write_host_sdk_files_with_names};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = ExportArgs::parse(env::args().skip(1))?;
@@ -54,5 +54,5 @@ fn required_arg(value: Option<String>, message: &str) -> Result<String, Box<dyn 
 }
 
 fn usage() -> &'static str {
-    "usage: tsvm-sdk <descriptors.json> <output-dir> [--types tsvm.d.ts] [--sdk tsvm.sdk.ts]"
+    "usage: rustts-sdk <descriptors.json> <output-dir> [--types rustts.d.ts] [--sdk rustts.sdk.ts]"
 }

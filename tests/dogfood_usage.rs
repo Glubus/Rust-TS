@@ -2,12 +2,12 @@
 
 mod support;
 
+use rustts::{
+    HostCallback, HostContract, HostContractKind, HostFunction, RustTs, Schema, TsSchema, VmError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::process::Command;
-use ts_embed_vm::{
-    HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsSchema, TsVm, VmError,
-};
 
 use support::TestCacheDir;
 
@@ -105,7 +105,7 @@ impl HostCallback for DogfoodUserFound {
 fn typed_contracts_generated_sdk_and_script_bridge_are_usable_together() {
     let cache_dir = TestCacheDir::new("dogfood-typed-contracts");
     let output_dir = cache_dir.path().join("generated");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
 
     vm.registry()
         .typed_function::<DogfoodFindUser>()
@@ -138,8 +138,8 @@ fn typed_contracts_generated_sdk_and_script_bridge_are_usable_together() {
 
     vm.shutdown().expect("shutdown vm");
 
-    assert_eq!(written.types_path, output_dir.join("tsvm.d.ts"));
-    assert_eq!(written.sdk_path, output_dir.join("tsvm.sdk.ts"));
+    assert_eq!(written.types_path, output_dir.join("rustts.d.ts"));
+    assert_eq!(written.sdk_path, output_dir.join("rustts.sdk.ts"));
     assert_eq!(lookup, json!("user-7:2:true"));
     assert_eq!(delivered, 1);
     assert_eq!(observed, json!("user-7:admin,editor"));
@@ -206,8 +206,8 @@ events.user.found(event => {{\n\
 user.onFound(event => {{\n\
   event.roles.map(role => role.toUpperCase());\n\
 }});\n\
-tsvmSdk.functions.user.find(input).active.valueOf();\n\
-tsvmSdk.models.DogfoodUserFoundPayload.wrap({{ userId: 7, displayName: \"user-7\", roles: [\"admin\"] }}).toJSON().roles.length.toFixed();\n"
+rusttsSdk.functions.user.find(input).active.valueOf();\n\
+rusttsSdk.models.DogfoodUserFoundPayload.wrap({{ userId: 7, displayName: \"user-7\", roles: [\"admin\"] }}).toJSON().roles.length.toFixed();\n"
     )
 }
 

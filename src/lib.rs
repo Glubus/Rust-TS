@@ -22,15 +22,20 @@ mod runner;
 mod sdk_files;
 mod types;
 
-pub use api::TsVm;
+#[doc(hidden)]
+pub use rquickjs as __rquickjs;
+#[doc(hidden)]
+pub use serde as __serde;
+
+pub use api::RustTs;
 pub use config::{VmContractValidation, VmOptions, VmUnknownFieldValidation};
 #[cfg(feature = "tokio")]
 pub use contract::AsyncHostFunction;
 pub use contract::{
     DeliveryMode, HostCallback, HostCallbackDescriptor, HostContext, HostContract, HostContractAbi,
     HostContractDescriptor, HostContractKind, HostFunction, HostFunctionDescriptor,
-    HostFunctionExecution, HostMetadata, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey,
-    TsSchema, TsType, push_schema_dependency, schema_type_ref,
+    HostFunctionExecution, HostMetadata, NativeBytes, Schema, TsEnumVariant, TsField, TsLiteral,
+    TsRecordKey, TsSchema, TsType, push_schema_dependency, schema_type_ref,
 };
 pub use error::VmError;
 #[cfg(feature = "async-promise")]
@@ -44,11 +49,11 @@ pub use registry::{
 pub use runner::async_host_bridge::install_async_host_bridge;
 #[cfg(feature = "async-promise")]
 pub use runner::async_script_runtime::{AsyncLoadedScript, AsyncScriptRuntime};
+#[cfg(feature = "derive")]
+pub use rustts_macros::TsSchema;
 pub use sdk_files::{
     GeneratedSdkFiles, SdkFileNames, write_host_sdk_files, write_host_sdk_files_with_names,
 };
-#[cfg(feature = "derive")]
-pub use ts_embed_vm_macros::TsSchema;
 pub use types::{
     RuntimeDependencyEdge, RuntimeEventBinding, RuntimeEventRoute, RuntimeExecutionLane,
     RuntimeMaterializationState, RuntimeModuleDependency, RuntimeRetentionStats, RuntimeScriptView,

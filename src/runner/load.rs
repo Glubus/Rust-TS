@@ -3,6 +3,7 @@
 use rquickjs::{CatchResultExt, Context, Ctx, Module};
 
 use crate::compiler::CompiledModule;
+use crate::contract::{HostContractAbi, HostFunctionExecution};
 use crate::error::VmError;
 use crate::types::ScriptId;
 
@@ -10,7 +11,10 @@ use super::bridge_capability::ensure_host_contracts_supported;
 use super::errors::{caught_js_error, js_error};
 use super::host_bridge::install_host_bridge;
 use super::module_loader::RuntimeModuleGraph;
-use super::render::{bootstrap_module_context_source, eval_file_name, list_subscriptions_source};
+use super::render::{
+    bootstrap_module_context_source, eval_file_name, host_lazy_bindings_source,
+    list_subscriptions_source,
+};
 use super::script_store::LoadedScript;
 use super::state::WorkerState;
 
@@ -113,8 +117,43 @@ fn create_script_context(
 ) -> Result<Context, VmError> {
     let context = Context::full(&state.runtime).map_err(js_error)?;
     install_host_bridge(&context, state.host_registry.clone())?;
+    install_host_lazy_bindings(&context, state)?;
     context.with(|ctx| bootstrap_module_context(ctx, script_id, module_id))?;
     Ok(context)
+}
+
+fn install_host_lazy_bindings(context: &Context, state: &WorkerState) -> Result<(), VmError> {
+    let contracts = state
+        .host_registry
+        .descriptors()?
+        .into_iter()
+        .filter_map(|descriptor| match descriptor.abi {
+            HostContractAbi::Function {
+                execution: HostFunctionExecution::Sync | HostFunctionExecution::AsyncBlockingJs,
+                ..
+            } => Some(descriptor.name),
+            HostContractAbi::Function {
+                execution: HostFunctionExecution::AsyncPromise,
+                ..
+            }
+            | HostContractAbi::Callback { .. }
+            | HostContractAbi::Context { .. }
+            | HostContractAbi::Unknown => None,
+        })
+        .collect::<Vec<_>>();
+
+    if contracts.is_empty() {
+        return Ok(());
+    }
+
+    let contracts_json = serde_json::to_string(&contracts)?;
+    let bridge_method_json = serde_json::to_string("call")?;
+    let source = host_lazy_bindings_source(&contracts_json, &bridge_method_json, false);
+    context.with(|ctx| {
+        ctx.eval_with_options::<(), _>(source, build_eval_options("host-lazy-bindings"))
+            .catch(&ctx)
+            .map_err(caught_js_error)
+    })
 }
 
 fn bootstrap_module_context(ctx: Ctx<'_>, script_id: &str, module_id: &str) -> Result<(), VmError> {

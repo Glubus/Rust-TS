@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use rquickjs::{Context, Ctx, Exception, Object, Result as JsResult, prelude::Func};
+use rquickjs::{
+    Context, Ctx, Exception, Object, Result as JsResult, Value as JsValue, prelude::Func,
+};
 use serde_json::Value;
 
 use crate::error::VmError;
@@ -32,6 +34,17 @@ fn install_host_items(
             }),
         )
         .map_err(js_error)?;
+    raw_host
+        .set(
+            "callValue",
+            Func::from({
+                let host_registry = host_registry.clone();
+                move |ctx, name: String, input| {
+                    invoke_host_function_value(&ctx, host_registry.as_ref(), &name, input)
+                }
+            }),
+        )
+        .map_err(js_error)?;
     globals.set("__host", raw_host).map_err(js_error)?;
     Ok(())
 }
@@ -50,6 +63,19 @@ fn invoke_host_function(
         .ok_or_else(|| Exception::throw_message(ctx, &format!("missing host function: {name}")))?;
     serde_json::to_string(&output)
         .map_err(|error| Exception::throw_message(ctx, &error.to_string()))
+}
+
+fn invoke_host_function_value<'js>(
+    ctx: &Ctx<'js>,
+    host_registry: &InMemoryHostContractRegistry,
+    name: &str,
+    input: JsValue<'js>,
+) -> JsResult<JsValue<'js>> {
+    let output = host_registry
+        .invoke_function_js(ctx, name, input)
+        .map_err(|error| Exception::throw_message(ctx, &error.to_string()))?
+        .ok_or_else(|| Exception::throw_message(ctx, &format!("missing host function: {name}")))?;
+    Ok(output)
 }
 
 fn js_error(error: rquickjs::Error) -> VmError {

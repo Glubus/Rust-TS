@@ -12,12 +12,22 @@ pub(super) fn expand_ts_schema(input: &DeriveInput) -> Result<proc_macro2::Token
     let generics = add_ts_schema_bounds(input.generics.clone());
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let attrs = ContainerAttrs::from_input(input)?;
+    let bridge_directions = BridgeDirections {
+        from_js: has_derive(input, "Deserialize"),
+        into_js: has_derive(input, "Serialize"),
+    };
     let schema_name = attrs.schema_name.unwrap_or_else(|| input.ident.to_string());
-    let (ts_type, dependencies) = match &input.data {
+    let (ts_type, dependencies, bridge_methods) = match &input.data {
         Data::Struct(data) => {
             let ts_type = expand_struct_type(&data.fields, attrs.rename_all, attrs.transparent)?;
             let dependencies = expand_struct_dependencies(&data.fields, attrs.transparent)?;
-            (ts_type, dependencies)
+            let bridge_methods = expand_struct_bridge_methods(
+                &data.fields,
+                attrs.rename_all,
+                attrs.transparent,
+                bridge_directions,
+            )?;
+            (ts_type, dependencies, bridge_methods)
         }
         Data::Enum(data) => {
             if attrs.transparent {
@@ -34,7 +44,7 @@ pub(super) fn expand_ts_schema(input: &DeriveInput) -> Result<proc_macro2::Token
                 attrs.untagged,
             )?;
             let dependencies = expand_enum_dependencies(data)?;
-            (ts_type, dependencies)
+            (ts_type, dependencies, Vec::new())
         }
         Data::Union(_) => {
             return Err(Error::new_spanned(
@@ -45,30 +55,54 @@ pub(super) fn expand_ts_schema(input: &DeriveInput) -> Result<proc_macro2::Token
     };
 
     Ok(quote! {
-        impl #impl_generics ::ts_embed_vm::TsSchema for #ident #ty_generics #where_clause {
+        impl #impl_generics ::rustts::TsSchema for #ident #ty_generics #where_clause {
             fn schema_name() -> &'static str {
                 #schema_name
             }
 
-            fn ts_type() -> ::ts_embed_vm::TsType {
+            fn ts_type() -> ::rustts::TsType {
                 #ts_type
             }
 
-            fn schema_dependencies() -> Vec<::ts_embed_vm::Schema> {
+            fn schema_dependencies() -> Vec<::rustts::Schema> {
                 let mut dependencies = Vec::new();
                 #(#dependencies)*
                 dependencies
             }
+
+            #(#bridge_methods)*
         }
     })
+}
+
+#[derive(Clone, Copy)]
+struct BridgeDirections {
+    from_js: bool,
+    into_js: bool,
+}
+
+fn has_derive(input: &DeriveInput, name: &str) -> bool {
+    input
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .any(|attr| {
+            attr.parse_args_with(Punctuated::<syn::Path, Token![,]>::parse_terminated)
+                .map(|paths| {
+                    paths.iter().any(|path| {
+                        path.segments
+                            .last()
+                            .is_some_and(|segment| segment.ident == name)
+                    })
+                })
+                .unwrap_or(false)
+        })
 }
 
 fn add_ts_schema_bounds(mut generics: syn::Generics) -> syn::Generics {
     for param in &mut generics.params {
         if let GenericParam::Type(type_param) = param {
-            type_param
-                .bounds
-                .push(parse_quote!(::ts_embed_vm::TsSchema));
+            type_param.bounds.push(parse_quote!(::rustts::TsSchema));
         }
     }
     generics
@@ -87,7 +121,7 @@ fn expand_struct_type(
         Fields::Named(fields) => expand_named_fields_object(&fields.named, rename_all),
         Fields::Unnamed(fields) => expand_tuple_fields(&fields.unnamed),
         Fields::Unit => Ok(quote! {
-            ::ts_embed_vm::TsType::Object(Vec::new())
+            ::rustts::TsType::Object(Vec::new())
         }),
     }
 }
@@ -104,12 +138,165 @@ fn expand_struct_dependencies(
     expand_fields_dependencies(fields)
 }
 
+fn expand_struct_bridge_methods(
+    fields: &Fields,
+    rename_all: Option<RenameRule>,
+    transparent: bool,
+    directions: BridgeDirections,
+) -> Result<Vec<proc_macro2::TokenStream>> {
+    if !directions.from_js && !directions.into_js {
+        return Ok(Vec::new());
+    }
+
+    if transparent {
+        return expand_transparent_struct_bridge_methods(fields, directions);
+    }
+
+    let Fields::Named(fields) = fields else {
+        return Ok(Vec::new());
+    };
+
+    if fields
+        .named
+        .iter()
+        .map(FieldAttrs::from_field)
+        .collect::<Result<Vec<_>>>()?
+        .iter()
+        .any(|attrs| attrs.skip || attrs.flatten)
+    {
+        return Ok(Vec::new());
+    }
+
+    expand_named_struct_bridge_methods(&fields.named, rename_all, directions)
+}
+
+fn expand_transparent_struct_bridge_methods(
+    fields: &Fields,
+    directions: BridgeDirections,
+) -> Result<Vec<proc_macro2::TokenStream>> {
+    let field = transparent_struct_field(fields)?;
+    let ty = &field.ty;
+
+    let from_body = match &field.ident {
+        Some(ident) => quote! {
+            Ok(Self {
+                #ident: <#ty as ::rustts::TsSchema>::__rustts_from_js_value(ctx, value)?,
+            })
+        },
+        None => quote! {
+            Ok(Self(<#ty as ::rustts::TsSchema>::__rustts_from_js_value(ctx, value)?))
+        },
+    };
+
+    let into_value = match &field.ident {
+        Some(ident) => quote! { self.#ident },
+        None => quote! { self.0 },
+    };
+
+    let from_method = directions.from_js.then(|| {
+        quote! {
+            fn __rustts_from_js_value<'js>(
+                ctx: &::rustts::__rquickjs::Ctx<'js>,
+                value: ::rustts::__rquickjs::Value<'js>,
+            ) -> ::rustts::__rquickjs::Result<Self>
+            where
+                Self: Sized + ::rustts::__serde::de::DeserializeOwned,
+            {
+                #from_body
+            }
+        }
+    });
+
+    let into_method = directions.into_js.then(|| {
+        quote! {
+            fn __rustts_into_js_value<'js>(
+                self,
+                ctx: &::rustts::__rquickjs::Ctx<'js>,
+            ) -> ::rustts::__rquickjs::Result<::rustts::__rquickjs::Value<'js>>
+            where
+                Self: Sized + ::rustts::__serde::Serialize,
+            {
+                <#ty as ::rustts::TsSchema>::__rustts_into_js_value(#into_value, ctx)
+            }
+        }
+    });
+
+    Ok(vec![quote! {
+        #from_method
+        #into_method
+    }])
+}
+
+fn expand_named_struct_bridge_methods(
+    fields: &Punctuated<syn::Field, Token![,]>,
+    rename_all: Option<RenameRule>,
+    directions: BridgeDirections,
+) -> Result<Vec<proc_macro2::TokenStream>> {
+    let mut from_fields = Vec::new();
+    let mut into_fields = Vec::new();
+
+    for field in fields {
+        let ident = field
+            .ident
+            .as_ref()
+            .ok_or_else(|| Error::new_spanned(field, "TsSchema requires named fields"))?;
+        let attrs = FieldAttrs::from_field(field)?;
+        let field_name = attrs
+            .rename
+            .unwrap_or_else(|| rename_field(ident, rename_all));
+        let ty = &field.ty;
+
+        from_fields.push(quote! {
+            #ident: <#ty as ::rustts::TsSchema>::__rustts_from_js_value(ctx, object.get(#field_name)?)?
+        });
+        into_fields.push(quote! {
+            object.set(#field_name, <#ty as ::rustts::TsSchema>::__rustts_into_js_value(self.#ident, ctx)?)?;
+        });
+    }
+
+    let from_method = directions.from_js.then(|| quote! {
+        fn __rustts_from_js_value<'js>(
+            ctx: &::rustts::__rquickjs::Ctx<'js>,
+            value: ::rustts::__rquickjs::Value<'js>,
+        ) -> ::rustts::__rquickjs::Result<Self>
+        where
+            Self: Sized + ::rustts::__serde::de::DeserializeOwned,
+        {
+            let object = <::rustts::__rquickjs::Object<'js> as ::rustts::__rquickjs::FromJs<'js>>::from_js(ctx, value)?;
+            Ok(Self {
+                #(#from_fields,)*
+            })
+        }
+    });
+
+    let into_method = directions.into_js.then(|| {
+        quote! {
+            fn __rustts_into_js_value<'js>(
+                self,
+                ctx: &::rustts::__rquickjs::Ctx<'js>,
+            ) -> ::rustts::__rquickjs::Result<::rustts::__rquickjs::Value<'js>>
+            where
+                Self: Sized + ::rustts::__serde::Serialize,
+            {
+                let object = ::rustts::__rquickjs::Object::new(ctx.clone())?;
+                #(#into_fields)*
+                Ok(object.into_value())
+            }
+        }
+    });
+
+    Ok(vec![quote! {
+        #from_method
+        #into_method
+    }])
+}
+
 fn expand_transparent_struct_type(fields: &Fields) -> Result<proc_macro2::TokenStream> {
     let field = transparent_struct_field(fields)?;
     let ty = &field.ty;
 
     Ok(quote! {
-        ::ts_embed_vm::schema_type_ref::<#ty>()
+        ::rustts::schema_type_ref::<#ty>()
     })
 }
 
@@ -160,7 +347,7 @@ fn expand_dependency_if_not_skipped(
 fn expand_field_dependency(field: &syn::Field) -> Result<proc_macro2::TokenStream> {
     let ty = &field.ty;
     Ok(quote! {
-        ::ts_embed_vm::push_schema_dependency::<#ty>(&mut dependencies);
+        ::rustts::push_schema_dependency::<#ty>(&mut dependencies);
     })
 }
 
@@ -177,7 +364,7 @@ fn expand_named_fields_object(
         {
             let mut fields = Vec::new();
             #(#field_steps)*
-            ::ts_embed_vm::TsType::Object(fields)
+            ::rustts::TsType::Object(fields)
         }
     })
 }
@@ -191,13 +378,13 @@ fn expand_tuple_fields(
             reject_flatten_field(field)?;
             let ty = &field.ty;
             Ok(quote! {
-                ::ts_embed_vm::schema_type_ref::<#ty>()
+                ::rustts::schema_type_ref::<#ty>()
             })
         })
         .collect::<Result<Vec<_>>>()?;
 
     Ok(quote! {
-        ::ts_embed_vm::TsType::Tuple(vec![#(#items),*])
+        ::rustts::TsType::Tuple(vec![#(#items),*])
     })
 }
 
@@ -214,10 +401,10 @@ fn expand_named_struct_field_step(
             fields.push(#field);
         },
         NamedStructField::Flatten { ty } => quote! {
-            match <#ty as ::ts_embed_vm::TsSchema>::ts_type() {
-                ::ts_embed_vm::TsType::Object(flattened_fields) => {
+            match <#ty as ::rustts::TsSchema>::ts_type() {
+                ::rustts::TsType::Object(flattened_fields) => {
                     for flattened_field in flattened_fields {
-                        if fields.iter().any(|field: &::ts_embed_vm::TsField| field.name == flattened_field.name) {
+                        if fields.iter().any(|field: &::rustts::TsField| field.name == flattened_field.name) {
                             panic!("serde flatten produced duplicate TypeScript field `{}`", flattened_field.name);
                         }
                         fields.push(flattened_field);
@@ -257,16 +444,16 @@ fn expand_named_struct_field(
 
     if attrs.optional || is_option_type(ty) {
         Ok(Some(NamedStructField::Regular(quote! {
-            ::ts_embed_vm::TsField::optional(
+            ::rustts::TsField::optional(
                 #field_name,
-                ::ts_embed_vm::schema_type_ref::<#ty>(),
+                ::rustts::schema_type_ref::<#ty>(),
             )
         })))
     } else {
         Ok(Some(NamedStructField::Regular(quote! {
-            ::ts_embed_vm::TsField::required(
+            ::rustts::TsField::required(
                 #field_name,
-                ::ts_embed_vm::schema_type_ref::<#ty>(),
+                ::rustts::schema_type_ref::<#ty>(),
             )
         })))
     }
@@ -319,7 +506,7 @@ fn expand_enum_type(
     let tag = tag.unwrap_or("type");
 
     Ok(quote! {
-        ::ts_embed_vm::TsType::Enum {
+        ::rustts::TsType::Enum {
             tag: Some(String::from(#tag)),
             variants: vec![#(#variants),*],
         }
@@ -340,7 +527,7 @@ fn expand_adjacently_tagged_enum_type(
     let tag = tag.unwrap_or("type");
 
     Ok(quote! {
-        ::ts_embed_vm::TsType::Enum {
+        ::rustts::TsType::Enum {
             tag: Some(String::from(#tag)),
             variants: vec![#(#variants),*],
         }
@@ -363,7 +550,7 @@ fn expand_untagged_enum_type(data: &syn::DataEnum) -> Result<proc_macro2::TokenS
         .collect::<Result<Vec<_>>>()?;
 
     Ok(quote! {
-        ::ts_embed_vm::TsType::Union(vec![#(#variants),*])
+        ::rustts::TsType::Union(vec![#(#variants),*])
     })
 }
 
@@ -389,7 +576,7 @@ fn expand_enum_variant(
         .unwrap_or_else(|| rename_variant(&variant.ident, rename_all));
     match &variant.fields {
         Fields::Unit => Ok(quote! {
-            ::ts_embed_vm::TsEnumVariant::unit(#name)
+            ::rustts::TsEnumVariant::unit(#name)
         }),
         Fields::Named(fields) => {
             let fields = fields
@@ -398,7 +585,7 @@ fn expand_enum_variant(
                 .filter_map(|field| expand_enum_payload_field(field).transpose())
                 .collect::<Result<Vec<_>>>()?;
             Ok(quote! {
-                ::ts_embed_vm::TsEnumVariant::payload(#name, vec![#(#fields),*])
+                ::rustts::TsEnumVariant::payload(#name, vec![#(#fields),*])
             })
         }
         Fields::Unnamed(fields) => {
@@ -410,7 +597,7 @@ fn expand_enum_variant(
             }
             let field = tuple_variant_payload_field(&fields.unnamed)?;
             Ok(quote! {
-                ::ts_embed_vm::TsEnumVariant::payload(#name, vec![#field])
+                ::rustts::TsEnumVariant::payload(#name, vec![#field])
             })
         }
     }
@@ -427,23 +614,23 @@ fn expand_adjacently_tagged_enum_variant(
         .unwrap_or_else(|| rename_variant(&variant.ident, rename_all));
     match &variant.fields {
         Fields::Unit => Ok(quote! {
-            ::ts_embed_vm::TsEnumVariant::unit(#name)
+            ::rustts::TsEnumVariant::unit(#name)
         }),
         Fields::Named(fields) => {
             let payload = expand_named_fields_object(&fields.named, None)?;
             Ok(quote! {
-                ::ts_embed_vm::TsEnumVariant::payload(
+                ::rustts::TsEnumVariant::payload(
                     #name,
-                    vec![::ts_embed_vm::TsField::required(#content, #payload)],
+                    vec![::rustts::TsField::required(#content, #payload)],
                 )
             })
         }
         Fields::Unnamed(fields) => {
             let payload = expand_tuple_payload_type(&fields.unnamed)?;
             Ok(quote! {
-                ::ts_embed_vm::TsEnumVariant::payload(
+                ::rustts::TsEnumVariant::payload(
                     #name,
-                    vec![::ts_embed_vm::TsField::required(#content, #payload)],
+                    vec![::rustts::TsField::required(#content, #payload)],
                 )
             })
         }
@@ -473,7 +660,7 @@ fn tuple_variant_payload_field(
     let field_name = if fields.len() == 1 { "value" } else { "items" };
     let ty = expand_tuple_payload_type(fields)?;
     Ok(quote! {
-        ::ts_embed_vm::TsField::required(#field_name, #ty)
+        ::rustts::TsField::required(#field_name, #ty)
     })
 }
 
@@ -483,7 +670,7 @@ fn expand_tuple_payload_type(
     if fields.len() == 1 {
         let ty = &fields.first().expect("checked len").ty;
         return Ok(quote! {
-            ::ts_embed_vm::schema_type_ref::<#ty>()
+            ::rustts::schema_type_ref::<#ty>()
         });
     }
 
@@ -493,12 +680,12 @@ fn expand_tuple_payload_type(
             reject_flatten_field(field)?;
             let ty = &field.ty;
             Ok(quote! {
-                ::ts_embed_vm::schema_type_ref::<#ty>()
+                ::rustts::schema_type_ref::<#ty>()
             })
         })
         .collect::<Result<Vec<_>>>()?;
 
     Ok(quote! {
-        ::ts_embed_vm::TsType::Tuple(vec![#(#items),*])
+        ::rustts::TsType::Tuple(vec![#(#items),*])
     })
 }

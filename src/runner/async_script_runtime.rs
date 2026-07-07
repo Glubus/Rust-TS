@@ -25,7 +25,7 @@ use super::render::{
 /// Experimental async QuickJS runtime for Promise-aware host functions.
 ///
 /// This type is intentionally low-level: it expects JavaScript that is already suitable
-/// for QuickJS ESM execution. The main [`crate::TsVm`] control plane still owns normal
+/// for QuickJS ESM execution. The main [`crate::RustTs`] control plane still owns normal
 /// compile/cache/lifecycle orchestration.
 pub struct AsyncScriptRuntime {
     runtime: AsyncRuntime,

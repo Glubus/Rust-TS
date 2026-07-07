@@ -1,37 +1,32 @@
----
-title: Register Host Functions And Callbacks
-sidebar_position: 2
----
-
 # Register Host Functions And Callbacks
 
 This guide shows the normal V0 flow:
 
-1. Create a `TsVm`.
+1. Create a `RustTs`.
 2. Declare Rust payload structs.
 3. Derive `TsSchema`.
 4. Implement `HostFunction` or `HostCallback`.
 5. Register contracts with `typed_function` and `typed_callback`.
-6. Generate `tsvm.d.ts` and `tsvm.sdk.ts`.
+6. Generate declaration and SDK files for your package.
 7. Use the generated SDK from TypeScript.
 
 ## Install With Derive Support
 
 ```toml
 [dependencies]
-ts_embed_vm = { version = "0.1.0", features = ["derive"] }
+rustts = { version = "0.1.0", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 ```
 
 ## Create The VM
 
 ```rust
-use ts_embed_vm::{TsVm, VmError, VmOptions};
+use rustts::{RustTs, VmError, VmOptions};
 
-fn create_vm() -> Result<TsVm, VmError> {
+fn create_vm() -> Result<RustTs, VmError> {
     let mut options = VmOptions::default();
-    options.cache_dir = "target/tsvm-cache".into();
-    TsVm::new(options)
+    options.cache_dir = "target/rustts-cache".into();
+    RustTs::new(options)
 }
 ```
 
@@ -46,7 +41,7 @@ the generated TypeScript namespace. For example, `user.find` becomes
 
 ```rust
 use serde::{Deserialize, Serialize};
-use ts_embed_vm::{
+use rustts::{
     HostContract, HostContractKind, HostFunction, Schema, TsSchema, VmError,
 };
 
@@ -111,7 +106,7 @@ name controls both `ctx.on("user.found", ...)` and the generated ergonomic alias
 
 ```rust
 use serde::{Deserialize, Serialize};
-use ts_embed_vm::{HostCallback, HostContract, HostContractKind, Schema, TsSchema};
+use rustts::{HostCallback, HostContract, HostContractKind, Schema, TsSchema};
 
 #[derive(Deserialize, Serialize, TsSchema)]
 #[serde(rename_all = "camelCase")]
@@ -162,10 +157,18 @@ That registry is the source of truth for:
 ## Generate The SDK Files
 
 ```rust
-let written = vm.registry().write_sdk_files("target/tsvm-generated")?;
+use rustts::SdkFileNames;
 
-assert!(written.types_path.ends_with("tsvm.d.ts"));
-assert!(written.sdk_path.ends_with("tsvm.sdk.ts"));
+let written = vm.registry().write_sdk_files_with_names(
+    "target/generated",
+    &SdkFileNames {
+        types: "my_sdk.d.ts".into(),
+        sdk: "my_sdk.ts".into(),
+    },
+)?;
+
+assert!(written.types_path.ends_with("my_sdk.d.ts"));
+assert!(written.sdk_path.ends_with("my_sdk.ts"));
 ```
 
 The generated SDK includes:
@@ -203,9 +206,9 @@ if (FindUserInputModel.is(input)) {
 ## Load And Run A Script
 
 ```rust
-vm.load_script("plugin", include_str!("plugin.ts"))?;
+vm.load_script("user-rules", include_str!("user_rules.ts"))?;
 
-let result = vm.call_function("plugin", "lookup", Vec::new())?;
+let result = vm.call_function("user-rules", "lookup", Vec::new())?;
 println!("{result}");
 
 vm.emit_callback::<UserFound>(&UserFoundPayload {
@@ -243,7 +246,7 @@ strict unknown-field rejection when you want scripts to fail fast on extra input
 fields.
 
 ```rust
-use ts_embed_vm::{VmContractValidation, VmUnknownFieldValidation, VmOptions};
+use rustts::{VmContractValidation, VmUnknownFieldValidation, VmOptions};
 
 let mut options = VmOptions::default();
 options.contract_validation = VmContractValidation::Inputs;

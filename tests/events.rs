@@ -1,11 +1,11 @@
 mod support;
 
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use ts_embed_vm::{
-    DeliveryMode, HostCallback, HostContract, HostContractKind, Schema, TsField, TsType, TsVm,
+use rustts::{
+    DeliveryMode, HostCallback, HostContract, HostContractKind, RustTs, Schema, TsField, TsType,
     VmEvent, VmMemoryPressureAlert, VmMemoryPressureThresholds,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use support::TestCacheDir;
 
@@ -63,7 +63,7 @@ impl HostCallback for FirstScoreUpdate {
     }
 }
 
-fn register_score_update(vm: &TsVm) {
+fn register_score_update(vm: &RustTs) {
     vm.registry()
         .callback::<ScoreUpdate>()
         .expect("register score update callback");
@@ -72,7 +72,7 @@ fn register_score_update(vm: &TsVm) {
 #[test]
 fn emit_callback_updates_script_state() {
     let cache_dir = TestCacheDir::new("emit-callback");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
@@ -98,7 +98,7 @@ fn emit_callback_updates_script_state() {
 #[test]
 fn emit_publishes_lifecycle_event() {
     let cache_dir = TestCacheDir::new("emit-event-stream");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     register_score_update(&vm);
     let subscription = vm.subscribe();
 
@@ -123,7 +123,7 @@ fn emit_publishes_lifecycle_event() {
 #[test]
 fn emit_targets_only_subscribed_scripts() {
     let cache_dir = TestCacheDir::new("emit-targeted-routing");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
@@ -151,7 +151,7 @@ fn emit_targets_only_subscribed_scripts() {
 #[test]
 fn typed_callback_delivery_first_targets_one_script() {
     let cache_dir = TestCacheDir::new("emit-first-callback");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     vm.registry()
         .callback::<FirstScoreUpdate>()
         .expect("register first score update callback");
@@ -173,7 +173,7 @@ fn typed_callback_delivery_first_targets_one_script() {
 #[test]
 fn stats_expose_manager_latency_counters() {
     let cache_dir = TestCacheDir::new("manager-latency-counters");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
@@ -224,7 +224,7 @@ fn stats_expose_latency_histograms_when_enabled() {
     let cache_dir = TestCacheDir::new("manager-latency-histograms");
     let mut options = cache_dir.vm_options();
     options.latency_histograms = true;
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
     register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
@@ -248,7 +248,7 @@ fn stats_expose_latency_histograms_when_enabled() {
 #[test]
 fn stats_expose_memory_shape_counters() {
     let cache_dir = TestCacheDir::new("memory-shape-counters");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
@@ -274,7 +274,7 @@ fn stats_classify_quickjs_memory_pressure_when_thresholds_are_configured() {
     let mut options = cache_dir.vm_options();
     options.memory_pressure_thresholds =
         Some(VmMemoryPressureThresholds::from_basis_points(0, u64::MAX));
-    let vm = TsVm::new(options).expect("create vm");
+    let vm = RustTs::new(options).expect("create vm");
     register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
@@ -295,7 +295,7 @@ fn stats_classify_quickjs_memory_pressure_when_thresholds_are_configured() {
 #[test]
 fn stats_leave_quickjs_memory_pressure_alert_disabled_by_default() {
     let cache_dir = TestCacheDir::new("memory-pressure-thresholds-disabled");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     register_score_update(&vm);
 
     vm.load_script("listener", EVENT_LISTENER_SCRIPT)
@@ -311,7 +311,7 @@ fn stats_leave_quickjs_memory_pressure_alert_disabled_by_default() {
 }
 
 fn assert_histogram_total(
-    histogram: &Option<Vec<ts_embed_vm::VmLatencyHistogramBucket>>,
+    histogram: &Option<Vec<rustts::VmLatencyHistogramBucket>>,
     expected_total: u64,
 ) {
     let histogram = histogram.as_ref().expect("latency histogram");

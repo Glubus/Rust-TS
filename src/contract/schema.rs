@@ -7,6 +7,10 @@ use std::{
     path::PathBuf,
 };
 
+use rquickjs::{Ctx, Result as JsResult, Value as JsValue};
+use serde::{Serialize, de::DeserializeOwned};
+
+use super::bridge::{js_value_to_json, json_to_js_value};
 use super::{Schema, TsRecordKey, TsType};
 
 thread_local! {
@@ -61,6 +65,30 @@ pub trait TsSchema {
     /// not match this schema or contains undeclared object fields.
     fn validate_json_strict(value: &serde_json::Value) -> Result<(), String> {
         Self::schema().validate_json_strict(value)
+    }
+
+    /// Converts a JavaScript value into this type for typed host bridge fast paths.
+    #[doc(hidden)]
+    fn __rustts_from_js_value<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> JsResult<Self>
+    where
+        Self: Sized + DeserializeOwned,
+    {
+        let value = js_value_to_json(ctx, value)?;
+        serde_json::from_value(value).map_err(|error| {
+            rquickjs::Error::new_from_js_message("json", "rust", error.to_string())
+        })
+    }
+
+    /// Converts this value into JavaScript for typed host bridge fast paths.
+    #[doc(hidden)]
+    fn __rustts_into_js_value<'js>(self, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>>
+    where
+        Self: Sized + Serialize,
+    {
+        let value = serde_json::to_value(self).map_err(|error| {
+            rquickjs::Error::new_from_js_message("rust", "json", error.to_string())
+        })?;
+        json_to_js_value(ctx, value)
     }
 }
 

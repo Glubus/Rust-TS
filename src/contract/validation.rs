@@ -46,6 +46,7 @@ fn validate_type(
         TsType::Boolean => validate_bool(value, path),
         TsType::Number => validate_number(value, path),
         TsType::String => validate_string(value, path),
+        TsType::Uint8Array => validate_array(&TsType::Number, value, path, options, context),
         TsType::Literal(literal) => validate_literal(literal, value, path),
         TsType::Object(fields) => validate_object(fields, value, path, options, context),
         TsType::Array(item) => validate_array(item, value, path, options, context),

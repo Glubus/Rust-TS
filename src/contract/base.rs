@@ -11,10 +11,10 @@ pub trait HostContract {
     const NAME: &'static str;
 
     /// Virtual ESM module name used by scripts.
-    const IMPORT_MODULE: &'static str;
+    const IMPORT_MODULE: &'static str = "";
 
     /// Export path inside [`Self::IMPORT_MODULE`].
-    const EXPORT_PATH: &'static [&'static str];
+    const EXPORT_PATH: &'static [&'static str] = &[];
 
     /// Returns the schema metadata of this contract.
     fn schema() -> Schema;

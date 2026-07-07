@@ -1,4 +1,4 @@
-use ts_embed_vm::TsSchema;
+use rustts::TsSchema;
 
 #[derive(TsSchema)]
 #[serde(tag = "kind")]

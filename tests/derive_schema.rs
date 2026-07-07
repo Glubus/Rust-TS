@@ -4,26 +4,26 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use ts_embed_vm::{
+use rustts::{
     HostContract, HostContractKind, HostFunction, InMemoryHostContractRegistry, Schema,
     TsEnumVariant, TsField, TsRecordKey, TsSchema, TsType, VmError,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(TsSchema)]
 #[allow(dead_code)]
 struct InvoicePayload {
     id: u64,
-    #[tsvm(rename = "displayName")]
+    #[rustts(rename = "displayName")]
     name: String,
-    #[tsvm(optional)]
+    #[rustts(optional)]
     metadata: BTreeMap<String, String>,
     flags: Vec<bool>,
 }
 
 #[derive(TsSchema)]
-#[tsvm(name = "BillingStatus")]
+#[rustts(name = "BillingStatus")]
 #[allow(dead_code)]
 enum Status {
     Pending,
@@ -179,7 +179,7 @@ struct CreateInvoiceInput {
 }
 
 #[derive(Debug, Serialize, TsSchema)]
-#[tsvm(name = "InvoiceCreated")]
+#[rustts(name = "InvoiceCreated")]
 #[allow(dead_code)]
 struct CreateInvoiceOutput {
     invoice_id: String,
@@ -287,7 +287,7 @@ impl HostContract for AutoInvoiceCreated {
     }
 }
 
-impl ts_embed_vm::HostCallback for AutoInvoiceCreated {
+impl rustts::HostCallback for AutoInvoiceCreated {
     type Payload = AutoInvoiceCreatedPayload;
 }
 
@@ -304,7 +304,7 @@ struct SerdePlayerPayload {
     spawn_region: String,
     #[serde(rename = "damage")]
     amount: f32,
-    #[tsvm(rename = "tsvmName")]
+    #[rustts(rename = "rusttsName")]
     serde_priority_check: String,
     #[serde(skip)]
     internal_seed: u64,
@@ -380,7 +380,7 @@ fn derive_ts_schema_respects_serde_field_attributes() {
             TsField::optional("lives", TsType::Number),
             TsField::optional("spawnRegion", TsType::String),
             TsField::required("damage", TsType::Number),
-            TsField::required("tsvmName", TsType::String),
+            TsField::required("rusttsName", TsType::String),
         ])
     );
 }

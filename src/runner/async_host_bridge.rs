@@ -3,12 +3,17 @@
 use std::sync::Arc;
 
 use rquickjs::{
-    AsyncContext, Ctx, Error as JsError, Function, Object, Result as JsResult, function::Async,
+    AsyncContext, CatchResultExt, Ctx, Error as JsError, Function, Object, Result as JsResult,
+    function::Async,
 };
 use serde_json::Value;
 
+use crate::contract::{HostContractAbi, HostFunctionExecution};
 use crate::error::VmError;
 use crate::registry::InMemoryHostContractRegistry;
+
+use super::errors::caught_js_error;
+use super::render::host_lazy_bindings_source;
 
 /// Installs the experimental AsyncContext host bridge.
 ///
@@ -19,7 +24,10 @@ pub async fn install_async_host_bridge(
     host_registry: Arc<InMemoryHostContractRegistry>,
 ) -> Result<(), VmError> {
     context
-        .async_with(async |ctx| install_host_items(ctx, host_registry))
+        .async_with(async |ctx| {
+            install_host_items(ctx.clone(), host_registry.clone())?;
+            install_async_host_lazy_bindings(ctx, host_registry.as_ref())
+        })
         .await
 }
 
@@ -37,6 +45,47 @@ fn install_host_items(
         .map_err(js_error)?;
     globals.set("__host", raw_host).map_err(js_error)?;
     Ok(())
+}
+
+fn install_async_host_lazy_bindings(
+    ctx: Ctx<'_>,
+    host_registry: &InMemoryHostContractRegistry,
+) -> Result<(), VmError> {
+    let contracts = host_registry
+        .descriptors()?
+        .into_iter()
+        .filter_map(|descriptor| match descriptor.abi {
+            HostContractAbi::Function {
+                execution: HostFunctionExecution::AsyncPromise,
+                ..
+            } => Some(descriptor.name),
+            HostContractAbi::Function { .. }
+            | HostContractAbi::Callback { .. }
+            | HostContractAbi::Context { .. }
+            | HostContractAbi::Unknown => None,
+        })
+        .collect::<Vec<_>>();
+
+    if contracts.is_empty() {
+        return Ok(());
+    }
+
+    let contracts_json = serde_json::to_string(&contracts)?;
+    let bridge_method_json = serde_json::to_string("callAsync")?;
+    let source = host_lazy_bindings_source(&contracts_json, &bridge_method_json, true);
+    ctx.eval_with_options::<(), _>(source, build_eval_options("async-host-lazy-bindings"))
+        .catch(&ctx)
+        .map_err(caught_js_error)
+}
+
+fn build_eval_options(script_id: &str) -> rquickjs::context::EvalOptions {
+    let mut options = rquickjs::context::EvalOptions::default();
+    options.global = true;
+    options.strict = true;
+    options.promise = true;
+    options.backtrace_barrier = true;
+    options.filename = Some(script_id.to_owned());
+    options
 }
 
 fn build_call_async_function<'js>(

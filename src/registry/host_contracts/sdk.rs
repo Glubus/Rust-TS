@@ -412,7 +412,7 @@ fn render_sdk_aggregate(
     }
 
     Some(format!(
-        "export const tsvmSdk = {{\n{}\n}};",
+        "export const rusttsSdk = {{\n{}\n}};",
         entries.join("\n")
     ))
 }
@@ -538,6 +538,7 @@ fn render_value_predicate(ty: &TsType, expression: &str) -> String {
             format!("typeof {expression} === \"number\" && Number.isFinite({expression})")
         }
         TsType::String => format!("typeof {expression} === \"string\""),
+        TsType::Uint8Array => format!("{expression} instanceof Uint8Array"),
         TsType::Null => format!("{expression} === null"),
         TsType::Literal(literal) => render_literal_predicate(literal, expression),
         TsType::Object(fields) => render_object_predicate(fields, expression),

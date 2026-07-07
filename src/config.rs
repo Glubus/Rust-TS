@@ -43,7 +43,7 @@ impl VmUnknownFieldValidation {
     }
 }
 
-/// Runtime configuration for [`crate::TsVm`].
+/// Runtime configuration for [`crate::RustTs`].
 #[derive(Debug, Clone)]
 pub struct VmOptions {
     /// Number of worker threads to start.

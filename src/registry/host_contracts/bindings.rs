@@ -8,11 +8,12 @@ use std::pin::Pin;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+use rquickjs::{Ctx, Result as JsResult, Value as JsValue};
 use serde_json::Value;
 
 #[cfg(feature = "tokio")]
 use crate::contract::AsyncHostFunction;
-use crate::contract::HostFunction;
+use crate::contract::{HostFunction, TsSchema, js_value_to_json, json_to_js_value};
 use crate::error::VmError;
 
 #[cfg(feature = "async-promise")]
@@ -23,6 +24,12 @@ type OptionalHostFunctionFuture =
 
 trait HostFunctionBinding: Send + Sync {
     fn call_value(&self, input: Value) -> Result<Value, VmError>;
+
+    fn call_js_value<'js>(&self, ctx: &Ctx<'js>, input: JsValue<'js>) -> JsResult<JsValue<'js>> {
+        let input = js_value_to_json(ctx, input)?;
+        let output = self.call_value(input).map_err(js_host_error)?;
+        json_to_js_value(ctx, output)
+    }
 
     #[cfg(feature = "async-promise")]
     fn call_value_async(&self, input: Value) -> HostFunctionFuture;
@@ -48,6 +55,42 @@ where
         let input = serde_json::from_value::<T::Input>(input)?;
         let output = T::call(input)?;
         serde_json::to_value(output).map_err(VmError::from)
+    }
+
+    #[cfg(feature = "async-promise")]
+    fn call_value_async(&self, input: Value) -> HostFunctionFuture {
+        Box::pin(ready(self.call_value(input)))
+    }
+}
+
+struct TypedStaticHostFunctionBinding<T> {
+    marker: PhantomData<T>,
+}
+
+impl<T> TypedStaticHostFunctionBinding<T> {
+    fn new() -> Self {
+        Self {
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T> HostFunctionBinding for TypedStaticHostFunctionBinding<T>
+where
+    T: HostFunction + Send + Sync + 'static,
+    T::Input: TsSchema,
+    T::Output: TsSchema,
+{
+    fn call_value(&self, input: Value) -> Result<Value, VmError> {
+        let input = serde_json::from_value::<T::Input>(input)?;
+        let output = T::call(input)?;
+        serde_json::to_value(output).map_err(VmError::from)
+    }
+
+    fn call_js_value<'js>(&self, ctx: &Ctx<'js>, input: JsValue<'js>) -> JsResult<JsValue<'js>> {
+        let input = T::Input::__rustts_from_js_value(ctx, input)?;
+        let output = T::call(input).map_err(js_host_error)?;
+        T::Output::__rustts_into_js_value(output, ctx)
     }
 
     #[cfg(feature = "async-promise")]
@@ -121,6 +164,10 @@ fn async_task_error(error: tokio::task::JoinError) -> VmError {
     }
 }
 
+fn js_host_error(error: impl ToString) -> rquickjs::Error {
+    rquickjs::Error::new_from_js_message("host", "function", error.to_string())
+}
+
 #[derive(Default)]
 pub(super) struct FunctionBindingStore {
     by_name: Mutex<HashMap<String, Arc<dyn HostFunctionBinding>>>,
@@ -135,6 +182,20 @@ impl FunctionBindingStore {
         guard.insert(
             T::NAME.to_owned(),
             Arc::new(StaticHostFunctionBinding::<T>::new()),
+        );
+        Ok(())
+    }
+
+    pub(super) fn insert_typed_static<T>(&self) -> Result<(), VmError>
+    where
+        T: HostFunction + Send + Sync + 'static,
+        T::Input: TsSchema,
+        T::Output: TsSchema,
+    {
+        let mut guard = self.by_name.lock().map_err(|_| VmError::WorkerPanicked)?;
+        guard.insert(
+            T::NAME.to_owned(),
+            Arc::new(TypedStaticHostFunctionBinding::<T>::new()),
         );
         Ok(())
     }
@@ -161,6 +222,25 @@ impl FunctionBindingStore {
             return Ok(None);
         };
         binding.call_value(input).map(Some)
+    }
+
+    pub(super) fn invoke_js<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        name: &str,
+        input: JsValue<'js>,
+    ) -> JsResult<Option<JsValue<'js>>> {
+        let binding = {
+            let guard = self
+                .by_name
+                .lock()
+                .map_err(|_| js_host_error(VmError::WorkerPanicked))?;
+            guard.get(name).cloned()
+        };
+        let Some(binding) = binding else {
+            return Ok(None);
+        };
+        binding.call_js_value(ctx, input).map(Some)
     }
 
     #[cfg(feature = "async-promise")]

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ts_embed_vm::VmOptions;
+use rustts::VmOptions;
 
 static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -53,7 +53,7 @@ fn unique_path(prefix: &str) -> PathBuf {
         .expect("system time before epoch")
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "ts-embed-vm-{prefix}-{}-{timestamp}-{sequence}",
+        "rustts-{prefix}-{}-{timestamp}-{sequence}",
         std::process::id()
     ))
 }

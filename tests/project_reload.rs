@@ -2,8 +2,8 @@ mod support;
 
 use std::fs;
 
+use rustts::{HostCallback, HostContract, HostContractKind, RustTs, Schema, TsField, TsType};
 use serde_json::json;
-use ts_embed_vm::{HostCallback, HostContract, HostContractKind, Schema, TsField, TsType, TsVm};
 
 use support::TestCacheDir;
 
@@ -36,7 +36,7 @@ impl HostCallback for ScoreUpdate {
 #[test]
 fn project_reload_replaces_dependency_graph_and_preserves_hot_route() {
     let cache_dir = TestCacheDir::new("project-reload-graph");
-    let vm = TsVm::new(cache_dir.vm_options()).expect("create vm");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
     vm.registry()
         .callback::<ScoreUpdate>()
         .expect("register score update callback");

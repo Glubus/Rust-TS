@@ -26,5 +26,5 @@ pub(super) fn build_runtime_module_id_map(
 }
 
 pub(super) fn runtime_module_id(graph_id: u64, module_id: &str) -> String {
-    format!("tsvm://graph/{graph_id}/{module_id}")
+    format!("rustts://graph/{graph_id}/{module_id}")
 }

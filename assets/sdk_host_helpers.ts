@@ -1,5 +1,6 @@
 type HostBridge = {
   call(name: string, inputJson: string): string;
+  callValue?: (name: string, input: unknown) => unknown;
   callAsync?: (name: string, inputJson: string) => Promise<string>;
 };
 
@@ -10,6 +11,10 @@ function __hostInput(input?: unknown): string {
 }
 
 function __hostCall<T>(name: string, input?: unknown): T {
+  if (__host.callValue) {
+    return __host.callValue(name, input === undefined ? null : input) as T;
+  }
+
   return JSON.parse(__host.call(name, __hostInput(input))) as T;
 }
 

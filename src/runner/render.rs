@@ -1,8 +1,9 @@
 //! Small string assembly helpers for runner internals.
 
-const WORKER_THREAD_PREFIX: &str = "ts-embed-vm-";
+const WORKER_THREAD_PREFIX: &str = "rustts-";
 const BOOTSTRAP_MODULE_CONTEXT_TEMPLATE: &str =
     include_str!("../../assets/bootstrap_module_context.js");
+const HOST_LAZY_BINDINGS_TEMPLATE: &str = include_str!("../../assets/host_lazy_bindings.js");
 const CALL_FUNCTION_TEMPLATE: &str = include_str!("../../assets/call_function.js");
 #[cfg(feature = "async-promise")]
 const ASYNC_CALL_FUNCTION_TEMPLATE: &str = include_str!("../../assets/async_call_function.js");
@@ -15,6 +16,9 @@ const FUNCTION_NAME_PLACEHOLDER: &str = "__FUNCTION_NAME__";
 const FUNCTION_ARGS_PLACEHOLDER: &str = "__FUNCTION_ARGS__";
 const EVENT_NAME_PLACEHOLDER: &str = "__EVENT_NAME__";
 const EVENT_PAYLOAD_PLACEHOLDER: &str = "__EVENT_PAYLOAD__";
+const CONTRACTS_PLACEHOLDER: &str = "__contracts__";
+const BRIDGE_METHOD_PLACEHOLDER: &str = "__bridge_method__";
+const RETURNS_PROMISE_PLACEHOLDER: &str = "__returns_promise__";
 
 pub(crate) fn eval_file_name(script_id: &str) -> String {
     suffixed(script_id, ".js")
@@ -26,6 +30,20 @@ pub(crate) fn worker_thread_name(worker_id: usize) -> String {
 
 pub(crate) fn bootstrap_module_context_source() -> &'static str {
     BOOTSTRAP_MODULE_CONTEXT_TEMPLATE
+}
+
+pub(crate) fn host_lazy_bindings_source(
+    contracts_json: &str,
+    bridge_method_json: &str,
+    returns_promise: bool,
+) -> String {
+    HOST_LAZY_BINDINGS_TEMPLATE
+        .replace(CONTRACTS_PLACEHOLDER, contracts_json)
+        .replace(BRIDGE_METHOD_PLACEHOLDER, bridge_method_json)
+        .replace(
+            RETURNS_PROMISE_PLACEHOLDER,
+            if returns_promise { "true" } else { "false" },
+        )
 }
 
 pub(crate) fn function_call_source(

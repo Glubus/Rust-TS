@@ -20,7 +20,7 @@ pub(super) fn spawn_async_worker(
     rx: Receiver<QueuedCommand<AsyncWorkerCommand>>,
 ) -> Result<JoinHandle<()>, VmError> {
     thread::Builder::new()
-        .name(format!("tsvm-async-worker-{worker_id}"))
+        .name(format!("rustts-async-worker-{worker_id}"))
         .spawn(move || run_async_worker(worker_id, options, host_registry, rx))
         .map_err(VmError::from)
 }
