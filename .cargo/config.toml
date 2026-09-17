@@ -1,3 +1,2 @@
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]
+# Use Rust's default platform linker. Optional local linkers such as mold must
+# be configured by the developer, not required by consumers or CI runners.

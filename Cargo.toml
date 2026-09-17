@@ -1,8 +1,12 @@
 [package]
 name = "rustts"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.96"
+description = "Embedded TypeScript runtime for Rust with typed host contracts and generated SDKs"
+repository = "https://github.com/Glubus/Rust-TS"
+readme = "README.md"
+license = "MIT"
 
 [workspace]
 members = [".", "rustts_macros"]
@@ -25,7 +29,7 @@ arc-swap = "1.7.1"
 futures-timer = { version = "3.0.3", optional = true }
 tempfile = "3.23.0"
 tokio = { version = "1.52.3", optional = true, features = ["rt-multi-thread", "sync"] }
-rustts_macros = { path = "rustts_macros", optional = true }
+rustts_macros = { version = "0.2.0", path = "rustts_macros", optional = true }
 
 [dev-dependencies]
 criterion = "0.8.2"

@@ -1,7 +1,11 @@
 [package]
 name = "rustts_macros"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.96"
+description = "Derive macros for RustTS TypeScript schemas"
+repository = "https://github.com/Glubus/Rust-TS"
+license = "MIT"
 
 [lib]
 proc-macro = true

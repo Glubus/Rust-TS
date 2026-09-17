@@ -2,6 +2,8 @@
 
 Small embedded TypeScript runtime for Rust applications.
 
+Version 0.2.0 is licensed under MIT. See [the changelog](CHANGELOG.md) for migration notes.
+
 `RustTS` lets a Rust host load TypeScript scripts, expose Rust host
 functions and callbacks, and generate TypeScript declaration/SDK files from the
 Rust-side contract registry.
