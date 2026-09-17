@@ -90,3 +90,10 @@ cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo test --workspace --all-features
 cargo check --benches --features derive
 ```
+
+Install the pinned SDK type checker with `npm ci` before running the tests.
+CI requires it; locally, set `RUSTTS_REQUIRE_TSC=1` to enforce the same rule.
+
+Execution budgets, shutdown, reload, cancellation and cache guarantees are
+documented in [Runtime Guarantees](docs/guides/runtime-guarantees.md).
+Run `cargo run --release --example operational_probe` for operational measurements.

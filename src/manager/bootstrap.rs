@@ -24,6 +24,7 @@ impl ScriptManager {
         let cache = ScriptCache::new(options.cache_dir.clone())?;
         let worker_count = resolve_worker_count(options.worker_threads)?;
         let latency_histograms = options.latency_histograms;
+        let event_queue_capacity = options.event_queue_capacity;
         let host_contract_registry =
             Arc::new(InMemoryHostContractRegistry::with_validation_options(
                 options.contract_validation,
@@ -47,7 +48,8 @@ impl ScriptManager {
                 next_worker: AtomicUsize::new(0),
                 next_oneshot_script: AtomicUsize::new(0),
                 is_shutdown: AtomicBool::new(false),
-                event_bus: EventBus::new(),
+                shutdown_complete: AtomicBool::new(false),
+                event_bus: EventBus::new(event_queue_capacity),
                 metrics: RuntimeMetrics::new(latency_histograms),
                 cache,
                 script_load_lock: Mutex::new(()),
@@ -70,21 +72,25 @@ impl ScriptManager {
         self.inner.event_bus.subscribe()
     }
 
-    /// Requests a graceful shutdown for every worker.
+    /// Interrupts JavaScript and stops all workers, bypassing full command queues.
+    /// Returns `ShutdownTimeout` if a host handler has not returned; safe to retry.
     pub fn shutdown(&self) -> Result<(), VmError> {
-        if self.inner.is_shutdown.swap(true, Ordering::SeqCst) {
-            return self.join_workers();
+        self.inner.is_shutdown.store(true, Ordering::SeqCst);
+        for worker in &self.inner.workers {
+            worker.control.stop();
+            let _ = self.dispatch_shutdown(worker.id);
         }
-
         #[cfg(feature = "async-promise")]
         self.inner.async_workers.shutdown()?;
-        for worker in &self.inner.workers {
-            self.dispatch_shutdown(worker.id)?;
-        }
+        let sync_result = self.join_workers();
         #[cfg(feature = "async-promise")]
-        self.join_async_workers()?;
-        self.join_workers()?;
-        self.inner.event_bus.publish(VmEvent::Shutdown);
+        let async_result = self.join_async_workers();
+        sync_result?;
+        #[cfg(feature = "async-promise")]
+        async_result?;
+        if !self.inner.shutdown_complete.swap(true, Ordering::SeqCst) {
+            self.inner.event_bus.publish(VmEvent::Shutdown);
+        }
         Ok(())
     }
 }
@@ -92,21 +98,12 @@ impl ScriptManager {
 #[cfg(feature = "async-promise")]
 impl ScriptManager {
     fn join_async_workers(&self) -> Result<(), VmError> {
-        let Some(joins) = self
+        let mut joins = self
             .inner
             .async_worker_joins
             .lock()
-            .map_err(|_| VmError::WorkerPanicked)?
-            .take()
-        else {
-            return Ok(());
-        };
-
-        for join in joins {
-            join.join().map_err(|_| VmError::WorkerPanicked)?;
-        }
-
-        Ok(())
+            .map_err(|_| VmError::WorkerPanicked)?;
+        super::worker_pool::join_with_timeout(&mut joins, self.inner.options.shutdown_timeout)
     }
 }
 

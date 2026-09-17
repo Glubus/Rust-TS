@@ -9,3 +9,5 @@
 - [Generate TypeScript SDK Files](guides/generate-sdk-files.md)
 - [Load Scripts And Projects](guides/load-scripts-and-projects.md)
 - [Use Native Bytes](guides/native-bytes.md)
+- [Runtime Guarantees And Measurements](guides/runtime-guarantees.md)
+- [Operational Measurement Baseline](operational-measurements.md)

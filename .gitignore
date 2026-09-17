@@ -3,3 +3,4 @@
 book/
 Cargo.lock
 .idea/
+node_modules/

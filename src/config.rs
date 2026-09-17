@@ -56,6 +56,13 @@ pub struct VmOptions {
     pub max_scripts_per_worker: usize,
     /// Capacity of the command queue used by each background worker.
     pub queue_capacity: usize,
+    /// Maximum wall time per JavaScript operation (excluding queue wait).
+    /// Rust host handlers must return cooperatively; they cannot be preempted.
+    pub execution_timeout: Duration,
+    /// Maximum time shutdown waits for worker threads; shutdown can be retried.
+    pub shutdown_timeout: Duration,
+    /// Events retained per subscription. New events are dropped when full.
+    pub event_queue_capacity: usize,
     /// Sleep duration for a background worker when its queue is idle.
     pub idle_sleep: Duration,
     /// QuickJS memory limit in bytes, applied per worker runtime.
@@ -79,6 +86,9 @@ impl Default for VmOptions {
             cache_dir: PathBuf::from(".ts-embed-cache"),
             max_scripts_per_worker: 32,
             queue_capacity: 256,
+            execution_timeout: Duration::from_secs(5),
+            shutdown_timeout: Duration::from_secs(5),
+            event_queue_capacity: 256,
             idle_sleep: Duration::from_millis(25),
             memory_limit_bytes: 16 * 1024 * 1024,
             max_stack_size_bytes: 512 * 1024,

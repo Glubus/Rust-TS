@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::CompilerService;
 use super::imports::extract_static_import_requests;
 use super::resolver::ModuleResolver;
 use crate::error::VmError;
@@ -25,17 +24,27 @@ pub(crate) struct ProjectCompileOutput {
     pub(crate) modules: Vec<CompiledModule>,
 }
 
-pub(crate) fn compile_project(
-    compiler: &mut CompilerService,
+pub(crate) struct DiscoveredProject {
+    pub(crate) cache_seed: String,
+    pub(crate) entry_module_id: String,
+    pub(crate) modules: Vec<DiscoveredModule>,
+}
+
+pub(crate) struct DiscoveredModule {
+    pub(crate) module_id: String,
+    pub(crate) source: String,
+    pub(crate) resolved_requests: BTreeMap<String, String>,
+}
+
+pub(crate) fn discover_project(
     entry_path: &Path,
     external_modules: &BTreeSet<String>,
-) -> Result<ProjectCompileOutput, VmError> {
+) -> Result<DiscoveredProject, VmError> {
     let entry_path = normalize_entry_path(entry_path)?;
     let resolver = ModuleResolver::for_entry(&entry_path)?;
-    let mut visited = BTreeMap::<PathBuf, CompiledModule>::new();
+    let mut visited = BTreeMap::<PathBuf, DiscoveredModule>::new();
     let mut cache_parts = Vec::<(String, String)>::new();
     compile_module_recursive(
-        compiler,
         &resolver,
         &entry_path,
         external_modules,
@@ -48,7 +57,7 @@ pub(crate) fn compile_project(
     let cache_seed = build_cache_seed(&cache_parts);
     let modules = visited.into_values().collect();
 
-    Ok(ProjectCompileOutput {
+    Ok(DiscoveredProject {
         cache_seed,
         entry_module_id,
         modules,
@@ -56,11 +65,10 @@ pub(crate) fn compile_project(
 }
 
 fn compile_module_recursive(
-    compiler: &mut CompilerService,
     resolver: &ModuleResolver,
     path: &Path,
     external_modules: &BTreeSet<String>,
-    visited: &mut BTreeMap<PathBuf, CompiledModule>,
+    visited: &mut BTreeMap<PathBuf, DiscoveredModule>,
     cache_parts: &mut Vec<(String, String)>,
 ) -> Result<(), VmError> {
     if visited.contains_key(path) {
@@ -71,7 +79,6 @@ fn compile_module_recursive(
     cache_parts.push((module_id(path)?, source_text.clone()));
 
     let requests = extract_static_import_requests(&source_text, path)?;
-    let transpiled_js = compiler.execute_module(&source_text, path)?;
     let mut resolved_requests = BTreeMap::<String, String>::new();
     let mut dependencies = BTreeSet::<PathBuf>::new();
 
@@ -87,16 +94,15 @@ fn compile_module_recursive(
 
     visited.insert(
         path.to_path_buf(),
-        CompiledModule {
+        DiscoveredModule {
             module_id: module_id(path)?,
-            transpiled_js,
+            source: source_text,
             resolved_requests,
         },
     );
 
     for dependency in dependencies {
         compile_module_recursive(
-            compiler,
             resolver,
             &dependency,
             external_modules,

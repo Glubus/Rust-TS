@@ -8,6 +8,7 @@ mod bridge_capability;
 mod command;
 mod errors;
 mod event_dispatch;
+pub(crate) mod execution;
 mod handle;
 mod host_bridge;
 mod invocation;

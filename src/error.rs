@@ -9,6 +9,12 @@ use crate::contract::HostFunctionExecution;
 /// Error type for all VM operations.
 #[derive(Debug, Error)]
 pub enum VmError {
+    /// Workers have not finished stopping; shutdown can be retried.
+    #[error("vm shutdown timed out; a Rust host handler may still be running")]
+    ShutdownTimeout,
+    /// An asynchronous operation exceeded its execution budget.
+    #[error("javascript execution budget exceeded")]
+    ExecutionTimeout,
     /// Background worker is no longer reachable.
     #[error("vm worker is offline")]
     WorkerOffline,

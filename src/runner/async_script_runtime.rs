@@ -28,6 +28,8 @@ use super::render::{
 /// for QuickJS ESM execution. The main [`crate::RustTs`] control plane still owns normal
 /// compile/cache/lifecycle orchestration.
 pub struct AsyncScriptRuntime {
+    control: Arc<super::execution::ExecutionControl>,
+    budget: std::time::Duration,
     runtime: AsyncRuntime,
     module_store: WorkerModuleStore,
     host_registry: Arc<InMemoryHostContractRegistry>,
@@ -36,6 +38,8 @@ pub struct AsyncScriptRuntime {
 
 /// Script mounted inside an [`AsyncScriptRuntime`].
 pub struct AsyncLoadedScript {
+    control: Arc<super::execution::ExecutionControl>,
+    budget: std::time::Duration,
     context: AsyncContext,
     module_store: WorkerModuleStore,
     script_id: ScriptId,
@@ -49,7 +53,19 @@ impl AsyncScriptRuntime {
         options: &VmOptions,
         host_registry: Arc<InMemoryHostContractRegistry>,
     ) -> Result<Self, VmError> {
+        Self::new_with_control(options, host_registry, Arc::default()).await
+    }
+
+    pub(crate) async fn new_with_control(
+        options: &VmOptions,
+        host_registry: Arc<InMemoryHostContractRegistry>,
+        control: Arc<super::execution::ExecutionControl>,
+    ) -> Result<Self, VmError> {
         let runtime = AsyncRuntime::new().map_err(js_error)?;
+        let interrupt = control.clone();
+        runtime
+            .set_interrupt_handler(Some(Box::new(move || interrupt.interrupted())))
+            .await;
         runtime.set_memory_limit(options.memory_limit_bytes).await;
         runtime
             .set_max_stack_size(options.max_stack_size_bytes)
@@ -64,6 +80,8 @@ impl AsyncScriptRuntime {
             .await;
 
         Ok(Self {
+            control,
+            budget: options.execution_timeout,
             runtime,
             module_store,
             host_registry,
@@ -89,12 +107,32 @@ impl AsyncScriptRuntime {
         modules: Vec<CompiledModule>,
     ) -> Result<(AsyncLoadedScript, Vec<String>), VmError> {
         let graph = self.install_modules(&id, transpiled_js, entry_module_id, modules)?;
-        let context = self
-            .create_script_context(&id, &graph.entry_module_id)
-            .await?;
-        let subscriptions = collect_script_subscriptions(&context).await?;
+        let mut cleanup = PendingGraph {
+            store: self.module_store.clone(),
+            id: id.clone(),
+            modules: graph.module_ids.clone(),
+        };
+        let result = self
+            .control
+            .run_async(self.budget, async {
+                let context = self
+                    .create_script_context(&id, &graph.entry_module_id)
+                    .await?;
+                let subscriptions = collect_script_subscriptions(&context).await?;
+                Ok((context, subscriptions))
+            })
+            .await;
+        let (context, subscriptions) = result?;
+        cleanup.modules.clear();
         Ok((
-            build_loaded_script(context, self.module_store.clone(), id, graph),
+            build_loaded_script(
+                context,
+                self.module_store.clone(),
+                id,
+                graph,
+                self.control.clone(),
+                self.budget,
+            ),
             subscriptions,
         ))
     }
@@ -151,8 +189,13 @@ impl AsyncLoadedScript {
         args: &[Value],
     ) -> Result<Value, VmError> {
         let eval_source = build_async_function_call_source(&self.module_id, function_name, args)?;
-        let result_json =
-            eval_async_function_call(&self.context, eval_source, script_id, function_name).await?;
+        let result_json = self
+            .control
+            .run_async(
+                self.budget,
+                eval_async_function_call(&self.context, eval_source, script_id, function_name),
+            )
+            .await?;
         deserialize_function_result(&result_json)
     }
 
@@ -162,7 +205,12 @@ impl AsyncLoadedScript {
         payload: &Value,
     ) -> Result<usize, VmError> {
         let eval_source = build_async_emit_event_source(event_name, payload)?;
-        eval_async_emit_event(&self.context, eval_source).await
+        self.control
+            .run_async(
+                self.budget,
+                eval_async_emit_event(&self.context, eval_source),
+            )
+            .await
     }
 
     /// Returns runtime-scoped module IDs mounted for this script.
@@ -240,13 +288,31 @@ fn build_loaded_script(
     module_store: WorkerModuleStore,
     script_id: ScriptId,
     graph: RuntimeModuleGraph,
+    control: Arc<super::execution::ExecutionControl>,
+    budget: std::time::Duration,
 ) -> AsyncLoadedScript {
     AsyncLoadedScript {
+        control,
+        budget,
         context,
         module_store,
         script_id,
         module_id: graph.entry_module_id,
         module_ids: graph.module_ids,
+    }
+}
+
+struct PendingGraph {
+    store: WorkerModuleStore,
+    id: String,
+    modules: Vec<String>,
+}
+
+impl Drop for PendingGraph {
+    fn drop(&mut self) {
+        if !self.modules.is_empty() {
+            let _ = self.store.remove_script_modules(&self.id, &self.modules);
+        }
     }
 }
 

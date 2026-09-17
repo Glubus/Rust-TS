@@ -27,7 +27,6 @@ pub(crate) fn load_script_into_runtime(
 ) -> Result<Vec<String>, VmError> {
     ensure_script_capacity(state, &id)?;
     ensure_host_contracts_supported(state.host_registry.as_ref(), state.bridge_capability)?;
-    remove_existing_script_modules(state, &id)?;
     let graph_id = state.next_module_graph_id();
     install_host_modules(state)?;
     let graph = install_modules(
@@ -38,8 +37,19 @@ pub(crate) fn load_script_into_runtime(
         modules,
         graph_id,
     )?;
-    let context = create_script_context(state, &id, &graph.entry_module_id)?;
-    let subscriptions = collect_script_subscriptions(&context)?;
+    let prepared = create_script_context(state, &id, &graph.entry_module_id).and_then(|context| {
+        collect_script_subscriptions(&context).map(|subscriptions| (context, subscriptions))
+    });
+    let (context, subscriptions) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            state
+                .module_store
+                .remove_script_modules(&id, &graph.module_ids)?;
+            return Err(error);
+        }
+    };
+    remove_existing_script_modules(state, &id)?;
     insert_loaded_script(state, id, context, graph);
     Ok(subscriptions)
 }

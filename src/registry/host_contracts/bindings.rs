@@ -168,6 +168,45 @@ fn js_host_error(error: impl ToString) -> rquickjs::Error {
     rquickjs::Error::new_from_js_message("host", "function", error.to_string())
 }
 
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    struct ChecksRegistryLock(std::sync::Weak<FunctionBindingStore>);
+    impl HostFunctionBinding for ChecksRegistryLock {
+        fn call_value(&self, _: Value) -> Result<Value, VmError> {
+            let store = self.0.upgrade().unwrap();
+            let mut registry = store
+                .by_name
+                .try_lock()
+                .expect("handler must be able to register another binding");
+            registry.insert(
+                "nested".into(),
+                Arc::new(ChecksRegistryLock(self.0.clone())),
+            );
+            Ok(Value::Null)
+        }
+        #[cfg(feature = "async-promise")]
+        fn call_value_async(&self, input: Value) -> HostFunctionFuture {
+            Box::pin(ready(self.call_value(input)))
+        }
+    }
+
+    #[test]
+    fn json_handler_runs_without_registry_lock() {
+        let store = Arc::new(FunctionBindingStore::default());
+        store.by_name.lock().unwrap().insert(
+            "test".into(),
+            Arc::new(ChecksRegistryLock(Arc::downgrade(&store))),
+        );
+        assert_eq!(
+            store.invoke("test", Value::Null).unwrap(),
+            Some(Value::Null)
+        );
+        assert!(store.by_name.lock().unwrap().contains_key("nested"));
+    }
+}
+
 #[derive(Default)]
 pub(super) struct FunctionBindingStore {
     by_name: Mutex<HashMap<String, Arc<dyn HostFunctionBinding>>>,
@@ -217,8 +256,11 @@ impl FunctionBindingStore {
     }
 
     pub(super) fn invoke(&self, name: &str, input: Value) -> Result<Option<Value>, VmError> {
-        let guard = self.by_name.lock().map_err(|_| VmError::WorkerPanicked)?;
-        let Some(binding) = guard.get(name).cloned() else {
+        let binding = {
+            let guard = self.by_name.lock().map_err(|_| VmError::WorkerPanicked)?;
+            guard.get(name).cloned()
+        };
+        let Some(binding) = binding else {
             return Ok(None);
         };
         binding.call_value(input).map(Some)

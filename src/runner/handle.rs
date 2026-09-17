@@ -11,6 +11,7 @@ use super::WorkerCommand;
 
 #[derive(Debug)]
 pub(crate) struct WorkerHandle {
+    pub(crate) control: Arc<super::execution::ExecutionControl>,
     pub(crate) id: WorkerId,
     pub(crate) tx: SyncSender<QueuedCommand<WorkerCommand>>,
     pub(crate) queue_metrics: Arc<QueueMetrics>,

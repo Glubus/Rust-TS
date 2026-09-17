@@ -54,16 +54,23 @@ impl ScriptManager {
             .lock()
             .map_err(|_| VmError::WorkerPanicked)?;
         let external_modules = self.inner.host_contract_registry.import_module_names()?;
-        let project = compiler.compile_project(entry_path, &external_modules)?;
+        let project = compiler.discover_project(entry_path, &external_modules)?;
         let host_abi = self.inner.host_contract_registry.cache_abi_seed()?;
         let cache_identity = CacheIdentity::project(&project.cache_seed, &host_abi);
         let cache_key = self.inner.cache.cache_key(&cache_identity)?;
         let transpiled_path = self.inner.cache.artifact_path(&cache_key);
 
-        if let Some(cached_project) = self.inner.cache.load(&cache_key)? {
-            return self.cached_project_script(cache_key, transpiled_path, &cached_project);
+        if let Some(cached_project) = self.inner.cache.load(&cache_key)?
+            && let Ok(cached) = self.cached_project_script(
+                cache_key.clone(),
+                transpiled_path.clone(),
+                &cached_project,
+            )
+        {
+            return Ok(cached);
         }
 
+        let project = compiler.transpile_project(project)?;
         let compiled = compiler.build_project_script(cache_key, transpiled_path, &project)?;
         let cached_project = serde_json::to_string(&project)?;
         self.inner
@@ -86,5 +93,33 @@ impl ScriptManager {
             entry_path: Some(project.entry_module_id.clone()),
             modules: project.modules,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VmOptions;
+
+    #[test]
+    fn warm_project_cache_skips_transpilation_and_corruption_rebuilds() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = root.path().join("main.ts");
+        std::fs::write(&entry, "export const value: number = 42;").unwrap();
+        let vm = ScriptManager::new(VmOptions {
+            worker_threads: 1,
+            cache_dir: root.path().join("cache"),
+            ..VmOptions::default()
+        })
+        .unwrap();
+        let first = vm.prepare_project_script(&entry).unwrap();
+        let count = vm.inner.compiler.lock().unwrap().compilation_count;
+        assert!(count > 0);
+        let second = vm.prepare_project_script(&entry).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(vm.inner.compiler.lock().unwrap().compilation_count, count);
+        std::fs::write(&first.transpiled_path, "truncated").unwrap();
+        assert_eq!(vm.prepare_project_script(&entry).unwrap(), first);
+        assert!(vm.inner.compiler.lock().unwrap().compilation_count > count);
     }
 }

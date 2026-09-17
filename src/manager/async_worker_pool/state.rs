@@ -32,10 +32,11 @@ impl AsyncWorkerState {
         worker_id: WorkerId,
         options: &VmOptions,
         host_registry: Arc<InMemoryHostContractRegistry>,
+        control: Arc<crate::runner::execution::ExecutionControl>,
     ) -> Result<Self, VmError> {
         Ok(Self {
             worker_id,
-            runtime: AsyncScriptRuntime::new(options, host_registry).await?,
+            runtime: AsyncScriptRuntime::new_with_control(options, host_registry, control).await?,
             scripts: HashMap::new(),
         })
     }

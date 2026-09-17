@@ -97,9 +97,11 @@ impl ScriptManager {
     }
 
     pub(super) fn dispatch_shutdown(&self, worker_id: WorkerId) -> Result<(), VmError> {
-        let (reply, rx) = channel();
+        let (reply, _rx) = channel();
         let command = WorkerCommand::Shutdown(ShutdownCommand { reply });
-        self.send_command(worker_id, command, rx)
+        let worker = &self.inner.workers[worker_id];
+        let _ = worker.tx.try_send(worker.queue_metrics.track(command));
+        Ok(())
     }
 
     pub(super) fn join_workers(&self) -> Result<(), VmError> {
@@ -109,14 +111,7 @@ impl ScriptManager {
             .lock()
             .map_err(|_| VmError::WorkerPanicked)?;
 
-        if let Some(join_handles) = join_slot.take() {
-            for join_handle in join_handles {
-                if join_handle.join().is_err() {
-                    return Err(VmError::WorkerPanicked);
-                }
-            }
-        }
-        Ok(())
+        super::worker_pool::join_with_timeout(&mut join_slot, self.inner.options.shutdown_timeout)
     }
 
     fn send_command<T>(
@@ -125,6 +120,13 @@ impl ScriptManager {
         command: WorkerCommand,
         rx: Receiver<Result<T, VmError>>,
     ) -> Result<T, VmError> {
+        if self
+            .inner
+            .is_shutdown
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(VmError::WorkerOffline);
+        }
         let worker = self
             .inner
             .workers

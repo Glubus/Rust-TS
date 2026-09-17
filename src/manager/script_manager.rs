@@ -34,6 +34,7 @@ pub(super) struct Inner {
     pub(super) next_worker: AtomicUsize,
     pub(super) next_oneshot_script: AtomicUsize,
     pub(super) is_shutdown: AtomicBool,
+    pub(super) shutdown_complete: AtomicBool,
     pub(super) event_bus: EventBus,
     pub(super) metrics: RuntimeMetrics,
     pub(super) cache: ScriptCache,

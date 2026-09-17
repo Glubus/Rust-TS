@@ -505,15 +505,7 @@ rusttsSdk.ctx.on(\"score.update\", event => {{\n\
 }
 
 fn run_tsc(path: &std::path::Path) -> Option<std::process::Output> {
-    Command::new("tsc")
-        .arg("--noEmit")
-        .arg("--target")
-        .arg("ES2020")
-        .arg("--module")
-        .arg("ES2020")
-        .arg(path)
-        .output()
-        .ok()
+    support::run_tsc(path)
 }
 
 #[test]

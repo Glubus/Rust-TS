@@ -10,7 +10,7 @@ members = [".", "rustts_macros"]
 [features]
 default = []
 tokio = ["dep:tokio"]
-async-promise = ["tokio", "rquickjs/futures"]
+async-promise = ["tokio", "rquickjs/futures", "dep:futures-timer"]
 derive = ["dep:rustts_macros"]
 
 [dependencies]
@@ -22,6 +22,8 @@ serde_json = "1.0.145"
 thiserror = "2.0.17"
 blake3 = "1.8.2"
 arc-swap = "1.7.1"
+futures-timer = { version = "3.0.3", optional = true }
+tempfile = "3.23.0"
 tokio = { version = "1.52.3", optional = true, features = ["rt-multi-thread", "sync"] }
 rustts_macros = { path = "rustts_macros", optional = true }
 

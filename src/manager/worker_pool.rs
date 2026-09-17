@@ -47,3 +47,28 @@ pub(super) fn recv_reply<T>(reply_rx: Receiver<Result<T, VmError>>) -> Result<T,
 fn map_recv_error(_: RecvError) -> VmError {
     VmError::WorkerOffline
 }
+
+pub(super) fn join_with_timeout(
+    slot: &mut Option<Vec<JoinHandle<()>>>,
+    timeout: std::time::Duration,
+) -> Result<(), VmError> {
+    let started = std::time::Instant::now();
+    while slot
+        .as_ref()
+        .is_some_and(|joins| joins.iter().any(|join| !join.is_finished()))
+    {
+        if started.elapsed() >= timeout {
+            return Err(VmError::ShutdownTimeout);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let mut panicked = false;
+    for join in slot.take().unwrap_or_default() {
+        panicked |= join.join().is_err();
+    }
+    if panicked {
+        Err(VmError::WorkerPanicked)
+    } else {
+        Ok(())
+    }
+}

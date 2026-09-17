@@ -32,6 +32,7 @@ mod thread;
 pub(super) struct AsyncWorkerPool {
     workers: Vec<AsyncWorkerHandle>,
     next_worker: AtomicUsize,
+    placements: tokio::sync::Mutex<std::collections::HashMap<ScriptId, usize>>,
 }
 
 pub(super) struct AsyncWorkerLoad {
@@ -61,8 +62,16 @@ impl AsyncWorkerPool {
             let (tx, rx) = sync_channel(options.queue_capacity);
             let queue_metrics = Arc::new(QueueMetrics::default());
             let latency_metrics = Arc::new(LatencyMetrics::new(options.latency_histograms));
-            let join = spawn_async_worker(worker_id, options.clone(), host_registry.clone(), rx)?;
+            let control = Arc::new(crate::runner::execution::ExecutionControl::default());
+            let join = spawn_async_worker(
+                worker_id,
+                options.clone(),
+                host_registry.clone(),
+                rx,
+                control.clone(),
+            )?;
             workers.push(AsyncWorkerHandle {
+                control,
                 tx,
                 queue_metrics,
                 latency_metrics,
@@ -74,6 +83,7 @@ impl AsyncWorkerPool {
             Self {
                 workers,
                 next_worker: AtomicUsize::new(0),
+                placements: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             },
             joins,
         ))
@@ -83,8 +93,12 @@ impl AsyncWorkerPool {
         &self,
         request: AsyncWorkerScriptRequest,
     ) -> Result<AsyncWorkerLoad, VmError> {
-        self.unload_script_from_all_workers(&request.script_id, None)?;
-        let worker = self.next_worker()?;
+        let mut placements = self.placements.lock().await;
+        let id = request.script_id.clone();
+        let index = placements.get(&id).copied().unwrap_or_else(|| {
+            self.next_worker.fetch_add(1, Ordering::Relaxed) % self.workers.len()
+        });
+        let worker = self.worker(index)?;
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let started_at = Instant::now();
         worker.send(AsyncWorkerCommand::LoadScript(AsyncLoadScriptCommand {
@@ -97,6 +111,9 @@ impl AsyncWorkerPool {
         }))?;
         let result = receiver.await.map_err(|_| VmError::WorkerOffline)?;
         worker.latency_metrics.observe_load(started_at.elapsed());
+        if result.is_ok() {
+            placements.insert(id, index);
+        }
         result
     }
 
@@ -180,7 +197,12 @@ impl AsyncWorkerPool {
 
     pub(super) fn shutdown(&self) -> Result<(), VmError> {
         for worker in &self.workers {
-            worker.send(AsyncWorkerCommand::Shutdown(AsyncShutdownCommand))?;
+            worker.control.stop();
+            let _ = worker.tx.try_send(
+                worker
+                    .queue_metrics
+                    .track(AsyncWorkerCommand::Shutdown(AsyncShutdownCommand)),
+            );
         }
         Ok(())
     }
@@ -207,29 +229,6 @@ impl AsyncWorkerPool {
             stats.push(receiver.recv().map_err(|_| VmError::WorkerOffline)??);
         }
         Ok(stats)
-    }
-
-    fn unload_script_from_all_workers(
-        &self,
-        script_id: &str,
-        cache_key: Option<&str>,
-    ) -> Result<(), VmError> {
-        for worker in &self.workers {
-            worker.send(AsyncWorkerCommand::UnloadScript(AsyncUnloadScriptCommand {
-                script_id: script_id.to_owned(),
-                cache_key: cache_key.map(str::to_owned),
-            }))?;
-        }
-        Ok(())
-    }
-
-    fn next_worker(&self) -> Result<&AsyncWorkerHandle, VmError> {
-        if self.workers.is_empty() {
-            return Err(VmError::InvalidWorkerCount);
-        }
-
-        let index = self.next_worker.fetch_add(1, Ordering::Relaxed) % self.workers.len();
-        Ok(&self.workers[index])
     }
 
     fn worker(&self, worker_id: WorkerId) -> Result<&AsyncWorkerHandle, VmError> {

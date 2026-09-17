@@ -11,7 +11,7 @@ use oxc::span::SourceType;
 use oxc::transformer::{Module, TransformOptions};
 
 use super::imports::validate_static_module_graph;
-use super::project::{ProjectCompileOutput, compile_project};
+use super::project::{CompiledModule, DiscoveredProject, ProjectCompileOutput, discover_project};
 use crate::error::VmError;
 
 /// Compiled JavaScript artifact prepared by the control plane.
@@ -27,6 +27,8 @@ pub(crate) struct CompiledScript {
 /// TypeScript to JavaScript compiler configured for runtime execution.
 #[derive(Debug, Clone)]
 pub struct CompilerService {
+    #[cfg(test)]
+    pub(crate) compilation_count: usize,
     printed: String,
     errors: Diagnostics,
     transform_options: TransformOptions,
@@ -38,6 +40,8 @@ impl Default for CompilerService {
         transform_options.env.module = Module::Esm;
 
         Self {
+            #[cfg(test)]
+            compilation_count: 0,
             printed: String::new(),
             errors: Diagnostics::default(),
             transform_options,
@@ -53,6 +57,10 @@ impl CompilerService {
         source_type: SourceType,
         source_path: &Path,
     ) -> Result<String, VmError> {
+        #[cfg(test)]
+        {
+            self.compilation_count += 1;
+        }
         self.compile(source_text, source_type, source_path);
 
         if self.errors.is_empty() {
@@ -95,12 +103,36 @@ impl CompilerService {
         })
     }
 
-    pub(crate) fn compile_project(
+    pub(crate) fn discover_project(
         &mut self,
         entry_path: &Path,
         external_modules: &BTreeSet<String>,
+    ) -> Result<DiscoveredProject, VmError> {
+        discover_project(entry_path, external_modules)
+    }
+
+    pub(crate) fn transpile_project(
+        &mut self,
+        project: DiscoveredProject,
     ) -> Result<ProjectCompileOutput, VmError> {
-        compile_project(self, entry_path, external_modules)
+        let modules = project
+            .modules
+            .into_iter()
+            .map(|module| {
+                let transpiled_js =
+                    self.execute_module(&module.source, Path::new(&module.module_id))?;
+                Ok(CompiledModule {
+                    module_id: module.module_id,
+                    transpiled_js,
+                    resolved_requests: module.resolved_requests,
+                })
+            })
+            .collect::<Result<_, VmError>>()?;
+        Ok(ProjectCompileOutput {
+            cache_seed: project.cache_seed,
+            entry_module_id: project.entry_module_id,
+            modules,
+        })
     }
 
     pub(crate) fn build_project_script(

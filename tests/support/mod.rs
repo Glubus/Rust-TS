@@ -5,6 +5,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rustts::VmOptions;
 
+#[allow(dead_code)]
+pub(crate) fn run_tsc(path: &std::path::Path) -> Option<std::process::Output> {
+    let compiler =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("node_modules/typescript/bin/tsc");
+    let required =
+        std::env::var_os("CI").is_some() || std::env::var_os("RUSTTS_REQUIRE_TSC").is_some();
+    if !compiler.is_file() {
+        assert!(!required, "TypeScript is required in CI: run npm ci first");
+        eprintln!("TypeScript check skipped locally: run npm ci to enable it");
+        return None;
+    }
+    Some(
+        std::process::Command::new("node")
+            .arg(compiler)
+            .args(["--noEmit", "--target", "ES2020", "--module", "ES2020"])
+            .arg(path)
+            .output()
+            .expect("could not execute the pinned TypeScript compiler with node"),
+    )
+}
+
 static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct TestCacheDir {
@@ -31,6 +52,7 @@ impl TestCacheDir {
             latency_histograms: false,
             contract_validation: Default::default(),
             unknown_field_validation: Default::default(),
+            ..VmOptions::default()
         }
     }
 

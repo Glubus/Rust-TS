@@ -455,9 +455,15 @@ pub enum VmEvent {
 #[derive(Debug)]
 pub struct VmSubscription {
     pub(crate) rx: Receiver<VmEvent>,
+    pub(crate) dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl VmSubscription {
+    /// Number of new events discarded because this subscription's queue was full.
+    #[must_use]
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
     /// Blocks until the next event is available.
     ///
     /// Returns `None` when the VM is no longer producing events.

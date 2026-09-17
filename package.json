@@ -1,0 +1,7 @@
+{
+  "name": "rustts-sdk-checks",
+  "private": true,
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
