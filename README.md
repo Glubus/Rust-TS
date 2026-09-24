@@ -59,6 +59,8 @@ Useful starting points:
 - [Getting Started](docs/getting-started.md)
 - [Register Host Functions And Callbacks](docs/guides/register-host-functions.md)
 - [Generate TypeScript SDK Files](docs/guides/generate-sdk-files.md)
+- [Rust And TypeScript Types](docs/guides/type-mapping.md)
+- [Run Scripts On Your Thread With Engine](docs/guides/engine.md)
 - [Load Scripts And Projects](docs/guides/load-scripts-and-projects.md)
 - [Use Native Bytes](docs/guides/native-bytes.md)
 
@@ -72,13 +74,22 @@ mdbook build
 
 The current core is focused on the Rust-first contract model:
 
-- long-lived QuickJS workers through `rquickjs`
+- `Engine`: QuickJS on your own thread, with direct native calls in both directions
+- `RustTs`: long-lived QuickJS worker threads through `rquickjs`
 - TypeScript transpilation through `oxc`
 - static ESM project graphs
 - typed host functions and callbacks
+- native Rust ↔ JavaScript value conversion with `serde_json` semantics
 - generated TypeScript declarations and SDK helpers
 - optional contract validation
-- native `Uint8Array` output through `NativeBytes`
+- native `Uint8Array` in both directions through `NativeBytes`
+
+## Performance
+
+With `Engine`, a Rust → TypeScript call costs about 130 ns and a round trip with a
+20-field object about 2.7 µs, close to calling QuickJS directly and to mlua
+(36 ns and 2.8 µs). See [the Engine guide](docs/guides/engine.md#performance) for
+the full `cargo bench --bench vs_lua` comparison.
 
 ## Toolchain
 

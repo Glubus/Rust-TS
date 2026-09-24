@@ -7,6 +7,8 @@
 
 - [Register Host Functions And Callbacks](guides/register-host-functions.md)
 - [Generate TypeScript SDK Files](guides/generate-sdk-files.md)
+- [Rust And TypeScript Types](guides/type-mapping.md)
+- [Run Scripts On Your Thread With Engine](guides/engine.md)
 - [Load Scripts And Projects](guides/load-scripts-and-projects.md)
 - [Use Native Bytes](guides/native-bytes.md)
 - [Runtime Guarantees And Measurements](guides/runtime-guarantees.md)

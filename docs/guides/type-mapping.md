@@ -1,0 +1,156 @@
+# Rust And TypeScript Types
+
+Rust types define the contract. `#[derive(TsSchema)]` generates the TypeScript
+declaration and the two native converters for a type:
+
+- `JsEncode`: Rust value → JavaScript value
+- `JsDecode`: JavaScript value → Rust value
+
+Values convert directly between Rust and QuickJS. No JSON text is produced.
+
+## Reference Semantics
+
+A value crosses the boundary exactly as if Rust had written it with `serde_json`
+and JavaScript had read it with `JSON.parse`, and the reverse
+(`JSON.stringify`, then `serde_json`). Serde attributes therefore change the
+TypeScript shape and the runtime value the same way.
+
+The native path is stricter than JSON text in three places:
+
+1. Integers outside the JavaScript safe range, ±(2^53 − 1), fail on both sides.
+   JSON would silently round them.
+2. Non-finite `f32`/`f64` values cross as `NaN` and `±Infinity`. JSON would write
+   `null`.
+3. `NativeBytes` crosses as a `Uint8Array`.
+
+## Built-In Types
+
+| Rust | TypeScript | Notes |
+| --- | --- | --- |
+| `bool` | `boolean` | Decoding requires a boolean. |
+| `i8`…`i32`, `u8`…`u32` | `number` | Decoding requires an integral number within the Rust type's range. |
+| `i64`, `u64`, `isize`, `usize`, `i128`, `u128` | `number` | Same rule, plus the ±(2^53 − 1) safe range. |
+| `f32`, `f64` | `number` | `NaN`, `±Infinity` and `-0` are preserved. |
+| `char` | `string` | Exactly one Unicode scalar. |
+| `String`, `PathBuf`, `IpAddr`, `Ipv4Addr`, `Ipv6Addr` | `string` | Strings are copied (UTF-8 ↔ UTF-16). Lone surrogates are rejected, as in `serde_json`. |
+| `()` | `null` | Decodes from `null` or `undefined`. |
+| `Option<T>` | `T \| null` | `null` and `undefined` decode to `None`. |
+| `Vec<T>`, `VecDeque<T>`, `Box<[T]>` | `T[]` | Decoding requires a JavaScript array. |
+| `[T; N]` | fixed tuple | Length must match exactly. |
+| `HashSet<T>`, `BTreeSet<T>` | `T[]` | Duplicates collapse, as in serde. |
+| `HashMap<String, V>`, `BTreeMap<String, V>` | `Record<string, V>` | Plain object; properties `JSON.stringify` would drop are skipped. |
+| `HashMap<{integer}, V>`, `BTreeMap<{integer}, V>` | `Record<number, V>` | Keys are canonical decimal strings in JavaScript. |
+| `(A, B, …)` up to 12 elements | `[A, B, …]` | Length must match exactly. |
+| `Box<T>`, `Arc<T>`, `Rc<T>` | `T` | Transparent. |
+| `serde_json::Value` | JSON value | Integers still follow the safe-range rule. |
+| `NativeBytes` | `Uint8Array` | See [Use Native Bytes](native-bytes.md). |
+
+## Derived Types
+
+```rust
+#[derive(Serialize, Deserialize, TsSchema)]
+#[serde(rename_all = "camelCase")]
+struct Player {
+    player_id: u32,
+    position: (f32, f32),
+    inventory: HashMap<String, Vec<Item>>,
+    guild: Option<GuildId>,
+}
+```
+
+| Rust shape | TypeScript |
+| --- | --- |
+| named struct | object |
+| tuple struct | tuple |
+| newtype struct, `#[serde(transparent)]` | the inner type |
+| unit struct | `null` |
+| unit-only enum | string union |
+| enum with data | union following serde's tagging: external (default), `tag`, `tag` + `content`, `untagged` |
+
+Mirrored serde attributes:
+
+- containers: `rename_all` (also per direction), `rename_all_fields`, `tag`,
+  `content`, `untagged`, `transparent`, `default`, `deny_unknown_fields`
+- fields: `rename` (also per direction), `alias`, `skip`, `skip_serializing`,
+  `skip_serializing_if`, `skip_deserializing`, `default`, `flatten`
+- variants: `rename`, `alias`, `rename_all`, `skip`, `skip_serializing`,
+  `skip_deserializing`
+
+Missing fields decode like serde: `Option<T>` becomes `None`, fields with
+`default` take their default, anything else fails.
+
+Errors name the failing path, for example `position.x: expected integer in u8
+range, got 300` or `inventory[sword][2].id: missing field`.
+
+### Directions
+
+A derive macro cannot see which serde traits sit next to it, so
+`#[derive(TsSchema)]` always generates both codecs. Restrict them on the type:
+
+- `#[rustts(encode_only)]`: only `JsEncode`
+- `#[rustts(decode_only)]`: only `JsDecode`
+- `#[rustts(schema_only)]`: TypeScript declaration only, no codec
+
+If a field type supports only one direction, the compiler points at that field.
+
+## Third-Party Types And The JSON Opt-In
+
+The JSON reference path is never used silently. Serde attributes that only serde
+can execute (`with`, `serialize_with`, `deserialize_with`, `from`, `into`,
+`try_from`, `remote`, `bound`, …) are compile errors until you opt in:
+
+```rust
+#[derive(Serialize, Deserialize, TsSchema)]
+struct Account {
+    // Only this field goes through serde_json; the rest stays native.
+    #[rustts(codec = "json", type = "string")]
+    id: uuid::Uuid,
+
+    // Native codec functions: `shout::encode_js(&value, ctx)` / `shout::decode_js(ctx, value)`.
+    #[rustts(with = "shout")]
+    name: String,
+}
+
+// The whole type goes through serde_json.
+#[derive(Serialize, Deserialize, TsSchema)]
+#[serde(into = "String", try_from = "String")]
+#[rustts(codec = "json")]
+struct Email(String);
+```
+
+`#[rustts(type = "...")]` writes the TypeScript type as given and removes the need
+for `TsSchema` on that field. Use it for types from crates that do not implement
+`TsSchema`.
+
+`#[rustts(rename = "...")]` and `#[rustts(optional)]` are only accepted on
+`schema_only` types. On types with codecs, use the serde attributes, which change
+the declaration and the runtime value together.
+
+## Hand-Written Types
+
+A type that cannot use the derive implements the traits directly:
+
+```rust
+use rustts::js::{Ctx, Result, Value};
+use rustts::{JsDecode, JsEncode};
+
+impl JsEncode for Celsius {
+    fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.0.encode_js(ctx)
+    }
+}
+
+impl JsDecode for Celsius {
+    fn decode_js<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
+        f64::decode_js(ctx, value).map(Celsius)
+    }
+}
+```
+
+`rustts::js` re-exports the QuickJS types these signatures use, at the exact version
+RustTS is built with. Use it instead of a direct `rquickjs` dependency; it also
+provides `Runtime` and `Context` for unit-testing a codec.
+
+`typed_function` requires `Input: TsSchema + JsDecode` and
+`Output: TsSchema + JsEncode`; `typed_callback` requires
+`Payload: TsSchema + JsEncode`.

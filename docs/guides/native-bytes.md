@@ -1,11 +1,13 @@
 # Use Native Bytes
 
-Use `NativeBytes` when a host function returns large byte payloads to
-TypeScript.
+Use `NativeBytes` for byte payloads between Rust and TypeScript.
 
-Without `NativeBytes`, byte buffers usually become JSON arrays. That is simple,
-but it is expensive for large payloads. With the typed `callValue` host path,
-`NativeBytes` is exposed to JavaScript as a `Uint8Array`.
+Without `NativeBytes`, byte buffers become arrays of numbers, which is expensive
+for large payloads. `NativeBytes` crosses as a `Uint8Array` in both directions:
+
+- Rust → JavaScript: zero-copy, immutable `Uint8Array` backed by the Rust bytes.
+- JavaScript → Rust: a `Uint8Array`, an `ArrayBuffer`, or an array of integers
+  in `0..=255`, copied once into Rust memory.
 
 ## Rust Contract
 
@@ -70,10 +72,9 @@ if (bytes.byteLength >= 4) {
 
 ## Validation Caveat
 
-When contract validation requires JSON-compatible input or output validation,
-the runtime may use the JSON-compatible fallback path. The native `Uint8Array`
-path is the fast path for typed host calls when validation does not force JSON
-materialization.
+When contract validation is enabled, values are validated as JSON first, so
+bytes cross as number arrays on that path. Keep validation off for large
+byte payloads in production.
 
 Use this type for byte payloads. Do not use JSON arrays for large buffers unless
 you specifically need JSON compatibility.
