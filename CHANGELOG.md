@@ -43,10 +43,11 @@
   `#[rustts(type = "...")]` for third-party types.
 - `NativeBytes` as input: decodes from `Uint8Array`, `ArrayBuffer` or byte arrays,
   and implements `Deserialize`.
-- `Engine`: single-thread runtime with native calls in both directions (`call`,
-  `emit`), under the same `execution_timeout` as the worker pool (runaway loads,
-  calls and emits are interrupted). See [the Engine guide](docs/guides/engine.md)
-  and `examples/native_roundtrip.rs`.
+- `Engine` (new, API expected to grow in 0.4): single-thread runtime with native
+  calls in both directions (`call`, `emit`), under the same `execution_timeout` as
+  the worker pool. Scripts reach host functions by ESM import, by namespaced
+  global (`user.find(...)`) or through the generated SDK. See
+  [the Engine guide](docs/guides/engine.md) and `examples/native_roundtrip.rs`.
 - `benches/vs_lua.rs`: the same workloads on mlua, raw QuickJS and RustTS.
 
 ### Fixes

@@ -7,6 +7,9 @@ another thread, no generated source, no JSON text.
 Use it when your application already has a main loop that calls scripts, such as a
 game loop, a simulation step or an editor command handler.
 
+`Engine` is new in 0.3. Its API will grow in 0.4 (multi-file projects, stats,
+lifecycle events) and may change in the process.
+
 ## `Engine` Or `RustTs`
 
 | | `Engine` | `RustTs` |
@@ -42,6 +45,16 @@ engine.emit("user.found", &UserFoundPayload { user_id: 7 })?;
   `engine.call::<serde_json::Value>(id, name, vec![json])` keeps a JSON-shaped API.
 - `emit` encodes the payload once per script that has handlers for the event and
   returns how many scripts received it.
+
+## Reaching Host Functions From Scripts
+
+A script reaches every registered synchronous host function in three ways, all
+ending in the same native function:
+
+- ESM import of the contract's module: `import { user } from "app";`
+- the namespaced global, without an import: `user.find({ userId: 7 })`
+- the generated SDK (`registry().sdk()`), which calls `__host.callValue`; an inline
+  script can include the SDK source followed by its own code
 
 ## Reload
 
