@@ -9,8 +9,12 @@ use std::{
     sync::Arc,
 };
 
+mod object;
+
 use super::arity::for_each_tuple;
 use super::{Schema, TsRecordKey, TsType};
+
+pub use object::ObjectSchema;
 
 thread_local! {
     static SCHEMA_DEPENDENCY_STACK: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };

@@ -48,7 +48,16 @@ fn validate_type(
         TsType::String => validate_string(value, path),
         TsType::Uint8Array => validate_array(&TsType::Number, value, path, options, context),
         TsType::Literal(literal) => validate_literal(literal, value, path),
-        TsType::Object(fields) => validate_object(fields, value, path, options, context),
+        TsType::Object(fields) => {
+            validate_object(ObjectShape::new(fields), value, path, options, context)
+        }
+        TsType::OpenObject { fields, rest } => validate_object(
+            ObjectShape::new(fields).with_rest(Some(rest.as_ref())),
+            value,
+            path,
+            options,
+            context,
+        ),
         TsType::Array(item) => validate_array(item, value, path, options, context),
         TsType::Tuple(items) => validate_tuple(items, value, path, options, context),
         TsType::Enum { tag, variants } => {
@@ -159,32 +168,70 @@ fn literal_label(literal: &TsLiteral) -> String {
     }
 }
 
-fn validate_object(
-    fields: &[TsField],
-    value: &Value,
-    path: &str,
-    options: SchemaValidationOptions,
-    context: &mut ValidationContext<'_>,
-) -> Result<(), String> {
-    validate_object_with_allowed_fields(fields, value, path, options, context, &[])
+/// Keys an object schema describes: declared fields, keys allowed next to them (an enum
+/// tag), and the type of every other key when the object is open.
+#[derive(Clone, Copy)]
+struct ObjectShape<'a> {
+    fields: &'a [TsField],
+    allowed_extra_fields: &'a [&'a str],
+    rest: Option<&'a TsType>,
 }
 
-fn validate_object_with_allowed_fields(
-    fields: &[TsField],
+impl<'a> ObjectShape<'a> {
+    fn new(fields: &'a [TsField]) -> Self {
+        Self {
+            fields,
+            allowed_extra_fields: &[],
+            rest: None,
+        }
+    }
+
+    fn with_rest(self, rest: Option<&'a TsType>) -> Self {
+        Self { rest, ..self }
+    }
+
+    fn with_allowed_extra_fields(self, allowed_extra_fields: &'a [&'a str]) -> Self {
+        Self {
+            allowed_extra_fields,
+            ..self
+        }
+    }
+
+    /// Whether `key` is neither a declared field nor an allowed extra key.
+    fn is_undeclared(&self, key: &str) -> bool {
+        !self.fields.iter().any(|declared| declared.name == key)
+            && !self.allowed_extra_fields.contains(&key)
+    }
+}
+
+fn validate_object(
+    shape: ObjectShape<'_>,
     value: &Value,
     path: &str,
     options: SchemaValidationOptions,
     context: &mut ValidationContext<'_>,
-    allowed_extra_fields: &[&str],
 ) -> Result<(), String> {
     let Some(object) = value.as_object() else {
         return Err(expected(path, "object", value));
     };
 
-    if options.reject_unknown_fields {
-        reject_unknown_object_fields(fields, object, path, allowed_extra_fields)?;
+    if shape.rest.is_none() && options.reject_unknown_fields {
+        reject_unknown_object_fields(shape, object, path)?;
     }
+    validate_declared_fields(shape.fields, object, path, options, context)?;
+    match shape.rest {
+        Some(rest) => validate_rest_fields(shape, rest, object, path, options, context),
+        None => Ok(()),
+    }
+}
 
+fn validate_declared_fields(
+    fields: &[TsField],
+    object: &serde_json::Map<String, Value>,
+    path: &str,
+    options: SchemaValidationOptions,
+    context: &mut ValidationContext<'_>,
+) -> Result<(), String> {
     for field in fields {
         let field_path = child_path(path, &field.name);
         match object.get(&field.name) {
@@ -198,22 +245,30 @@ fn validate_object_with_allowed_fields(
     Ok(())
 }
 
-fn reject_unknown_object_fields(
-    fields: &[TsField],
+/// Validates every undeclared key of an open object against its `rest` type.
+fn validate_rest_fields(
+    shape: ObjectShape<'_>,
+    rest: &TsType,
     object: &serde_json::Map<String, Value>,
     path: &str,
-    allowed_extra_fields: &[&str],
+    options: SchemaValidationOptions,
+    context: &mut ValidationContext<'_>,
 ) -> Result<(), String> {
-    for field in object.keys() {
-        if !is_declared_field(fields, field) && !allowed_extra_fields.contains(&field.as_str()) {
-            return Err(format!("{}: unknown field", child_path(path, field)));
-        }
+    for (key, item) in object.iter().filter(|(key, _)| shape.is_undeclared(key)) {
+        validate_type(rest, item, &child_path(path, key), options, context)?;
     }
     Ok(())
 }
 
-fn is_declared_field(fields: &[TsField], field: &str) -> bool {
-    fields.iter().any(|declared| declared.name == field)
+fn reject_unknown_object_fields(
+    shape: ObjectShape<'_>,
+    object: &serde_json::Map<String, Value>,
+    path: &str,
+) -> Result<(), String> {
+    match object.keys().find(|key| shape.is_undeclared(key)) {
+        Some(key) => Err(format!("{}: unknown field", child_path(path, key))),
+        None => Ok(()),
+    }
 }
 
 fn validate_array(
@@ -301,7 +356,11 @@ fn validate_tagged_enum(
         return Err(format!("{tag_path}: unknown enum variant {tag_value:?}"));
     };
 
-    validate_object_with_allowed_fields(&variant.fields, value, path, options, context, &[tag])
+    let allowed_extra_fields = [tag];
+    let shape = ObjectShape::new(&variant.fields)
+        .with_rest(variant.rest.as_deref())
+        .with_allowed_extra_fields(&allowed_extra_fields);
+    validate_object(shape, value, path, options, context)
 }
 
 fn validate_record(

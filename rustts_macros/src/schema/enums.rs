@@ -3,7 +3,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::fields::{merge_object_schema, object_fields, shape_type, type_ref};
+use super::fields::{flatten_step, object_block, object_schema, shape_type, type_ref};
 use crate::model::{Container, Style, Tagging, Variant};
 
 pub(super) fn enum_type(container: &Container<'_>, variants: &[Variant<'_>]) -> TokenStream {
@@ -111,23 +111,16 @@ impl Described<'_> {
     fn internal_variant(&self) -> TokenStream {
         let key = &self.key;
         let shape = &self.variant.shape;
-        let fields = match shape.style {
+        let object = match shape.style {
             Style::Unit => return self.unit(),
-            Style::Newtype => {
-                let merge = merge_object_schema(
-                    shape.fields[0].ty,
-                    false,
-                    "serde internally tagged newtype variants require a TsSchema object type",
-                );
-                quote!({
-                    let mut fields = ::std::vec::Vec::new();
-                    #merge
-                    fields
-                })
-            }
-            Style::Tuple | Style::Struct => object_fields(self.container, shape, false),
+            Style::Newtype => object_block(&[flatten_step(
+                shape.fields[0].ty,
+                false,
+                "serde internally tagged newtype variants require a TsSchema object or map type",
+            )]),
+            Style::Tuple | Style::Struct => object_schema(self.container, shape, false),
         };
-        quote!(::rustts::TsEnumVariant::payload(#key, #fields))
+        quote!((#object).into_variant(#key))
     }
 
     /// Variant whose payload sits under the `content` key.

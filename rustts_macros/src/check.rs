@@ -1,7 +1,7 @@
 //! Compile-time checks: shapes TsSchema cannot describe, and serde attributes the native
 //! codec cannot mirror without an explicit `#[rustts(codec = "json")]` opt-in.
 
-use syn::{DeriveInput, Error, Fields, Result};
+use syn::{DeriveInput, Error, Fields, Result, Type};
 
 use crate::attrs::{JsonOnly, SchemaOnly};
 use crate::directions::Directions;
@@ -14,6 +14,7 @@ pub(crate) fn check(container: &Container<'_>, input: &DeriveInput) -> Result<()
     check_transparent(container, input)?;
     for shape in shapes(container) {
         check_flatten_placement(shape)?;
+        check_flatten_types(shape)?;
         check_field_codecs(shape)?;
     }
     check_internal_tuple_variants(container)?;
@@ -65,6 +66,45 @@ fn check_flatten_placement(shape: &Shape<'_>) -> Result<()> {
             "serde flatten is only supported on named struct fields",
         )),
         None => Ok(()),
+    }
+}
+
+/// Rejects flattened fields whose type is syntactically never an object or a map; other
+/// types are checked when the schema is built.
+fn check_flatten_types(shape: &Shape<'_>) -> Result<()> {
+    match shape
+        .fields
+        .iter()
+        .filter(|field| field.attrs.flatten)
+        .map(|field| field.option_inner().unwrap_or(field.ty))
+        .find(|ty| is_never_object(ty))
+    {
+        Some(ty) => Err(Error::new_spanned(
+            ty,
+            "serde flatten requires a struct or map type",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Scalars, strings, sequences, non-empty tuples and arrays: values serde cannot flatten.
+fn is_never_object(ty: &Type) -> bool {
+    const NON_OBJECT_TYPES: &[&str] = &[
+        "bool", "char", "str", "String", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16",
+        "i32", "i64", "i128", "isize", "f32", "f64", "Vec", "VecDeque", "HashSet", "BTreeSet",
+    ];
+    match ty {
+        Type::Array(_) | Type::Slice(_) => true,
+        Type::Tuple(tuple) => !tuple.elems.is_empty(),
+        Type::Reference(reference) => is_never_object(&reference.elem),
+        Type::Paren(inner) => is_never_object(&inner.elem),
+        Type::Group(inner) => is_never_object(&inner.elem),
+        Type::Path(path) if path.qself.is_none() => {
+            path.path.segments.last().is_some_and(|segment| {
+                NON_OBJECT_TYPES.contains(&segment.ident.to_string().as_str())
+            })
+        }
+        _ => false,
     }
 }
 

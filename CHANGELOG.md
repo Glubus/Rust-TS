@@ -28,6 +28,11 @@
   `Result`, `Error`, `Object`, `Array`, `Function`, `String`, `TypedArray`,
   `ArrayBuffer`, `Args`, `Runtime`, `Context`). Existing cache artifacts are
   rebuilt once.
+- `TsType` has a new `OpenObject { fields, rest }` variant (objects with a flattened
+  map) and `TsEnumVariant` a new optional `rest`; exhaustive matches on `TsType`
+  must handle it.
+- Syntax errors in scripts now surface as `VmError::Transpile` instead of
+  `VmError::Resolve`.
 
 ### Added
 
@@ -49,6 +54,13 @@
   global (`user.find(...)`) or through the generated SDK. See
   [the Engine guide](docs/guides/engine.md) and `examples/native_roundtrip.rs`.
 - `benches/vs_lua.rs`: the same workloads on mlua, raw QuickJS and RustTS.
+- Flattened string-keyed maps (`#[serde(flatten)] rest: BTreeMap<String, V>`,
+  `HashMap`, `serde_json::Value`, or an `Option` of one) in derived schemas: rendered
+  as an index signature that `tsc` accepts, validated key by key. Flattening a
+  non-object type is a compile error.
+- Features `uuid`, `chrono` and `glam`: native `TsSchema`/`JsEncode`/`JsDecode` for
+  `Uuid`, chrono dates and times, and glam vectors, quaternions and matrices, with
+  each crate's serde representation.
 
 ### Fixes
 
@@ -59,6 +71,9 @@
   natively.
 - Unloading or replacing a script no longer deletes a host import module whose name
   equals the script id.
+- Deriving `TsSchema` for a struct with a flattened map no longer panics.
+- Generated SDK `models.X.is()` predicates now check every field: optional and
+  union fields were missing parentheses inside `&&` chains.
 
 ## 0.2.0 — 2026-09-17
 

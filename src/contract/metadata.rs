@@ -112,6 +112,14 @@ pub enum TsType {
     Literal(TsLiteral),
     /// Object type with named fields.
     Object(Vec<TsField>),
+    /// Object type with named fields plus any other string key holding a `rest` value:
+    /// the wire shape of a struct with a `#[serde(flatten)]` map.
+    OpenObject {
+        /// Declared fields.
+        fields: Vec<TsField>,
+        /// Type of the value under every undeclared key.
+        rest: Box<TsType>,
+    },
     /// Array type.
     Array(Box<TsType>),
     /// Tuple type.
@@ -138,6 +146,20 @@ pub enum TsType {
     Nullable(Box<TsType>),
 }
 
+impl TsType {
+    /// Object type with `fields`, open to undeclared keys of type `rest` when given.
+    #[must_use]
+    pub fn object(fields: Vec<TsField>, rest: Option<TsType>) -> Self {
+        match rest {
+            Some(rest) => Self::OpenObject {
+                fields,
+                rest: Box::new(rest),
+            },
+            None => Self::Object(fields),
+        }
+    }
+}
+
 /// Literal TypeScript value emitted from a schema.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TsLiteral {
@@ -156,6 +178,10 @@ pub struct TsEnumVariant {
     pub name: String,
     /// Payload fields carried by this variant.
     pub fields: Vec<TsField>,
+    /// Type of the value under every undeclared payload key, when the payload
+    /// flattens a map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rest: Option<Box<TsType>>,
 }
 
 impl TsEnumVariant {
@@ -165,6 +191,7 @@ impl TsEnumVariant {
         Self {
             name: name.into(),
             fields: Vec::new(),
+            rest: None,
         }
     }
 
@@ -174,7 +201,21 @@ impl TsEnumVariant {
         Self {
             name: name.into(),
             fields,
+            rest: None,
         }
+    }
+
+    /// Opens the payload to undeclared keys of type `rest` when given.
+    #[must_use]
+    pub fn with_rest(mut self, rest: Option<TsType>) -> Self {
+        self.rest = rest.map(Box::new);
+        self
+    }
+
+    /// Whether this variant carries neither payload fields nor extra keys.
+    #[must_use]
+    pub fn is_unit(&self) -> bool {
+        self.fields.is_empty() && self.rest.is_none()
     }
 }
 

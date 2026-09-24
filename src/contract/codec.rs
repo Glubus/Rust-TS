@@ -14,6 +14,7 @@ mod args;
 mod bytes;
 mod collections;
 pub mod derive;
+mod ecosystem;
 mod js_text;
 mod json;
 mod maps;

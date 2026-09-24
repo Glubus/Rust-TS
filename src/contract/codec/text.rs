@@ -3,14 +3,16 @@
 use std::fmt::Display;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use rquickjs::{Ctx, Error as JsError, Result as JsResult, String as JsString, Value as JsValue};
 
 use super::stack_text::StackText;
 use super::{JsDecode, JsEncode, codec_error, encode_error, mismatch};
 
-/// Room for the longest address text, `ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255`.
-const ADDRESS_TEXT_CAPACITY: usize = 64;
+/// Room for the longest short text encoded without allocating: IP addresses
+/// (`ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255`), UUIDs and date-times.
+const SHORT_TEXT_CAPACITY: usize = 64;
 
 impl JsEncode for str {
     fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>> {
@@ -91,14 +93,7 @@ macro_rules! address_codecs {
 
             impl JsDecode for $ty {
                 fn decode_js<'js>(_ctx: &Ctx<'js>, value: JsValue<'js>) -> JsResult<Self> {
-                    let text = decode_string(value, stringify!($ty))?;
-                    text.parse().map_err(|_| {
-                        codec_error(
-                            "string",
-                            stringify!($ty),
-                            format!(concat!("expected ", $expected, ", got {:?}"), text),
-                        )
-                    })
+                    decode_parsed(value, stringify!($ty), $expected)
                 }
             }
         )+
@@ -112,17 +107,17 @@ address_codecs!(
 );
 
 /// Encodes the `Display` text of a short value without allocating.
-fn encode_display<'js>(
+pub(super) fn encode_display<'js>(
     ctx: &Ctx<'js>,
     value: &impl Display,
     rust: &'static str,
 ) -> JsResult<JsValue<'js>> {
     let text =
-        StackText::<ADDRESS_TEXT_CAPACITY>::format(format_args!("{value}")).ok_or_else(|| {
+        StackText::<SHORT_TEXT_CAPACITY>::format(format_args!("{value}")).ok_or_else(|| {
             encode_error(
                 rust,
                 "string",
-                format!("text is longer than {ADDRESS_TEXT_CAPACITY} bytes"),
+                format!("text is longer than {SHORT_TEXT_CAPACITY} bytes"),
             )
         })?;
     text.as_str().encode_js(ctx)
@@ -143,4 +138,25 @@ fn decode_string(value: JsValue<'_>, rust: &'static str) -> JsResult<String> {
             ),
             other => other,
         })
+}
+
+/// Reads a JavaScript string and parses it with `T`'s [`FromStr`], reporting failures
+/// as `expected <expected>, got "<text>" (<reason>)`.
+pub(super) fn decode_parsed<T>(
+    value: JsValue<'_>,
+    rust: &'static str,
+    expected: &str,
+) -> JsResult<T>
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    let text = decode_string(value, rust)?;
+    text.parse().map_err(|error| {
+        codec_error(
+            "string",
+            rust,
+            format!("expected {expected}, got {text:?} ({error})"),
+        )
+    })
 }

@@ -16,6 +16,9 @@ default = []
 tokio = ["dep:tokio"]
 async-promise = ["tokio", "rquickjs/futures", "dep:futures-timer"]
 derive = ["dep:rustts_macros"]
+uuid = ["dep:uuid"]
+chrono = ["dep:chrono"]
+glam = ["dep:glam"]
 
 [dependencies]
 oxc = { version = "0.137.0", features = ["codegen", "full", "transformer"] }
@@ -30,6 +33,9 @@ futures-timer = { version = "3.0.3", optional = true }
 tempfile = "3.23.0"
 tokio = { version = "1.52.3", optional = true, features = ["rt-multi-thread", "sync"] }
 rustts_macros = { version = "0.2.0", path = "rustts_macros", optional = true }
+uuid = { version = "1.26.1", optional = true, default-features = false, features = ["serde"] }
+chrono = { version = "0.4.45", optional = true, default-features = false, features = ["std", "serde"] }
+glam = { version = "0.33.9", optional = true, features = ["serde"] }
 
 [dev-dependencies]
 criterion = "0.8.2"

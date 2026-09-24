@@ -15,7 +15,7 @@ enum Presence {
     Required,
 }
 
-/// TypeScript type of a shape: `null`, the inner type, a tuple or an object.
+/// TypeScript type of a shape: `null`, the inner type, a tuple or an (open) object.
 pub(super) fn shape_type(
     container: &Container<'_>,
     shape: &Shape<'_>,
@@ -33,14 +33,14 @@ pub(super) fn shape_type(
             quote!(::rustts::TsType::Tuple(::std::vec![#(#items),*]))
         }
         Style::Struct => {
-            let fields = object_fields(container, shape, container_default);
-            quote!(::rustts::TsType::Object(#fields))
+            let object = object_schema(container, shape, container_default);
+            quote!((#object).into_type())
         }
     }
 }
 
-/// `Vec<TsField>` expression for a struct-like shape, flattened fields included.
-pub(super) fn object_fields(
+/// `ObjectSchema` expression for a struct-like shape, flattened fields included.
+pub(super) fn object_schema(
     container: &Container<'_>,
     shape: &Shape<'_>,
     container_default: bool,
@@ -50,36 +50,25 @@ pub(super) fn object_fields(
         .iter()
         .filter_map(|field| field_step(container, field, container_default))
         .collect();
+    object_block(&steps)
+}
+
+/// `ObjectSchema` expression built by `steps`, which add to `object`.
+pub(super) fn object_block(steps: &[TokenStream]) -> TokenStream {
     if steps.is_empty() {
-        return quote!(::std::vec::Vec::new());
+        return quote!(::rustts::ObjectSchema::new());
     }
     quote!({
-        let mut fields = ::std::vec::Vec::new();
+        let mut object = ::rustts::ObjectSchema::new();
         #(#steps)*
-        fields
+        object
     })
 }
 
-/// Statements appending the object fields of `ty`'s schema to `fields`, as serde merges
-/// a flattened struct or an internally tagged newtype payload.
-pub(super) fn merge_object_schema(ty: &Type, all_optional: bool, requirement: &str) -> TokenStream {
-    let mark_optional =
-        all_optional.then(|| quote!(let field = ::rustts::TsField { optional: true, ..field };));
-    quote! {
-        match <#ty as ::rustts::TsSchema>::ts_type() {
-            ::rustts::TsType::Object(merged) => {
-                for field in merged {
-                    #mark_optional
-                    if fields.iter().any(|existing: &::rustts::TsField| existing.name == field.name) {
-                        panic!("serde flatten produced duplicate TypeScript field `{}`", field.name);
-                    }
-                    fields.push(field);
-                }
-            }
-            ::rustts::TsType::Null | ::rustts::TsType::Void => {}
-            _ => panic!(#requirement),
-        }
-    }
+/// Statement merging `ty`'s schema into `object`, as serde merges a flattened struct or
+/// map, or an internally tagged newtype payload.
+pub(super) fn flatten_step(ty: &Type, all_optional: bool, requirement: &str) -> TokenStream {
+    quote!(object.flatten(<#ty as ::rustts::TsSchema>::ts_type(), #all_optional, #requirement);)
 }
 
 /// Type of a field: its `#[rustts(type)]` text or its `TsSchema` reference.
@@ -130,10 +119,10 @@ fn field_step(
             Some(inner) => (inner, true),
             None => (field.ty, false),
         };
-        return Some(merge_object_schema(
+        return Some(flatten_step(
             ty,
             all_optional,
-            "serde flatten requires a TsSchema object type",
+            "serde flatten requires a TsSchema object or map type",
         ));
     }
     let key = field
@@ -143,8 +132,8 @@ fn field_step(
         .unwrap_or_else(|| container.schema_key(&field.name));
     let ty = type_ref(field);
     Some(match presence {
-        Presence::Required => quote!(fields.push(::rustts::TsField::required(#key, #ty));),
-        _ => quote!(fields.push(::rustts::TsField::optional(#key, #ty));),
+        Presence::Required => quote!(object.field(::rustts::TsField::required(#key, #ty));),
+        _ => quote!(object.field(::rustts::TsField::optional(#key, #ty));),
     })
 }
 

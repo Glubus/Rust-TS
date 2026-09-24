@@ -1,0 +1,5 @@
+error: serde flatten requires a struct or map type
+ --> tests/ui/derive_schema/flatten_non_object_type.rs:7:20
+  |
+7 |     labels: Option<Vec<String>>,
+  |                    ^^^^^^^^^^^

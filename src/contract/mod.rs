@@ -31,4 +31,4 @@ pub use metadata::{
     HostMetadata, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsType,
 };
 pub use native_bytes::NativeBytes;
-pub use schema::{TsSchema, push_schema_dependency, schema_type_ref};
+pub use schema::{ObjectSchema, TsSchema, push_schema_dependency, schema_type_ref};

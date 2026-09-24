@@ -36,7 +36,7 @@ The native path is stricter than JSON text in three places:
 | `()` | `null` | Decodes from `null` or `undefined`. |
 | `Option<T>` | `T \| null` | `null` and `undefined` decode to `None`. |
 | `Vec<T>`, `VecDeque<T>`, `Box<[T]>` | `T[]` | Decoding requires a JavaScript array. |
-| `[T; N]` | fixed tuple | Length must match exactly. |
+| `[T; N]` | `T[]` | Length must match exactly. |
 | `HashSet<T>`, `BTreeSet<T>` | `T[]` | Duplicates collapse, as in serde. |
 | `HashMap<String, V>`, `BTreeMap<String, V>` | `Record<string, V>` | Plain object; properties `JSON.stringify` would drop are skipped. |
 | `HashMap<{integer}, V>`, `BTreeMap<{integer}, V>` | `Record<number, V>` | Keys are canonical decimal strings in JavaScript. |
@@ -44,6 +44,19 @@ The native path is stricter than JSON text in three places:
 | `Box<T>`, `Arc<T>`, `Rc<T>` | `T` | Transparent. |
 | `serde_json::Value` | JSON value | Integers still follow the safe-range rule. |
 | `NativeBytes` | `Uint8Array` | See [Use Native Bytes](native-bytes.md). |
+
+### Feature-Gated Third-Party Types
+
+Enable the matching RustTS feature (`uuid`, `chrono`, `glam`) to use these types
+natively, with the crate's own serde representation:
+
+| Rust | TypeScript | Notes |
+| --- | --- | --- |
+| `uuid::Uuid` | `string` | Hyphenated lowercase on encode; decode accepts what uuid's serde impl reads from a string (simple, hyphenated, braced, URN, any case). |
+| `chrono::DateTime<Tz>` | `string` | RFC 3339 like chrono's serde impl. Decodes into `DateTime<Utc>` (any offset, converted) and `DateTime<FixedOffset>`. |
+| `chrono::NaiveDate`, `NaiveTime`, `NaiveDateTime` | `string` | ISO 8601 text, as chrono's serde impl writes it. |
+| `glam::Vec2/3/4`, `DVec2/3/4`, `IVec2/3/4`, `UVec2/3/4`, `Quat` | tuple of N `number` | Components in order (`x, y, z, w`), following the `f32`/`f64`/`i32`/`u32` rules. |
+| `glam::Mat2`, `Mat3`, `Mat4` | tuple of 4 / 9 / 16 `number` | Flat column-major array, like glam's serde impl. |
 
 ## Derived Types
 
@@ -76,6 +89,30 @@ Mirrored serde attributes:
 - variants: `rename`, `alias`, `rename_all`, `skip`, `skip_serializing`,
   `skip_deserializing`
 
+`flatten` merges a struct's fields into the surrounding object. A flattened
+string-keyed map (`HashMap<String, V>`, `BTreeMap<String, V>`, `serde_json::Value`, or
+an `Option` of one) receives every other key, so the object stays open:
+
+```rust
+#[derive(Serialize, Deserialize, TsSchema)]
+struct Scores {
+    player: String,
+    #[serde(flatten)]
+    rounds: BTreeMap<String, u32>,
+}
+```
+
+```ts
+type Scores = { player: string; [key: string]: number | string; };
+```
+
+The index signature also admits the declared fields' types, as TypeScript requires;
+schema validation checks declared fields against their own types, every other key
+against `V`, and strict validation accepts those extra keys. Flattening a value that
+is neither a struct nor a string-keyed map is a compile error when the field type
+shows it (`String`, `Vec<T>`, tuples, …) and a panic naming the problem when the
+schema is built otherwise.
+
 Missing fields decode like serde: `Option<T>` becomes `None`, fields with
 `default` take their default, anything else fails.
 
@@ -104,7 +141,7 @@ can execute (`with`, `serialize_with`, `deserialize_with`, `from`, `into`,
 struct Account {
     // Only this field goes through serde_json; the rest stays native.
     #[rustts(codec = "json", type = "string")]
-    id: uuid::Uuid,
+    id: some_crate::AccountId,
 
     // Native codec functions: `shout::encode_js(&value, ctx)` / `shout::decode_js(ctx, value)`.
     #[rustts(with = "shout")]

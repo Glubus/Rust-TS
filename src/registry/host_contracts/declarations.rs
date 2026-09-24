@@ -215,7 +215,10 @@ pub(super) fn render_ts_type(ty: &TsType) -> String {
         TsType::Null => String::from("null"),
         TsType::TypeRef(name) => name.clone(),
         TsType::Literal(literal) => render_literal(literal),
-        TsType::Object(fields) => render_object_type(fields),
+        TsType::Object(fields) => render_object_type(fields.iter(), None),
+        TsType::OpenObject { fields, rest } => {
+            render_object_type(fields.iter(), Some(rest.as_ref()))
+        }
         TsType::Array(item) => format!("{}[]", render_wrapped_array_type(item)),
         TsType::Tuple(items) => render_tuple_type(items),
         TsType::Enum { tag, variants } => render_enum_type(tag.as_deref(), variants),
@@ -238,22 +241,44 @@ fn render_string_literal(value: &str) -> String {
     format!("{value:?}")
 }
 
-fn render_object_type(fields: &[TsField]) -> String {
-    if fields.is_empty() {
+fn render_object_type<'a>(
+    fields: impl Iterator<Item = &'a TsField> + Clone,
+    rest: Option<&TsType>,
+) -> String {
+    let mut members = fields.clone().map(render_field).collect::<Vec<_>>();
+    if let Some(rest) = rest {
+        members.push(render_index_signature(fields, rest));
+    }
+    if members.is_empty() {
         return String::from("{}");
     }
-
-    let rendered_fields = fields
-        .iter()
-        .map(render_field)
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("{{ {rendered_fields} }}")
+    format!("{{ {} }}", members.join(" "))
 }
 
 fn render_field(field: &TsField) -> String {
     let optional = if field.optional { "?" } else { "" };
     format!("{}{}: {};", field.name, optional, render_ts_type(&field.ty))
+}
+
+/// `[key: string]: ...` admitting `rest` plus every declared field's type, because
+/// TypeScript requires each property of the object to match its index signature.
+fn render_index_signature<'a>(fields: impl Iterator<Item = &'a TsField>, rest: &TsType) -> String {
+    let mut types = vec![render_ts_type(rest)];
+    let mut any_optional = false;
+    for field in fields {
+        push_unique(&mut types, render_ts_type(&field.ty));
+        any_optional |= field.optional;
+    }
+    if any_optional {
+        push_unique(&mut types, String::from("undefined"));
+    }
+    format!("[key: string]: {};", types.join(" | "))
+}
+
+fn push_unique(types: &mut Vec<String>, ty: String) {
+    if !types.contains(&ty) {
+        types.push(ty);
+    }
 }
 
 fn render_tuple_type(items: &[TsType]) -> String {
@@ -270,7 +295,7 @@ fn render_enum_type(tag: Option<&str>, variants: &[TsEnumVariant]) -> String {
         return String::from("never");
     }
 
-    if variants.iter().all(|variant| variant.fields.is_empty()) {
+    if variants.iter().all(TsEnumVariant::is_unit) {
         return variants
             .iter()
             .map(|variant| render_string_literal(&variant.name))
@@ -291,12 +316,10 @@ fn render_enum_variant_type(tag: &str, variant: &TsEnumVariant) -> String {
         tag,
         TsType::Literal(TsLiteral::String(variant.name.clone())),
     );
-    let fields = std::iter::once(&discriminant)
-        .chain(variant.fields.iter())
-        .map(render_field)
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("{{ {fields} }}")
+    render_object_type(
+        std::iter::once(&discriminant).chain(variant.fields.iter()),
+        variant.rest.as_deref(),
+    )
 }
 
 fn render_record_type(key: TsRecordKey, value: &TsType) -> String {
@@ -322,6 +345,7 @@ fn render_union_type(types: &[TsType]) -> String {
 fn render_wrapped_array_type(item: &TsType) -> String {
     match item {
         TsType::Object(_)
+        | TsType::OpenObject { .. }
         | TsType::Enum { .. }
         | TsType::Optional(_)
         | TsType::Nullable(_)

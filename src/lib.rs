@@ -33,8 +33,8 @@ pub use contract::AsyncHostFunction;
 pub use contract::{
     DeliveryMode, HostCallback, HostCallbackDescriptor, HostContext, HostContract, HostContractAbi,
     HostContractDescriptor, HostContractKind, HostFunction, HostFunctionDescriptor,
-    HostFunctionExecution, HostMetadata, NativeBytes, Schema, TsEnumVariant, TsField, TsLiteral,
-    TsRecordKey, TsSchema, TsType, push_schema_dependency, schema_type_ref,
+    HostFunctionExecution, HostMetadata, NativeBytes, ObjectSchema, Schema, TsEnumVariant, TsField,
+    TsLiteral, TsRecordKey, TsSchema, TsType, push_schema_dependency, schema_type_ref,
 };
 pub use contract::{JsArgs, JsDecode, JsEncode};
 #[doc(hidden)]

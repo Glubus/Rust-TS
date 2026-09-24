@@ -311,7 +311,10 @@ fn a_syntax_error_fails_the_load_and_keeps_the_previous_version() {
         .call("script", "version", ())
         .expect("previous version");
 
-    assert!(reload.is_err(), "{reload:?}");
+    assert!(
+        matches!(reload, Err(VmError::Transpile { .. })),
+        "{reload:?}"
+    );
     assert_eq!(version, 1.0);
 }
 
