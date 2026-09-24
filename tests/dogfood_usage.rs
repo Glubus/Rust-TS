@@ -3,7 +3,8 @@
 mod support;
 
 use rustts::{
-    HostCallback, HostContract, HostContractKind, HostFunction, RustTs, Schema, TsSchema, VmError,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, RustTs, Schema, TsSchema,
+    VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -23,6 +24,24 @@ export function lookup() {
 }
 
 export function observed() {
+  return lastFound;
+}
+"#;
+
+/// The dogfood script written against the generated SDK instead of the injected globals.
+const DOGFOOD_SDK_SCRIPT: &str = r#"
+let lastFound = "none";
+
+user.onFound(event => {
+  lastFound = `${event.displayName}:${event.roles.join(",")}`;
+});
+
+export function lookup(): string {
+  const result = rusttsSdk.functions.user.find({ userId: 7, includeRoles: true });
+  return `${result.displayName}:${result.roles.length}:${result.active}`;
+}
+
+export function observed(): string {
   return lastFound;
 }
 "#;
@@ -142,6 +161,60 @@ fn typed_contracts_generated_sdk_and_script_bridge_are_usable_together() {
     assert_eq!(lookup, json!("user-7:2:true"));
     assert_eq!(delivered, 1);
     assert_eq!(observed, json!("user-7:admin,editor"));
+}
+
+#[test]
+fn engine_runs_the_dogfood_script_through_injected_globals() {
+    let mut engine = dogfood_engine();
+    engine
+        .load_script("dogfood", DOGFOOD_SCRIPT)
+        .expect("load dogfood script");
+
+    assert_engine_dogfood_round_trip(&engine);
+}
+
+#[test]
+fn engine_runs_a_script_built_on_the_generated_sdk() {
+    let mut engine = dogfood_engine();
+    let sdk = engine.registry().sdk().expect("render generated SDK");
+    engine
+        .load_script("dogfood", &format!("{sdk}\n{DOGFOOD_SDK_SCRIPT}"))
+        .expect("load SDK-based dogfood script");
+
+    assert_engine_dogfood_round_trip(&engine);
+}
+
+fn dogfood_engine() -> Engine {
+    let engine = Engine::new(&VmOptions::default()).expect("create engine");
+    engine
+        .registry()
+        .typed_function::<DogfoodFindUser>()
+        .and_then(|registry| registry.typed_callback::<DogfoodUserFound>())
+        .expect("register typed dogfood contracts");
+    engine
+}
+
+fn assert_engine_dogfood_round_trip(engine: &Engine) {
+    let lookup: String = engine
+        .call("dogfood", "lookup", ())
+        .expect("call dogfood lookup");
+    let delivered = engine
+        .emit(
+            "user.found",
+            &DogfoodUserFoundPayload {
+                user_id: 7,
+                display_name: String::from("user-7"),
+                roles: vec![String::from("admin"), String::from("editor")],
+            },
+        )
+        .expect("emit dogfood callback");
+    let observed: String = engine
+        .call("dogfood", "observed", ())
+        .expect("read callback state");
+
+    assert_eq!(lookup, "user-7:2:true");
+    assert_eq!(delivered, 1);
+    assert_eq!(observed, "user-7:admin,editor");
 }
 
 fn assert_sdk_exposes_dogfood_surface(sdk: &str) {

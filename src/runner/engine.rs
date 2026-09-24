@@ -29,6 +29,9 @@ use super::render::bootstrap_module_context_source;
 const NATIVE_FUNCTIONS_GLOBAL: &str = "__rustts_native";
 const HANDLERS_GLOBAL: &str = "__vm_handlers";
 
+/// Installs `__host` and the namespaced host globals on top of `__rustts_native`.
+const HOST_GLOBALS_SOURCE: &str = include_str!("../../assets/engine_host_globals.js");
+
 /// Single-thread RustTS engine.
 ///
 /// The engine owns its QuickJS runtime and cannot leave the thread that created it.
@@ -182,8 +185,9 @@ impl Engine {
         let _budget = self.budget();
         let context = Context::full(&self.runtime).map_err(js_error)?;
         let exports = context.with(|ctx| {
-            evaluate_bootstrap(&ctx)?;
+            evaluate_script(&ctx, bootstrap_module_context_source())?;
             self.install_native_functions(&ctx)?;
+            evaluate_script(&ctx, HOST_GLOBALS_SOURCE)?;
             import_exports(&ctx, entry_module_id)
         })?;
         Ok((context, exports))
@@ -251,8 +255,8 @@ fn new_runtime(
     Ok(runtime)
 }
 
-fn evaluate_bootstrap(ctx: &Ctx<'_>) -> Result<(), VmError> {
-    ctx.eval::<(), _>(bootstrap_module_context_source())
+fn evaluate_script(ctx: &Ctx<'_>, source: &str) -> Result<(), VmError> {
+    ctx.eval::<(), _>(source)
         .catch(ctx)
         .map_err(caught_js_error)
 }
