@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::bindings::FunctionBindingStore;
 use super::declarations::render_typescript_declarations;
-use super::import_modules::render_host_import_modules;
+use super::import_modules::{HostModuleStyle, render_host_import_modules};
 use super::interface::HostContractRegistry;
 use super::sdk::render_typescript_sdk;
 use crate::config::{VmContractValidation, VmUnknownFieldValidation};
@@ -21,7 +21,8 @@ use crate::contract::AsyncHostFunction;
 use crate::contract::validation::{SchemaValidationOptions, validate_schema_with_options};
 use crate::contract::{
     HostCallback, HostContext, HostContractAbi, HostContractDescriptor, HostFunction,
-    HostFunctionDescriptor, HostFunctionExecution, TsSchema, js_value_to_json, json_to_js_value,
+    HostFunctionDescriptor, HostFunctionExecution, JsDecode, JsEncode, TsSchema, js_value_to_json,
+    json_to_js_value,
 };
 use crate::error::VmError;
 use crate::sdk_files::{
@@ -73,11 +74,14 @@ impl InMemoryHostContractRegistry {
     }
 
     /// Registers one host function using `TsSchema` from its input/output types and returns the registry for chaining.
+    ///
+    /// Calls from scripts convert the input and output natively through [`JsDecode`] and
+    /// [`JsEncode`] when contract validation is off.
     pub fn typed_function<T>(&self) -> Result<&Self, VmError>
     where
         T: HostFunction + Send + Sync + 'static,
-        T::Input: TsSchema,
-        T::Output: TsSchema,
+        T::Input: TsSchema + JsDecode,
+        T::Output: TsSchema + JsEncode,
     {
         self.register_typed_function::<T>()?;
         Ok(self)
@@ -116,7 +120,7 @@ impl InMemoryHostContractRegistry {
     pub fn typed_callback<T>(&self) -> Result<&Self, VmError>
     where
         T: HostCallback + Send + Sync + 'static,
-        T::Payload: TsSchema,
+        T::Payload: TsSchema + JsEncode,
     {
         self.register_typed_callback::<T>()?;
         Ok(self)
@@ -153,8 +157,63 @@ impl InMemoryHostContractRegistry {
             .collect())
     }
 
-    pub(crate) fn import_modules(&self) -> Result<BTreeMap<String, String>, VmError> {
-        Ok(render_host_import_modules(&self.descriptors()?))
+    pub(crate) fn import_modules(
+        &self,
+        style: HostModuleStyle,
+    ) -> Result<BTreeMap<String, String>, VmError> {
+        Ok(render_host_import_modules(&self.descriptors()?, style))
+    }
+
+    /// Installs every sync host function on `target` as a native QuickJS function keyed
+    /// by contract name.
+    pub(crate) fn install_native_functions<'js>(
+        self: &std::sync::Arc<Self>,
+        target: &rquickjs::Object<'js>,
+    ) -> JsResult<()> {
+        if self.validates_any() {
+            return self.install_validated_functions(target);
+        }
+        self.function_bindings.install_native(target)
+    }
+
+    fn validates_any(&self) -> bool {
+        self.validation.validates_inputs() || self.validation.validates_outputs()
+    }
+
+    /// Validation needs the descriptor, so each function goes through the registry.
+    fn install_validated_functions<'js>(
+        self: &std::sync::Arc<Self>,
+        target: &rquickjs::Object<'js>,
+    ) -> JsResult<()> {
+        for name in self.function_bindings.names().map_err(js_host_error)? {
+            let registry = self.clone();
+            let contract_name = name.clone();
+            target.set(
+                name,
+                rquickjs::prelude::Func::from(
+                    move |ctx: Ctx<'js>, input: rquickjs::function::Opt<JsValue<'js>>| {
+                        registry.invoke_validated_native(&ctx, &contract_name, input)
+                    },
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn invoke_validated_native<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        contract_name: &str,
+        input: rquickjs::function::Opt<JsValue<'js>>,
+    ) -> JsResult<JsValue<'js>> {
+        let input = super::bindings::input_or_null(ctx, input);
+        self.invoke_function_js(ctx, contract_name, input)?
+            .ok_or_else(|| {
+                rquickjs::Exception::throw_message(
+                    ctx,
+                    &format!("missing host function: {contract_name}"),
+                )
+            })
     }
 
     /// Renders TypeScript declarations from registered host contracts.
@@ -216,7 +275,7 @@ impl InMemoryHostContractRegistry {
             return self
                 .invoke_function(name, input)
                 .map_err(js_host_error)?
-                .map(|output| json_to_js_value(ctx, output))
+                .map(|output| json_to_js_value(ctx, &output))
                 .transpose();
         }
 
@@ -365,8 +424,8 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
     fn register_typed_function<T>(&self) -> Result<(), VmError>
     where
         T: HostFunction + Send + Sync + 'static,
-        T::Input: TsSchema,
-        T::Output: TsSchema,
+        T::Input: TsSchema + JsDecode,
+        T::Output: TsSchema + JsEncode,
     {
         let mut descriptor = T::descriptor();
         let function = typed_function_descriptor::<T>();
@@ -442,7 +501,7 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
     fn register_typed_callback<T>(&self) -> Result<(), VmError>
     where
         T: HostCallback + Send + Sync + 'static,
-        T::Payload: TsSchema,
+        T::Payload: TsSchema + JsEncode,
     {
         let mut descriptor = T::descriptor();
         let mut callback = T::callback_descriptor();

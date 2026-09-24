@@ -22,8 +22,18 @@ struct HostModuleNode {
     binding: Option<HostModuleBinding>,
 }
 
+/// How generated host modules reach Rust host functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostModuleStyle {
+    /// Calls go through the `__host` bridge object by contract name.
+    Bridge,
+    /// Exports are the native functions installed in `globalThis.__rustts_native`.
+    Native,
+}
+
 pub(crate) fn render_host_import_modules(
     descriptors: &[HostContractDescriptor],
+    style: HostModuleStyle,
 ) -> BTreeMap<String, String> {
     let mut modules = BTreeMap::<String, HostModuleNode>::new();
 
@@ -40,7 +50,7 @@ pub(crate) fn render_host_import_modules(
 
     modules
         .into_iter()
-        .map(|(module, node)| (module, render_module_source(&node)))
+        .map(|(module, node)| (module, render_module_source(&node, style)))
         .collect()
 }
 
@@ -77,7 +87,7 @@ fn insert_binding(node: &mut HostModuleNode, path: &[String], binding: HostModul
     );
 }
 
-fn render_module_source(node: &HostModuleNode) -> String {
+fn render_module_source(node: &HostModuleNode, style: HostModuleStyle) -> String {
     let mut output = String::from(
         "const __hostInput = input => JSON.stringify(input === undefined ? null : input);\n\
 const __hostOutput = output => JSON.parse(output);\n",
@@ -87,24 +97,24 @@ const __hostOutput = output => JSON.parse(output);\n",
         output.push_str("export const ");
         output.push_str(&identifier(name));
         output.push_str(" = ");
-        output.push_str(&render_node(child, 0));
+        output.push_str(&render_node(child, 0, style));
         output.push_str(";\n");
     }
 
     output
 }
 
-fn render_node(node: &HostModuleNode, depth: usize) -> String {
+fn render_node(node: &HostModuleNode, depth: usize, style: HostModuleStyle) -> String {
     if let Some(binding) = &node.binding
         && node.children.is_empty()
     {
-        return render_binding(binding);
+        return render_binding(binding, style);
     }
 
-    render_object_node(node, depth)
+    render_object_node(node, depth, style)
 }
 
-fn render_object_node(node: &HostModuleNode, depth: usize) -> String {
+fn render_object_node(node: &HostModuleNode, depth: usize, style: HostModuleStyle) -> String {
     let mut entries = Vec::new();
 
     for (name, child) in &node.children {
@@ -112,7 +122,7 @@ fn render_object_node(node: &HostModuleNode, depth: usize) -> String {
             "{}{}: {}",
             indent(depth + 1),
             property_name(name),
-            render_node(child, depth + 1)
+            render_node(child, depth + 1, style)
         ));
     }
 
@@ -120,7 +130,7 @@ fn render_object_node(node: &HostModuleNode, depth: usize) -> String {
         entries.push(format!(
             "{}default: {}",
             indent(depth + 1),
-            render_binding(binding)
+            render_binding(binding, style)
         ));
     }
 
@@ -131,12 +141,12 @@ fn render_object_node(node: &HostModuleNode, depth: usize) -> String {
     format!("{{\n{}\n{}}}", entries.join(",\n"), indent(depth))
 }
 
-fn render_binding(binding: &HostModuleBinding) -> String {
+fn render_binding(binding: &HostModuleBinding, style: HostModuleStyle) -> String {
     match binding {
         HostModuleBinding::Function {
             contract_name,
             execution,
-        } => render_function_binding(contract_name, *execution),
+        } => render_function_binding(contract_name, *execution, style),
         HostModuleBinding::Callback { event_name } => {
             format!("handler => globalThis.__rustts_on({event_name:?}, handler)")
         }
@@ -146,8 +156,17 @@ fn render_binding(binding: &HostModuleBinding) -> String {
     }
 }
 
-fn render_function_binding(contract_name: &str, execution: HostFunctionExecution) -> String {
+fn render_function_binding(
+    contract_name: &str,
+    execution: HostFunctionExecution,
+    style: HostModuleStyle,
+) -> String {
     match execution {
+        HostFunctionExecution::Sync | HostFunctionExecution::AsyncBlockingJs
+            if style == HostModuleStyle::Native =>
+        {
+            format!("globalThis.__rustts_native[{contract_name:?}]")
+        }
         HostFunctionExecution::Sync | HostFunctionExecution::AsyncBlockingJs => {
             format!(
                 "input => __host.callValue ? __host.callValue({contract_name:?}, input === undefined ? null : input) : __hostOutput(__host.call({contract_name:?}, __hostInput(input)))"

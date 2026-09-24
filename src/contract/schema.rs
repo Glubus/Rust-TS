@@ -2,15 +2,14 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::PathBuf,
+    rc::Rc,
+    sync::Arc,
 };
 
-use rquickjs::{Ctx, Result as JsResult, Value as JsValue};
-use serde::{Serialize, de::DeserializeOwned};
-
-use super::bridge::{js_value_to_json, json_to_js_value};
+use super::arity::for_each_tuple;
 use super::{Schema, TsRecordKey, TsType};
 
 thread_local! {
@@ -65,30 +64,6 @@ pub trait TsSchema {
     /// not match this schema or contains undeclared object fields.
     fn validate_json_strict(value: &serde_json::Value) -> Result<(), String> {
         Self::schema().validate_json_strict(value)
-    }
-
-    /// Converts a JavaScript value into this type for typed host bridge fast paths.
-    #[doc(hidden)]
-    fn __rustts_from_js_value<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> JsResult<Self>
-    where
-        Self: Sized + DeserializeOwned,
-    {
-        let value = js_value_to_json(ctx, value)?;
-        serde_json::from_value(value).map_err(|error| {
-            rquickjs::Error::new_from_js_message("json", "rust", error.to_string())
-        })
-    }
-
-    /// Converts this value into JavaScript for typed host bridge fast paths.
-    #[doc(hidden)]
-    fn __rustts_into_js_value<'js>(self, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>>
-    where
-        Self: Sized + Serialize,
-    {
-        let value = serde_json::to_value(self).map_err(|error| {
-            rquickjs::Error::new_from_js_message("rust", "json", error.to_string())
-        })?;
-        json_to_js_value(ctx, value)
     }
 }
 
@@ -186,282 +161,161 @@ fn has_declaration_name_str(name: &str) -> bool {
     !name.trim().is_empty() && name != "unknown"
 }
 
-impl TsSchema for () {
-    fn ts_type() -> TsType {
-        TsType::Void
+/// Named schemas referenced by a container of `T`.
+fn element_dependencies<T: TsSchema>() -> Vec<Schema> {
+    let mut dependencies = Vec::new();
+    push_schema_dependency::<T>(&mut dependencies);
+    dependencies
+}
+
+fn array_of<T: TsSchema>() -> TsType {
+    TsType::Array(Box::new(schema_type_ref::<T>()))
+}
+
+fn record_of<T: TsSchema>(key: TsRecordKey) -> TsType {
+    TsType::Record {
+        key,
+        value: Box::new(schema_type_ref::<T>()),
     }
 }
 
-impl TsSchema for bool {
-    fn ts_type() -> TsType {
-        TsType::Boolean
-    }
+macro_rules! leaf_schemas {
+    ($ts_type:expr => $($ty:ty),+ $(,)?) => {
+        $(
+            impl TsSchema for $ty {
+                fn ts_type() -> TsType {
+                    $ts_type
+                }
+            }
+        )+
+    };
 }
 
-impl TsSchema for String {
-    fn ts_type() -> TsType {
-        TsType::String
-    }
-}
+leaf_schemas!(TsType::Void => ());
+leaf_schemas!(TsType::Boolean => bool);
+leaf_schemas!(TsType::String => String, char, PathBuf, IpAddr, Ipv4Addr, Ipv6Addr);
+leaf_schemas!(TsType::Json => serde_json::Value);
+leaf_schemas!(TsType::Number => u8, u16, u32, u64, u128, usize);
+leaf_schemas!(TsType::Number => i8, i16, i32, i64, i128, isize);
+leaf_schemas!(TsType::Number => f32, f64);
 
-impl TsSchema for PathBuf {
-    fn ts_type() -> TsType {
-        TsType::String
-    }
-}
-
-impl TsSchema for IpAddr {
-    fn ts_type() -> TsType {
-        TsType::String
-    }
-}
-
-impl TsSchema for Ipv4Addr {
-    fn ts_type() -> TsType {
-        TsType::String
-    }
-}
-
-impl TsSchema for Ipv6Addr {
-    fn ts_type() -> TsType {
-        TsType::String
-    }
-}
-
-impl TsSchema for serde_json::Value {
-    fn ts_type() -> TsType {
-        TsType::Json
-    }
-}
-
-impl<T> TsSchema for Option<T>
-where
-    T: TsSchema,
-{
+impl<T: TsSchema> TsSchema for Option<T> {
     fn ts_type() -> TsType {
         TsType::Nullable(Box::new(schema_type_ref::<T>()))
     }
 
     fn schema_dependencies() -> Vec<Schema> {
-        let mut dependencies = Vec::new();
-        push_schema_dependency::<T>(&mut dependencies);
-        dependencies
+        element_dependencies::<T>()
     }
 }
 
-impl<T> TsSchema for Vec<T>
-where
-    T: TsSchema,
-{
-    fn ts_type() -> TsType {
-        TsType::Array(Box::new(schema_type_ref::<T>()))
-    }
-
-    fn schema_dependencies() -> Vec<Schema> {
-        let mut dependencies = Vec::new();
-        push_schema_dependency::<T>(&mut dependencies);
-        dependencies
-    }
-}
-
-impl<T> TsSchema for HashSet<T>
-where
-    T: TsSchema,
-{
-    fn ts_type() -> TsType {
-        TsType::Array(Box::new(schema_type_ref::<T>()))
-    }
-
-    fn schema_dependencies() -> Vec<Schema> {
-        let mut dependencies = Vec::new();
-        push_schema_dependency::<T>(&mut dependencies);
-        dependencies
-    }
-}
-
-impl<T> TsSchema for BTreeSet<T>
-where
-    T: TsSchema,
-{
-    fn ts_type() -> TsType {
-        TsType::Array(Box::new(schema_type_ref::<T>()))
-    }
-
-    fn schema_dependencies() -> Vec<Schema> {
-        let mut dependencies = Vec::new();
-        push_schema_dependency::<T>(&mut dependencies);
-        dependencies
-    }
-}
-
-impl<T, const N: usize> TsSchema for [T; N]
-where
-    T: TsSchema,
-{
-    fn ts_type() -> TsType {
-        TsType::Array(Box::new(schema_type_ref::<T>()))
-    }
-
-    fn schema_dependencies() -> Vec<Schema> {
-        let mut dependencies = Vec::new();
-        push_schema_dependency::<T>(&mut dependencies);
-        dependencies
-    }
-}
-
-impl<T> TsSchema for Box<T>
-where
-    T: TsSchema,
-{
-    fn schema_name() -> &'static str {
-        T::schema_name()
-    }
-
-    fn ts_type() -> TsType {
-        T::ts_type()
-    }
-
-    fn schema_dependencies() -> Vec<Schema> {
-        T::schema_dependencies()
-    }
-}
-
-impl<T> TsSchema for HashMap<String, T>
-where
-    T: TsSchema,
-{
-    fn ts_type() -> TsType {
-        TsType::Record {
-            key: TsRecordKey::String,
-            value: Box::new(schema_type_ref::<T>()),
-        }
-    }
-
-    fn schema_dependencies() -> Vec<Schema> {
-        let mut dependencies = Vec::new();
-        push_schema_dependency::<T>(&mut dependencies);
-        dependencies
-    }
-}
-
-macro_rules! impl_numeric_map_schema {
-    ($($key:ty),+ $(,)?) => {
+macro_rules! array_schemas {
+    ($($container:ident),+ $(,)?) => {
         $(
-            impl<T> TsSchema for HashMap<$key, T>
-            where
-                T: TsSchema,
-            {
+            impl<T: TsSchema> TsSchema for $container<T> {
                 fn ts_type() -> TsType {
-                    TsType::Record {
-                        key: TsRecordKey::Number,
-                        value: Box::new(schema_type_ref::<T>()),
-                    }
+                    array_of::<T>()
                 }
 
                 fn schema_dependencies() -> Vec<Schema> {
-                    let mut dependencies = Vec::new();
-                    push_schema_dependency::<T>(&mut dependencies);
-                    dependencies
-                }
-            }
-
-            impl<T> TsSchema for BTreeMap<$key, T>
-            where
-                T: TsSchema,
-            {
-                fn ts_type() -> TsType {
-                    TsType::Record {
-                        key: TsRecordKey::Number,
-                        value: Box::new(schema_type_ref::<T>()),
-                    }
-                }
-
-                fn schema_dependencies() -> Vec<Schema> {
-                    let mut dependencies = Vec::new();
-                    push_schema_dependency::<T>(&mut dependencies);
-                    dependencies
+                    element_dependencies::<T>()
                 }
             }
         )+
     };
 }
 
-impl_numeric_map_schema!(u8, u16, u32, u64, u128, usize);
-impl_numeric_map_schema!(i8, i16, i32, i64, i128, isize);
+array_schemas!(Vec, VecDeque, HashSet, BTreeSet);
 
-impl<T> TsSchema for BTreeMap<String, T>
-where
-    T: TsSchema,
-{
+impl<T: TsSchema> TsSchema for Box<[T]> {
     fn ts_type() -> TsType {
-        TsType::Record {
-            key: TsRecordKey::String,
-            value: Box::new(schema_type_ref::<T>()),
-        }
+        array_of::<T>()
     }
 
     fn schema_dependencies() -> Vec<Schema> {
-        let mut dependencies = Vec::new();
-        push_schema_dependency::<T>(&mut dependencies);
-        dependencies
+        element_dependencies::<T>()
     }
 }
 
-impl<A, B> TsSchema for (A, B)
-where
-    A: TsSchema,
-    B: TsSchema,
-{
+impl<T: TsSchema, const N: usize> TsSchema for [T; N] {
     fn ts_type() -> TsType {
-        TsType::Tuple(vec![schema_type_ref::<A>(), schema_type_ref::<B>()])
+        array_of::<T>()
     }
 
     fn schema_dependencies() -> Vec<Schema> {
-        let mut dependencies = Vec::new();
-        push_schema_dependency::<A>(&mut dependencies);
-        push_schema_dependency::<B>(&mut dependencies);
-        dependencies
+        element_dependencies::<T>()
     }
 }
 
-impl<A, B, C> TsSchema for (A, B, C)
-where
-    A: TsSchema,
-    B: TsSchema,
-    C: TsSchema,
-{
-    fn ts_type() -> TsType {
-        TsType::Tuple(vec![
-            schema_type_ref::<A>(),
-            schema_type_ref::<B>(),
-            schema_type_ref::<C>(),
-        ])
-    }
-
-    fn schema_dependencies() -> Vec<Schema> {
-        let mut dependencies = Vec::new();
-        push_schema_dependency::<A>(&mut dependencies);
-        push_schema_dependency::<B>(&mut dependencies);
-        push_schema_dependency::<C>(&mut dependencies);
-        dependencies
-    }
-}
-
-macro_rules! impl_number_schema {
-    ($($ty:ty),+ $(,)?) => {
+macro_rules! transparent_schemas {
+    ($($pointer:ident),+ $(,)?) => {
         $(
-            impl TsSchema for $ty {
+            impl<T: TsSchema> TsSchema for $pointer<T> {
+                fn schema_name() -> &'static str {
+                    T::schema_name()
+                }
+
                 fn ts_type() -> TsType {
-                    TsType::Number
+                    T::ts_type()
+                }
+
+                fn schema_dependencies() -> Vec<Schema> {
+                    T::schema_dependencies()
                 }
             }
         )+
     };
 }
 
-impl_number_schema!(u8, u16, u32, u64, u128, usize);
-impl_number_schema!(i8, i16, i32, i64, i128, isize);
-impl_number_schema!(f32, f64);
+transparent_schemas!(Box, Arc, Rc);
+
+macro_rules! record_schemas {
+    ($record_key:expr => $($key:ty),+ $(,)?) => {
+        $(
+            impl<T: TsSchema> TsSchema for HashMap<$key, T> {
+                fn ts_type() -> TsType {
+                    record_of::<T>($record_key)
+                }
+
+                fn schema_dependencies() -> Vec<Schema> {
+                    element_dependencies::<T>()
+                }
+            }
+
+            impl<T: TsSchema> TsSchema for BTreeMap<$key, T> {
+                fn ts_type() -> TsType {
+                    record_of::<T>($record_key)
+                }
+
+                fn schema_dependencies() -> Vec<Schema> {
+                    element_dependencies::<T>()
+                }
+            }
+        )+
+    };
+}
+
+record_schemas!(TsRecordKey::String => String);
+record_schemas!(TsRecordKey::Number => u8, u16, u32, u64, u128, usize);
+record_schemas!(TsRecordKey::Number => i8, i16, i32, i64, i128, isize);
+
+macro_rules! tuple_schema {
+    ($len:literal => $($index:tt $name:ident),+) => {
+        impl<$($name: TsSchema),+> TsSchema for ($($name,)+) {
+            fn ts_type() -> TsType {
+                TsType::Tuple(vec![$(schema_type_ref::<$name>()),+])
+            }
+
+            fn schema_dependencies() -> Vec<Schema> {
+                let mut dependencies = Vec::new();
+                $(push_schema_dependency::<$name>(&mut dependencies);)+
+                dependencies
+            }
+        }
+    };
+}
+
+for_each_tuple!(tuple_schema);
 
 #[cfg(test)]
 mod tests {

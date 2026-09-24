@@ -1,6 +1,8 @@
 #[cfg(feature = "tokio")]
 use crate::contract::AsyncHostFunction;
-use crate::contract::{HostCallback, HostContext, HostContractDescriptor, HostFunction, TsSchema};
+use crate::contract::{
+    HostCallback, HostContext, HostContractDescriptor, HostFunction, JsDecode, JsEncode, TsSchema,
+};
 use crate::error::VmError;
 
 /// Access to the host contract registry.
@@ -11,11 +13,14 @@ pub trait HostContractRegistry: Send + Sync {
         T: HostFunction + Send + Sync + 'static;
 
     /// Registers one host function contract using `TsSchema` from its input and output types.
+    ///
+    /// Script calls convert the input with [`JsDecode`] and the output with [`JsEncode`],
+    /// natively and without JSON text.
     fn register_typed_function<T>(&self) -> Result<(), VmError>
     where
         T: HostFunction + Send + Sync + 'static,
-        T::Input: TsSchema,
-        T::Output: TsSchema;
+        T::Input: TsSchema + JsDecode,
+        T::Output: TsSchema + JsEncode;
 
     /// Registers one async host function contract.
     #[cfg(feature = "tokio")]
@@ -38,7 +43,7 @@ pub trait HostContractRegistry: Send + Sync {
     fn register_typed_callback<T>(&self) -> Result<(), VmError>
     where
         T: HostCallback + Send + Sync + 'static,
-        T::Payload: TsSchema;
+        T::Payload: TsSchema + JsEncode;
 
     /// Registers one host context contract.
     fn register_context<T>(&self) -> Result<(), VmError>

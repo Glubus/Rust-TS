@@ -61,11 +61,34 @@ fn removing_graph_clears_sources_and_resolutions() {
         .expect("insert project graph");
 
     store
-        .remove_script_modules("/app/main.ts", &graph.module_ids)
+        .remove_modules(&graph.module_ids)
         .expect("remove graph modules");
 
     let error = store
         .resolve("rustts://graph/7//app/main.ts", "./dep")
         .expect_err("graph resolution removed");
     assert!(matches!(error, rquickjs::Error::Resolving { .. }));
+}
+
+#[test]
+fn removing_a_script_keeps_the_host_module_that_shares_its_name() {
+    let store = WorkerModuleStore::default();
+    store
+        .insert_host_modules(BTreeMap::from([(
+            String::from("bench"),
+            String::from("export const value = 1;"),
+        )]))
+        .expect("insert host module");
+    let graph = store
+        .insert_inline("bench", String::from("export {};"), 0)
+        .expect("insert script graph");
+
+    store
+        .remove_modules(&graph.module_ids)
+        .expect("remove script graph");
+
+    let resolved = store
+        .resolve("rustts://graph/1/other", "bench")
+        .expect("host module still resolvable");
+    assert_eq!(resolved, "bench");
 }

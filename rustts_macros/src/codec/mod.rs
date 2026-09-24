@@ -1,0 +1,131 @@
+//! `JsEncode` / `JsDecode` impls that reproduce serde's wire format natively.
+//!
+//! Both are emitted unless the type restricts them with `#[rustts(encode_only)]`,
+//! `#[rustts(decode_only)]` or `#[rustts(schema_only)]`; `#[rustts(codec = "json")]` on
+//! the type routes them through serde_json instead.
+
+mod enum_codec;
+mod field;
+mod shape;
+mod struct_codec;
+
+use proc_macro2::TokenStream;
+use quote::quote;
+use syn::{Generics, parse_quote};
+
+use crate::generics::{bound_type_params, with_predicate};
+use crate::model::{Body, Container};
+
+pub(crate) fn expand_codecs(container: &Container<'_>) -> TokenStream {
+    let encode = container.codecs().encode.then(|| encode_impl(container));
+    let decode = container.codecs().decode.then(|| decode_impl(container));
+    quote!(#encode #decode)
+}
+
+fn encode_impl(container: &Container<'_>) -> TokenStream {
+    let (generics, body) = if container.attrs.json_codec {
+        (
+            with_predicate(
+                container.generics,
+                parse_quote!(Self: ::rustts::__serde::Serialize),
+            ),
+            quote!(::rustts::__derive::json_encode(self, __ctx)),
+        )
+    } else {
+        let body = match &container.body {
+            Body::Struct(shape) => struct_codec::encode_body(container, shape),
+            Body::Enum(variants) => enum_codec::encode_body(container, variants),
+        };
+        (
+            bound_type_params(container.generics, &parse_quote!(::rustts::JsEncode)),
+            body,
+        )
+    };
+    let ident = container.ident;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    quote! {
+        #[automatically_derived]
+        impl #impl_generics ::rustts::JsEncode for #ident #ty_generics #where_clause {
+            fn encode_js<'__js>(
+                &self,
+                __ctx: &::rustts::js::Ctx<'__js>,
+            ) -> ::rustts::js::Result<::rustts::js::Value<'__js>> {
+                #body
+            }
+        }
+    }
+}
+
+fn decode_impl(container: &Container<'_>) -> TokenStream {
+    if container.attrs.json_codec {
+        let generics = with_predicate(
+            container.generics,
+            parse_quote!(Self: ::rustts::__serde::de::DeserializeOwned),
+        );
+        return decode_trait_impl(
+            container,
+            &generics,
+            &quote!(::rustts::__derive::json_decode(__ctx, __value)),
+        );
+    }
+    let generics = bound_type_params(container.generics, &parse_quote!(::rustts::JsDecode));
+    match &container.body {
+        Body::Struct(shape) => decode_trait_impl(
+            container,
+            &generics,
+            &struct_codec::decode_body(container, shape),
+        ),
+        Body::Enum(variants) => {
+            let decode = decode_trait_impl(
+                container,
+                &generics,
+                &enum_codec::decode_body(container, variants),
+            );
+            let helpers = decode_helpers_impl(
+                container,
+                &generics,
+                &enum_codec::decode_helpers(container, variants),
+            );
+            quote!(#decode #helpers)
+        }
+    }
+}
+
+fn decode_trait_impl(
+    container: &Container<'_>,
+    generics: &Generics,
+    body: &TokenStream,
+) -> TokenStream {
+    let ident = container.ident;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    quote! {
+        #[automatically_derived]
+        impl #impl_generics ::rustts::JsDecode for #ident #ty_generics #where_clause {
+            fn decode_js<'__js>(
+                __ctx: &::rustts::js::Ctx<'__js>,
+                __value: ::rustts::js::Value<'__js>,
+            ) -> ::rustts::js::Result<Self> {
+                #body
+            }
+        }
+    }
+}
+
+/// Inherent impl holding the per-variant payload decoders.
+fn decode_helpers_impl(
+    container: &Container<'_>,
+    generics: &Generics,
+    helpers: &[TokenStream],
+) -> TokenStream {
+    if helpers.is_empty() {
+        return TokenStream::new();
+    }
+    let ident = container.ident;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    quote! {
+        #[automatically_derived]
+        impl #impl_generics #ident #ty_generics #where_clause {
+            #(#helpers)*
+        }
+    }
+}

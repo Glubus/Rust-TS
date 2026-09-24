@@ -6,12 +6,13 @@ use std::path::PathBuf;
 
 use rustts::{
     HostContract, HostContractKind, HostFunction, InMemoryHostContractRegistry, Schema,
-    TsEnumVariant, TsField, TsRecordKey, TsSchema, TsType, VmError,
+    TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema, TsType, VmError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(TsSchema)]
+#[rustts(schema_only)]
 #[allow(dead_code)]
 struct InvoicePayload {
     id: u64,
@@ -292,6 +293,7 @@ impl rustts::HostCallback for AutoInvoiceCreated {
 }
 
 #[derive(TsSchema)]
+#[rustts(schema_only)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct SerdePlayerPayload {
@@ -444,7 +446,7 @@ fn derive_ts_schema_respects_serde_enum_variant_attributes() {
     assert_eq!(
         SerdeMode::ts_type(),
         TsType::Enum {
-            tag: Some(String::from("type")),
+            tag: None,
             variants: vec![
                 TsEnumVariant::unit("fast-mode"),
                 TsEnumVariant::unit("manual-mode"),
@@ -563,27 +565,21 @@ fn derive_ts_schema_for_generic_struct() {
 fn derive_ts_schema_for_payload_enum() {
     assert_eq!(
         HostMessage::<String>::ts_type(),
-        TsType::Enum {
-            tag: Some(String::from("type")),
-            variants: vec![
-                TsEnumVariant::unit("Ready"),
-                TsEnumVariant::payload(
-                    "User",
-                    vec![
-                        TsField::required("id", TsType::Number),
-                        TsField::required("name", TsType::String),
-                    ],
-                ),
-                TsEnumVariant::payload("Data", vec![TsField::required("value", TsType::String)]),
-                TsEnumVariant::payload(
-                    "Pair",
-                    vec![TsField::required(
-                        "items",
-                        TsType::Tuple(vec![TsType::String, TsType::Boolean]),
-                    )],
-                ),
-            ],
-        }
+        TsType::Union(vec![
+            TsType::Literal(TsLiteral::String(String::from("Ready"))),
+            TsType::Object(vec![TsField::required(
+                "User",
+                TsType::Object(vec![
+                    TsField::required("id", TsType::Number),
+                    TsField::required("name", TsType::String),
+                ]),
+            )]),
+            TsType::Object(vec![TsField::required("Data", TsType::String)]),
+            TsType::Object(vec![TsField::required(
+                "Pair",
+                TsType::Tuple(vec![TsType::String, TsType::Boolean]),
+            )]),
+        ])
     );
 }
 
@@ -643,6 +639,67 @@ fn derive_ts_schema_respects_serde_adjacently_tagged_enum_attributes() {
                 TsEnumVariant::unit("Disconnected"),
             ],
         }
+    );
+}
+
+#[derive(TsSchema)]
+#[serde(tag = "kind")]
+#[allow(dead_code)]
+enum Signal {
+    Start,
+    Stop,
+}
+
+#[test]
+fn derive_ts_schema_keeps_tag_objects_for_unit_only_tagged_enums() {
+    let tagged = |name: &str| {
+        TsType::Object(vec![TsField::required(
+            "kind",
+            TsType::Literal(TsLiteral::String(String::from(name))),
+        )])
+    };
+    assert_eq!(
+        Signal::ts_type(),
+        TsType::Union(vec![tagged("Start"), tagged("Stop")])
+    );
+}
+
+#[derive(TsSchema)]
+#[allow(dead_code)]
+struct DirectionalFields {
+    always: u32,
+    #[serde(skip_serializing)]
+    input_only: u32,
+    #[serde(skip_deserializing)]
+    output_only: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maybe: Option<u32>,
+}
+
+#[derive(TsSchema)]
+#[rustts(encode_only)]
+#[allow(dead_code)]
+struct OutputView {
+    #[serde(skip_serializing)]
+    input_only: u32,
+    #[serde(skip_deserializing)]
+    output_only: u32,
+}
+
+#[test]
+fn derive_ts_schema_marks_fields_missing_in_one_direction_optional() {
+    assert_eq!(
+        DirectionalFields::ts_type(),
+        TsType::Object(vec![
+            TsField::required("always", TsType::Number),
+            TsField::optional("input_only", TsType::Number),
+            TsField::optional("output_only", TsType::Number),
+            TsField::optional("maybe", TsType::Nullable(Box::new(TsType::Number))),
+        ])
+    );
+    assert_eq!(
+        OutputView::ts_type(),
+        TsType::Object(vec![TsField::required("output_only", TsType::Number)])
     );
 }
 

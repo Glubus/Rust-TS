@@ -42,7 +42,6 @@ pub struct AsyncLoadedScript {
     budget: std::time::Duration,
     context: AsyncContext,
     module_store: WorkerModuleStore,
-    script_id: ScriptId,
     module_id: String,
     module_ids: Vec<String>,
 }
@@ -109,7 +108,6 @@ impl AsyncScriptRuntime {
         let graph = self.install_modules(&id, transpiled_js, entry_module_id, modules)?;
         let mut cleanup = PendingGraph {
             store: self.module_store.clone(),
-            id: id.clone(),
             modules: graph.module_ids.clone(),
         };
         let result = self
@@ -128,7 +126,6 @@ impl AsyncScriptRuntime {
             build_loaded_script(
                 context,
                 self.module_store.clone(),
-                id,
                 graph,
                 self.control.clone(),
                 self.budget,
@@ -286,7 +283,6 @@ fn build_eval_options(script_id: &str) -> rquickjs::context::EvalOptions {
 fn build_loaded_script(
     context: AsyncContext,
     module_store: WorkerModuleStore,
-    script_id: ScriptId,
     graph: RuntimeModuleGraph,
     control: Arc<super::execution::ExecutionControl>,
     budget: std::time::Duration,
@@ -296,7 +292,6 @@ fn build_loaded_script(
         budget,
         context,
         module_store,
-        script_id,
         module_id: graph.entry_module_id,
         module_ids: graph.module_ids,
     }
@@ -304,23 +299,20 @@ fn build_loaded_script(
 
 struct PendingGraph {
     store: WorkerModuleStore,
-    id: String,
     modules: Vec<String>,
 }
 
 impl Drop for PendingGraph {
     fn drop(&mut self) {
         if !self.modules.is_empty() {
-            let _ = self.store.remove_script_modules(&self.id, &self.modules);
+            let _ = self.store.remove_modules(&self.modules);
         }
     }
 }
 
 impl Drop for AsyncLoadedScript {
     fn drop(&mut self) {
-        let _ = self
-            .module_store
-            .remove_script_modules(&self.script_id, &self.module_ids);
+        let _ = self.module_store.remove_modules(&self.module_ids);
     }
 }
 

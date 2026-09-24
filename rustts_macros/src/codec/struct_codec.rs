@@ -1,0 +1,60 @@
+//! Codec bodies for structs.
+
+use proc_macro2::TokenStream;
+use quote::quote;
+
+use super::field::{decoder, default_value, encoder};
+use super::shape::{Scope, decode_payload, encode_payload};
+use crate::model::{Container, Field, Shape};
+
+/// Body of `encode_js` for a struct.
+pub(super) fn encode_body(container: &Container<'_>, shape: &Shape<'_>) -> TokenStream {
+    if let Some(field) = container.transparent_field() {
+        let encode = encoder(field);
+        let member = &field.member;
+        return quote!((#encode)(&self.#member, __ctx));
+    }
+    let accessors: Vec<TokenStream> = shape
+        .fields
+        .iter()
+        .map(|field| {
+            let member = &field.member;
+            quote!(&self.#member)
+        })
+        .collect();
+    let rust = container.rust_name();
+    encode_payload(&scope(container, &rust), shape, &accessors)
+}
+
+/// Body of `decode_js` for a struct.
+pub(super) fn decode_body(container: &Container<'_>, shape: &Shape<'_>) -> TokenStream {
+    if let Some(field) = container.transparent_field() {
+        return decode_transparent(shape, field);
+    }
+    let rust = container.rust_name();
+    decode_payload(&scope(container, &rust), shape, &quote!(Self))
+}
+
+fn scope<'s>(container: &'s Container<'_>, rust: &'s str) -> Scope<'s> {
+    Scope {
+        rust,
+        deny_unknown_fields: container.attrs.deny_unknown_fields,
+        container_default: container.attrs.default.as_ref(),
+        tag: None,
+    }
+}
+
+/// `#[serde(transparent)]`: the value is the forwarded field; the others take their
+/// defaults.
+fn decode_transparent(shape: &Shape<'_>, forwarded: &Field<'_>) -> TokenStream {
+    let members = shape.fields.iter().map(|field| &field.member);
+    let values = shape.fields.iter().map(|field| {
+        if std::ptr::eq(field, forwarded) {
+            let decode = decoder(field);
+            quote!((#decode)(__ctx, __value)?)
+        } else {
+            default_value(field, false)
+        }
+    });
+    quote!(::rustts::js::Result::Ok(Self { #(#members: #values),* }))
+}

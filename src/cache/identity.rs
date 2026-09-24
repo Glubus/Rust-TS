@@ -7,7 +7,7 @@ const AUTHOR_MODULE_BRIDGE_VERSION: &str = "native-esm-v1";
 const COMPILER_MODULE_FORMAT: &str = "esm";
 const OXC_VERSION: &str = "0.137.0";
 const OXC_RESOLVER_VERSION: &str = "11.21.3";
-const RQUICKJS_VERSION: &str = "0.12.0";
+const RQUICKJS_VERSION: &str = "0.14.0";
 const RUNTIME_BRIDGE_VERSION: &str = "quickjs-native-esm-loader-v1";
 const RESOLVER_POLICY_VERSION: &str = "local-relative-package-index-v2";
 

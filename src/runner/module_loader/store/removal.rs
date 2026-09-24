@@ -1,11 +1,8 @@
 use super::inner::ModuleStoreInner;
 
-pub(super) fn remove_script_modules(
-    store: &mut ModuleStoreInner,
-    script_id: &str,
-    module_ids: &[String],
-) {
-    store.sources.remove(script_id);
+/// Removes a script's module graph. Only the graph's own module ids are touched: host
+/// modules live under bare names that a script id may coincide with.
+pub(super) fn remove_modules(store: &mut ModuleStoreInner, module_ids: &[String]) {
     for module_id in module_ids {
         remove_module(store, module_id);
     }

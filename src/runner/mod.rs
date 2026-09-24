@@ -6,6 +6,7 @@ pub(crate) mod async_host_bridge;
 pub mod async_script_runtime;
 mod bridge_capability;
 mod command;
+mod engine;
 mod errors;
 mod event_dispatch;
 pub(crate) mod execution;
@@ -25,6 +26,7 @@ pub(crate) use command::{
     CallFunctionCommand, EmitEventCommand, LoadScriptCommand, ShutdownCommand, StatsCommand,
     UnloadScriptCommand, WorkerCommand,
 };
+pub use engine::Engine;
 pub(crate) use handle::WorkerHandle;
 pub(crate) use jobs::WorkerRuntimeStats;
 pub(crate) use thread::spawn_worker;

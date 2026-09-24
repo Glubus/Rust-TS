@@ -14,6 +14,7 @@ mod compiler;
 mod config;
 mod contract;
 mod error;
+pub mod js;
 mod latency_metrics;
 mod manager;
 mod queue_metrics;
@@ -22,8 +23,6 @@ mod runner;
 mod sdk_files;
 mod types;
 
-#[doc(hidden)]
-pub use rquickjs as __rquickjs;
 #[doc(hidden)]
 pub use serde as __serde;
 
@@ -37,6 +36,12 @@ pub use contract::{
     HostFunctionExecution, HostMetadata, NativeBytes, Schema, TsEnumVariant, TsField, TsLiteral,
     TsRecordKey, TsSchema, TsType, push_schema_dependency, schema_type_ref,
 };
+pub use contract::{JsArgs, JsDecode, JsEncode};
+#[doc(hidden)]
+pub use contract::{
+    at_path as __codec_at_path, codec_error as __codec_error, derive as __derive,
+    expect_array_len as __codec_expect_array_len, expect_object as __codec_expect_object,
+};
 pub use error::VmError;
 #[cfg(feature = "async-promise")]
 pub use manager::AsyncManagedScript;
@@ -45,6 +50,7 @@ pub use registry::{
     ScriptRegistryEntry, render_typescript_declarations_for_descriptors,
     render_typescript_sdk_for_descriptors,
 };
+pub use runner::Engine;
 #[cfg(feature = "async-promise")]
 pub use runner::async_host_bridge::install_async_host_bridge;
 #[cfg(feature = "async-promise")]

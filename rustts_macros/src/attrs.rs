@@ -1,256 +1,451 @@
+//! Parsing of `#[serde(...)]` and `#[rustts(...)]` attributes.
+//!
+//! Serde attributes are read so the schema and the native codec follow the wire format
+//! serde produces. Attributes only the serde_json reference codec can honor are kept as
+//! [`JsonOnly`] entries; `check` rejects them unless the type or field opts in with
+//! `#[rustts(codec = "json")]`.
+
+use proc_macro2::Group;
 use syn::{
-    Attribute, DeriveInput, Error, Expr, Lit, LitStr, Meta, Result, Token, punctuated::Punctuated,
+    Attribute, Error, Expr, ExprPath, Ident, LitStr, Path, Result, Token, Type,
+    meta::ParseNestedMeta, parse::Parse, token::Paren,
 };
 
-use crate::rename::RenameRule;
+use crate::directions::Directions;
+use crate::rename::{RenameRule, RenameRules, Renamed};
 
+/// `#[serde(default)]` or `#[serde(default = "path")]`.
+pub(crate) enum DefaultValue {
+    Trait,
+    Path(ExprPath),
+}
+
+/// A serde attribute only the serde_json reference codec can honor, with the codec
+/// directions it changes.
+pub(crate) struct JsonOnly {
+    pub(crate) path: Path,
+    pub(crate) directions: Directions,
+}
+
+/// A `#[rustts]` attribute that changes only the schema, with the serde attribute that
+/// changes schema and codec together.
+pub(crate) struct SchemaOnly {
+    pub(crate) path: Path,
+    pub(crate) serde_equivalent: &'static str,
+}
+
+/// Type-level attributes.
 #[derive(Default)]
-pub(super) struct ContainerAttrs {
-    pub(super) schema_name: Option<String>,
-    pub(super) rename_all: Option<RenameRule>,
-    pub(super) enum_tag: Option<String>,
-    pub(super) enum_content: Option<String>,
-    pub(super) untagged: bool,
-    pub(super) transparent: bool,
+pub(crate) struct ContainerAttrs {
+    pub(crate) schema_name: Option<String>,
+    pub(crate) json_codec: bool,
+    /// Codecs to emit: both by default, restricted by `#[rustts(encode_only)]`,
+    /// `#[rustts(decode_only)]` or `#[rustts(schema_only)]`.
+    pub(crate) codecs: Directions,
+    codecs_restricted: bool,
+    pub(crate) rename_all: RenameRules,
+    pub(crate) rename_all_fields: RenameRules,
+    pub(crate) tag: Option<String>,
+    pub(crate) content: Option<String>,
+    pub(crate) untagged: bool,
+    pub(crate) transparent: bool,
+    pub(crate) deny_unknown_fields: bool,
+    pub(crate) default: Option<DefaultValue>,
+    pub(crate) into: Option<Type>,
+    pub(crate) from: Option<Type>,
+    pub(crate) json_only: Vec<JsonOnly>,
 }
 
 impl ContainerAttrs {
-    pub(super) fn from_input(input: &DeriveInput) -> Result<Self> {
-        let mut attrs = Self::default();
-        attrs.apply_rustts_attrs(&input.attrs)?;
-        attrs.apply_serde_attrs(&input.attrs)?;
-        Ok(attrs)
+    pub(crate) fn from_attrs(attrs: &[Attribute]) -> Result<Self> {
+        let serde = SerdeAttrs::parse(attrs)?;
+        let mut container = Self {
+            codecs: Directions::BOTH,
+            rename_all: serde.rename_all,
+            rename_all_fields: serde.rename_all_fields,
+            tag: serde.tag,
+            content: serde.content,
+            untagged: serde.untagged.is_some(),
+            transparent: serde.transparent,
+            deny_unknown_fields: serde.deny_unknown_fields,
+            default: serde.default,
+            into: serde.into,
+            from: serde.from,
+            json_only: serde.json_only,
+            ..Self::default()
+        };
+        parse_rustts(attrs, |meta| container.apply_rustts(&meta))?;
+        container.check_tagging(attrs)?;
+        Ok(container)
     }
 
-    fn apply_rustts_attrs(&mut self, attrs: &[Attribute]) -> Result<()> {
-        for attr in attrs.iter().filter(|attr| attr.path().is_ident("rustts")) {
-            for meta in parse_rustts_attr(attr)? {
-                match meta {
-                    Meta::NameValue(value) if value.path.is_ident("name") => {
-                        self.schema_name = Some(string_lit_value(&value.value)?);
-                    }
-                    Meta::NameValue(value) if value.path.is_ident("rename") => {
-                        self.schema_name = Some(string_lit_value(&value.value)?);
-                    }
-                    other => {
-                        return Err(Error::new_spanned(
-                            other,
-                            "unsupported rustts type attribute",
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn apply_serde_attrs(&mut self, attrs: &[Attribute]) -> Result<()> {
-        for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
-            let serde_attrs = SerdeAttrs::parse(attr)?;
-            if let Some(rename_all) = serde_attrs.rename_all {
-                self.rename_all = Some(rename_all);
-            }
-            if let Some(tag) = serde_attrs.tag {
-                self.enum_tag = Some(tag);
-            }
-            if let Some(content) = serde_attrs.content {
-                self.enum_content = Some(content);
-            }
-            self.untagged |= serde_attrs.untagged;
-            self.transparent |= serde_attrs.transparent;
-        }
-        if self.untagged && (self.enum_tag.is_some() || self.enum_content.is_some()) {
-            return Err(Error::new_spanned(
-                attrs
-                    .iter()
-                    .find(|attr| attr.path().is_ident("serde"))
-                    .expect("serde attrs were iterated above"),
-                "serde untagged cannot be combined with tag or content",
-            ));
-        }
-        if self.enum_content.is_some() && self.enum_tag.is_none() {
-            return Err(Error::new_spanned(
-                attrs
-                    .iter()
-                    .find(|attr| attr.path().is_ident("serde"))
-                    .expect("serde attrs were iterated above"),
-                "serde content requires serde tag",
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-struct SerdeAttrs {
-    rename: Option<String>,
-    rename_all: Option<RenameRule>,
-    tag: Option<String>,
-    content: Option<String>,
-    default: bool,
-    skip: bool,
-    flatten: bool,
-    untagged: bool,
-    transparent: bool,
-}
-
-impl SerdeAttrs {
-    fn parse(attr: &Attribute) -> Result<Self> {
-        let mut attrs = Self::default();
-        attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("rename") {
-                let value = meta.value()?;
-                let lit: LitStr = value.parse()?;
-                attrs.rename = Some(lit.value());
-            } else if meta.path.is_ident("rename_all") {
-                let value = meta.value()?;
-                let lit: LitStr = value.parse()?;
-                attrs.rename_all = Some(RenameRule::parse(&lit)?);
-            } else if meta.path.is_ident("tag") {
-                let value = meta.value()?;
-                let lit: LitStr = value.parse()?;
-                attrs.tag = Some(lit.value());
-            } else if meta.path.is_ident("content") {
-                let value = meta.value()?;
-                let lit: LitStr = value.parse()?;
-                attrs.content = Some(lit.value());
-            } else if meta.path.is_ident("skip") {
-                attrs.skip = true;
-            } else if meta.path.is_ident("flatten") {
-                attrs.flatten = true;
-            } else if meta.path.is_ident("skip_serializing")
-                || meta.path.is_ident("skip_deserializing")
-                || meta.path.is_ident("skip_serializing_if")
-            {
+    fn apply_rustts(&mut self, meta: &ParseNestedMeta<'_>) -> Result<()> {
+        if meta.path.is_ident("name") || meta.path.is_ident("rename") {
+            self.schema_name = Some(string_value(meta)?);
+        } else if meta.path.is_ident("codec") {
+            self.json_codec = parse_json_codec(meta)?;
+        } else if let Some(codecs) = restricted_codecs(&meta.path) {
+            if std::mem::replace(&mut self.codecs_restricted, true) {
                 return Err(
-                    meta.error("directional serde skip attributes are not supported by TsSchema")
+                    meta.error("use only one of `schema_only`, `encode_only` and `decode_only`")
                 );
-            } else if meta.path.is_ident("untagged") {
-                attrs.untagged = true;
-            } else if meta.path.is_ident("transparent") {
-                attrs.transparent = true;
-            } else if meta.path.is_ident("default") {
-                attrs.default = true;
-                if meta.input.peek(Token![=]) {
-                    let _ = meta.value()?.parse::<Expr>()?;
-                }
-            } else if meta.input.peek(Token![=]) {
-                let _ = meta.value()?.parse::<Expr>()?;
             }
-            Ok(())
-        })?;
-        Ok(attrs)
+            self.codecs = codecs;
+        } else {
+            return Err(meta.error("unsupported rustts type attribute"));
+        }
+        Ok(())
+    }
+
+    fn check_tagging(&self, attrs: &[Attribute]) -> Result<()> {
+        let message = if self.untagged && (self.tag.is_some() || self.content.is_some()) {
+            "serde untagged cannot be combined with tag or content"
+        } else if self.content.is_some() && self.tag.is_none() {
+            "serde content requires serde tag"
+        } else {
+            return Ok(());
+        };
+        let serde_attr = attrs
+            .iter()
+            .find(|attr| attr.path().is_ident("serde"))
+            .expect("tagging attributes come from a serde attribute");
+        Err(Error::new_spanned(serde_attr, message))
     }
 }
 
+/// Field-level attributes.
 #[derive(Default)]
-pub(super) struct FieldAttrs {
-    pub(super) rename: Option<String>,
-    pub(super) optional: bool,
-    pub(super) skip: bool,
-    pub(super) flatten: bool,
+pub(crate) struct FieldAttrs {
+    pub(crate) rename: Renamed,
+    pub(crate) aliases: Vec<String>,
+    pub(crate) default: Option<DefaultValue>,
+    pub(crate) skip_serializing: bool,
+    pub(crate) skip_deserializing: bool,
+    pub(crate) skip_serializing_if: Option<ExprPath>,
+    pub(crate) flatten: bool,
+    pub(crate) serialize_with: Option<ExprPath>,
+    pub(crate) deserialize_with: Option<ExprPath>,
+    pub(crate) json_only: Vec<JsonOnly>,
+    /// `#[rustts(codec = "json")]`: this field crosses through serde_json.
+    pub(crate) json_codec: bool,
+    /// `#[rustts(with = "path")]`: `path::encode_js` / `path::decode_js` codec.
+    pub(crate) with: Option<ExprPath>,
+    /// `#[rustts(type = "...")]`: TypeScript type text used instead of the field's schema.
+    pub(crate) ts_type: Option<String>,
+    pub(crate) schema_rename: Option<String>,
+    pub(crate) schema_optional: bool,
+    pub(crate) schema_only: Vec<SchemaOnly>,
 }
 
 impl FieldAttrs {
-    pub(super) fn from_field(field: &syn::Field) -> Result<Self> {
-        let mut attrs = Self::default();
-        for attr in field
-            .attrs
-            .iter()
-            .filter(|attr| attr.path().is_ident("rustts"))
-        {
-            for meta in parse_rustts_attr(attr)? {
-                match meta {
-                    Meta::Path(path) if path.is_ident("optional") => attrs.optional = true,
-                    Meta::NameValue(value) if value.path.is_ident("rename") => {
-                        attrs.rename = Some(string_lit_value(&value.value)?);
-                    }
-                    other => {
-                        return Err(Error::new_spanned(
-                            other,
-                            "unsupported rustts field attribute",
-                        ));
-                    }
-                }
-            }
-        }
-        for attr in field
-            .attrs
-            .iter()
-            .filter(|attr| attr.path().is_ident("serde"))
-        {
-            let serde_attrs = SerdeAttrs::parse(attr)?;
-            if attrs.rename.is_none() {
-                attrs.rename = serde_attrs.rename;
-            }
-            attrs.optional |= serde_attrs.default;
-            attrs.skip |= serde_attrs.skip;
-            attrs.flatten |= serde_attrs.flatten;
-        }
+    pub(crate) fn from_field(field: &syn::Field) -> Result<Self> {
+        let serde = SerdeAttrs::parse(&field.attrs)?;
+        let mut attrs = Self {
+            rename: serde.rename,
+            aliases: serde.aliases,
+            default: serde.default,
+            skip_serializing: serde.skip_serializing,
+            skip_deserializing: serde.skip_deserializing,
+            skip_serializing_if: serde.skip_serializing_if,
+            flatten: serde.flatten,
+            serialize_with: serde.serialize_with,
+            deserialize_with: serde.deserialize_with,
+            json_only: serde.json_only,
+            ..Self::default()
+        };
+        parse_rustts(&field.attrs, |meta| attrs.apply_rustts(&meta))?;
         Ok(attrs)
+    }
+
+    fn apply_rustts(&mut self, meta: &ParseNestedMeta<'_>) -> Result<()> {
+        if meta.path.is_ident("rename") {
+            self.schema_rename = Some(string_value(meta)?);
+            self.schema_only.push(SchemaOnly {
+                path: meta.path.clone(),
+                serde_equivalent: "rename = \"...\"",
+            });
+        } else if meta.path.is_ident("optional") {
+            self.schema_optional = true;
+            self.schema_only.push(SchemaOnly {
+                path: meta.path.clone(),
+                serde_equivalent: "default",
+            });
+        } else if meta.path.is_ident("codec") {
+            self.json_codec = parse_json_codec(meta)?;
+        } else if meta.path.is_ident("with") {
+            self.with = Some(parsed_string(meta)?);
+        } else if meta.path.is_ident("type") {
+            self.ts_type = Some(string_value(meta)?);
+        } else {
+            return Err(meta.error("unsupported rustts field attribute"));
+        }
+        Ok(())
     }
 }
 
+/// Enum variant attributes.
 #[derive(Default)]
-pub(super) struct VariantAttrs {
-    pub(super) rename: Option<String>,
+pub(crate) struct VariantAttrs {
+    pub(crate) rename: Renamed,
+    pub(crate) aliases: Vec<String>,
+    pub(crate) rename_all: RenameRules,
+    pub(crate) skip_serializing: bool,
+    pub(crate) skip_deserializing: bool,
+    pub(crate) json_only: Vec<JsonOnly>,
+    pub(crate) schema_rename: Option<String>,
+    pub(crate) schema_only: Vec<SchemaOnly>,
 }
 
 impl VariantAttrs {
-    pub(super) fn from_variant(variant: &syn::Variant) -> Result<Self> {
-        let mut attrs = Self {
-            rename: parse_rustts_variant_rename(&variant.attrs)?,
-        };
-        for attr in variant
-            .attrs
-            .iter()
-            .filter(|attr| attr.path().is_ident("serde"))
-        {
-            let serde_attrs = SerdeAttrs::parse(attr)?;
-            if attrs.rename.is_none() {
-                attrs.rename = serde_attrs.rename;
-            }
-            if serde_attrs.rename_all.is_some() {
-                return Err(Error::new_spanned(
-                    attr,
-                    "serde rename_all is not supported on enum variants",
-                ));
-            }
+    pub(crate) fn from_variant(variant: &syn::Variant) -> Result<Self> {
+        let serde = SerdeAttrs::parse(&variant.attrs)?;
+        let mut json_only = serde.json_only;
+        if let Some(path) = serde.untagged {
+            json_only.push(JsonOnly {
+                path,
+                directions: Directions::BOTH,
+            });
         }
+        let mut attrs = Self {
+            rename: serde.rename,
+            aliases: serde.aliases,
+            rename_all: serde.rename_all,
+            skip_serializing: serde.skip_serializing,
+            skip_deserializing: serde.skip_deserializing,
+            json_only,
+            ..Self::default()
+        };
+        parse_rustts(&variant.attrs, |meta| attrs.apply_rustts(&meta))?;
         Ok(attrs)
     }
-}
 
-fn parse_rustts_variant_rename(attrs: &[Attribute]) -> Result<Option<String>> {
-    let mut rename = None;
-    for attr in attrs.iter().filter(|attr| attr.path().is_ident("rustts")) {
-        for meta in parse_rustts_attr(attr)? {
-            match meta {
-                Meta::NameValue(value) if value.path.is_ident("rename") => {
-                    rename = Some(string_lit_value(&value.value)?);
-                }
-                other => {
-                    return Err(Error::new_spanned(
-                        other,
-                        "unsupported rustts enum variant attribute",
-                    ));
-                }
-            }
+    fn apply_rustts(&mut self, meta: &ParseNestedMeta<'_>) -> Result<()> {
+        if !meta.path.is_ident("rename") {
+            return Err(meta.error("unsupported rustts enum variant attribute"));
         }
+        self.schema_rename = Some(string_value(meta)?);
+        self.schema_only.push(SchemaOnly {
+            path: meta.path.clone(),
+            serde_equivalent: "rename = \"...\"",
+        });
+        Ok(())
     }
-    Ok(rename)
 }
 
-fn parse_rustts_attr(attr: &syn::Attribute) -> Result<Punctuated<Meta, Token![,]>> {
-    attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+/// Every serde key TsSchema reads, gathered from all `#[serde]` attributes of one item.
+/// Serde itself rejects keys used in the wrong position, so one parser serves all.
+#[derive(Default)]
+struct SerdeAttrs {
+    rename: Renamed,
+    rename_all: RenameRules,
+    rename_all_fields: RenameRules,
+    aliases: Vec<String>,
+    tag: Option<String>,
+    content: Option<String>,
+    untagged: Option<Path>,
+    transparent: bool,
+    deny_unknown_fields: bool,
+    default: Option<DefaultValue>,
+    skip_serializing: bool,
+    skip_deserializing: bool,
+    skip_serializing_if: Option<ExprPath>,
+    flatten: bool,
+    serialize_with: Option<ExprPath>,
+    deserialize_with: Option<ExprPath>,
+    into: Option<Type>,
+    from: Option<Type>,
+    json_only: Vec<JsonOnly>,
 }
 
-fn string_lit_value(expr: &Expr) -> Result<String> {
-    match expr {
-        Expr::Lit(expr) => match &expr.lit {
-            Lit::Str(value) => Ok(value.value()),
-            _ => Err(Error::new_spanned(expr, "expected string literal")),
-        },
-        _ => Err(Error::new_spanned(expr, "expected string literal")),
+impl SerdeAttrs {
+    fn parse(attrs: &[Attribute]) -> Result<Self> {
+        let mut parsed = Self::default();
+        for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+            attr.parse_nested_meta(|meta| parsed.apply(&meta))?;
+        }
+        Ok(parsed)
     }
+
+    fn apply(&mut self, meta: &ParseNestedMeta<'_>) -> Result<()> {
+        let key = meta
+            .path
+            .get_ident()
+            .map(Ident::to_string)
+            .unwrap_or_default();
+        match key.as_str() {
+            "rename" => parse_renamed(meta, &mut self.rename)?,
+            "rename_all" => parse_rename_rules(meta, &mut self.rename_all)?,
+            "rename_all_fields" => parse_rename_rules(meta, &mut self.rename_all_fields)?,
+            "alias" => self.aliases.push(string_value(meta)?),
+            "tag" => self.tag = Some(string_value(meta)?),
+            "content" => self.content = Some(string_value(meta)?),
+            "untagged" => self.untagged = Some(meta.path.clone()),
+            "transparent" => self.transparent = true,
+            "deny_unknown_fields" => self.deny_unknown_fields = true,
+            "default" => self.default = Some(parse_default(meta)?),
+            "skip" => {
+                self.skip_serializing = true;
+                self.skip_deserializing = true;
+            }
+            "skip_serializing" => self.skip_serializing = true,
+            "skip_deserializing" => self.skip_deserializing = true,
+            "skip_serializing_if" => self.skip_serializing_if = Some(parsed_string(meta)?),
+            "flatten" => self.flatten = true,
+            "with" => self.apply_with(meta)?,
+            "serialize_with" => {
+                self.serialize_with = Some(parsed_string(meta)?);
+                self.push_json_only(meta, Directions::ENCODE);
+            }
+            "deserialize_with" => {
+                self.deserialize_with = Some(parsed_string(meta)?);
+                self.push_json_only(meta, Directions::DECODE);
+            }
+            "into" => {
+                self.into = Some(parsed_string(meta)?);
+                self.push_json_only(meta, Directions::ENCODE);
+            }
+            "from" | "try_from" => {
+                self.from = Some(parsed_string(meta)?);
+                self.push_json_only(meta, Directions::DECODE);
+            }
+            "crate" | "expecting" => skip_value(meta)?,
+            "other" | "borrow" => self.skip_json_only(meta, Directions::DECODE)?,
+            "getter" => self.skip_json_only(meta, Directions::ENCODE)?,
+            _ => self.skip_json_only(meta, Directions::BOTH)?,
+        }
+        Ok(())
+    }
+
+    /// `with = "module"` is `serialize_with = "module::serialize"` plus
+    /// `deserialize_with = "module::deserialize"`.
+    fn apply_with(&mut self, meta: &ParseNestedMeta<'_>) -> Result<()> {
+        let module: ExprPath = parsed_string(meta)?;
+        let function = |name: &str| {
+            let mut path = module.clone();
+            path.path
+                .segments
+                .push(Ident::new(name, proc_macro2::Span::call_site()).into());
+            path
+        };
+        self.serialize_with = Some(function("serialize"));
+        self.deserialize_with = Some(function("deserialize"));
+        self.push_json_only(meta, Directions::BOTH);
+        Ok(())
+    }
+
+    fn skip_json_only(&mut self, meta: &ParseNestedMeta<'_>, directions: Directions) -> Result<()> {
+        self.push_json_only(meta, directions);
+        skip_value(meta)
+    }
+
+    fn push_json_only(&mut self, meta: &ParseNestedMeta<'_>, directions: Directions) {
+        self.json_only.push(JsonOnly {
+            path: meta.path.clone(),
+            directions,
+        });
+    }
+}
+
+fn parse_rustts(
+    attrs: &[Attribute],
+    mut apply: impl FnMut(ParseNestedMeta<'_>) -> Result<()>,
+) -> Result<()> {
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("rustts")) {
+        attr.parse_nested_meta(&mut apply)?;
+    }
+    Ok(())
+}
+
+/// Codec directions selected by `schema_only`, `encode_only` or `decode_only`.
+fn restricted_codecs(path: &Path) -> Option<Directions> {
+    if path.is_ident("schema_only") {
+        Some(Directions::NONE)
+    } else if path.is_ident("encode_only") {
+        Some(Directions::ENCODE)
+    } else if path.is_ident("decode_only") {
+        Some(Directions::DECODE)
+    } else {
+        None
+    }
+}
+
+fn parse_json_codec(meta: &ParseNestedMeta<'_>) -> Result<bool> {
+    let codec: LitStr = meta.value()?.parse()?;
+    if codec.value() == "json" {
+        Ok(true)
+    } else {
+        Err(Error::new_spanned(
+            codec,
+            "unsupported rustts codec, expected \"json\"",
+        ))
+    }
+}
+
+/// `rename = "name"` or `rename(serialize = "a", deserialize = "b")`.
+fn parse_renamed(meta: &ParseNestedMeta<'_>, renamed: &mut Renamed) -> Result<()> {
+    if meta.input.peek(Token![=]) {
+        let name = string_value(meta)?;
+        renamed.serialize = Some(name.clone());
+        renamed.deserialize = Some(name);
+        return Ok(());
+    }
+    meta.parse_nested_meta(|direction| {
+        let name = Some(string_value(&direction)?);
+        if direction.path.is_ident("serialize") {
+            renamed.serialize = name;
+        } else if direction.path.is_ident("deserialize") {
+            renamed.deserialize = name;
+        } else {
+            return Err(direction.error("expected `serialize` or `deserialize`"));
+        }
+        Ok(())
+    })
+}
+
+/// `rename_all = "rule"` or `rename_all(serialize = "a", deserialize = "b")`.
+fn parse_rename_rules(meta: &ParseNestedMeta<'_>, rules: &mut RenameRules) -> Result<()> {
+    if meta.input.peek(Token![=]) {
+        let rule = RenameRule::parse(&meta.value()?.parse()?)?;
+        rules.serialize = Some(rule);
+        rules.deserialize = Some(rule);
+        return Ok(());
+    }
+    meta.parse_nested_meta(|direction| {
+        let rule = Some(RenameRule::parse(&direction.value()?.parse()?)?);
+        if direction.path.is_ident("serialize") {
+            rules.serialize = rule;
+        } else if direction.path.is_ident("deserialize") {
+            rules.deserialize = rule;
+        } else {
+            return Err(direction.error("expected `serialize` or `deserialize`"));
+        }
+        Ok(())
+    })
+}
+
+fn parse_default(meta: &ParseNestedMeta<'_>) -> Result<DefaultValue> {
+    if meta.input.peek(Token![=]) {
+        Ok(DefaultValue::Path(parsed_string(meta)?))
+    } else {
+        Ok(DefaultValue::Trait)
+    }
+}
+
+fn string_value(meta: &ParseNestedMeta<'_>) -> Result<String> {
+    Ok(meta.value()?.parse::<LitStr>()?.value())
+}
+
+/// Parses the contents of a string literal value, like serde's `"path"` arguments.
+fn parsed_string<T: Parse>(meta: &ParseNestedMeta<'_>) -> Result<T> {
+    meta.value()?.parse::<LitStr>()?.parse()
+}
+
+/// Consumes `= value` or `(...)` of an attribute whose content is not needed.
+fn skip_value(meta: &ParseNestedMeta<'_>) -> Result<()> {
+    if meta.input.peek(Token![=]) {
+        meta.value()?.parse::<Expr>()?;
+    } else if meta.input.peek(Paren) {
+        meta.input.parse::<Group>()?;
+    }
+    Ok(())
 }

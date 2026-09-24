@@ -13,7 +13,7 @@ use serde_json::Value;
 
 #[cfg(feature = "tokio")]
 use crate::contract::AsyncHostFunction;
-use crate::contract::{HostFunction, TsSchema, js_value_to_json, json_to_js_value};
+use crate::contract::{HostFunction, JsDecode, JsEncode, js_value_to_json, json_to_js_value};
 use crate::error::VmError;
 
 #[cfg(feature = "async-promise")]
@@ -22,13 +22,15 @@ type HostFunctionFuture = Pin<Box<dyn Future<Output = Result<Value, VmError>> + 
 type OptionalHostFunctionFuture =
     Pin<Box<dyn Future<Output = Result<Option<Value>, VmError>> + Send + 'static>>;
 
+type NamedBinding = (String, Arc<dyn HostFunctionBinding>);
+
 trait HostFunctionBinding: Send + Sync {
     fn call_value(&self, input: Value) -> Result<Value, VmError>;
 
     fn call_js_value<'js>(&self, ctx: &Ctx<'js>, input: JsValue<'js>) -> JsResult<JsValue<'js>> {
         let input = js_value_to_json(ctx, input)?;
         let output = self.call_value(input).map_err(js_host_error)?;
-        json_to_js_value(ctx, output)
+        json_to_js_value(ctx, &output)
     }
 
     #[cfg(feature = "async-promise")]
@@ -78,8 +80,8 @@ impl<T> TypedStaticHostFunctionBinding<T> {
 impl<T> HostFunctionBinding for TypedStaticHostFunctionBinding<T>
 where
     T: HostFunction + Send + Sync + 'static,
-    T::Input: TsSchema,
-    T::Output: TsSchema,
+    T::Input: JsDecode,
+    T::Output: JsEncode,
 {
     fn call_value(&self, input: Value) -> Result<Value, VmError> {
         let input = serde_json::from_value::<T::Input>(input)?;
@@ -88,9 +90,9 @@ where
     }
 
     fn call_js_value<'js>(&self, ctx: &Ctx<'js>, input: JsValue<'js>) -> JsResult<JsValue<'js>> {
-        let input = T::Input::__rustts_from_js_value(ctx, input)?;
+        let input = T::Input::decode_js(ctx, input)?;
         let output = T::call(input).map_err(js_host_error)?;
-        T::Output::__rustts_into_js_value(output, ctx)
+        output.encode_js(ctx)
     }
 
     #[cfg(feature = "async-promise")]
@@ -228,8 +230,8 @@ impl FunctionBindingStore {
     pub(super) fn insert_typed_static<T>(&self) -> Result<(), VmError>
     where
         T: HostFunction + Send + Sync + 'static,
-        T::Input: TsSchema,
-        T::Output: TsSchema,
+        T::Input: JsDecode,
+        T::Output: JsEncode,
     {
         let mut guard = self.by_name.lock().map_err(|_| VmError::WorkerPanicked)?;
         guard.insert(
@@ -285,6 +287,35 @@ impl FunctionBindingStore {
         binding.call_js_value(ctx, input).map(Some)
     }
 
+    pub(super) fn names(&self) -> Result<Vec<String>, VmError> {
+        let guard = self.by_name.lock().map_err(|_| VmError::WorkerPanicked)?;
+        Ok(guard.keys().cloned().collect())
+    }
+
+    /// Sets one native QuickJS function per binding on `target`. Each function owns its
+    /// binding, so a call performs no name lookup and takes no lock.
+    pub(super) fn install_native<'js>(&self, target: &rquickjs::Object<'js>) -> JsResult<()> {
+        for (name, binding) in self.snapshot().map_err(js_host_error)? {
+            target.set(
+                name,
+                rquickjs::prelude::Func::from(
+                    move |ctx: Ctx<'js>, input: rquickjs::function::Opt<JsValue<'js>>| {
+                        binding.call_js_value(&ctx, input_or_null(&ctx, input))
+                    },
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Result<Vec<NamedBinding>, VmError> {
+        let guard = self.by_name.lock().map_err(|_| VmError::WorkerPanicked)?;
+        Ok(guard
+            .iter()
+            .map(|(name, binding)| (name.clone(), binding.clone()))
+            .collect())
+    }
+
     #[cfg(feature = "async-promise")]
     pub(super) fn invoke_async(&self, name: String, input: Value) -> OptionalHostFunctionFuture {
         let binding = {
@@ -300,4 +331,12 @@ impl FunctionBindingStore {
         };
         Box::pin(async move { binding.call_value_async(input).await.map(Some) })
     }
+}
+
+/// A host function called without an argument receives `null`, like the bridge path.
+pub(super) fn input_or_null<'js>(
+    ctx: &Ctx<'js>,
+    input: rquickjs::function::Opt<JsValue<'js>>,
+) -> JsValue<'js> {
+    input.0.unwrap_or_else(|| JsValue::new_null(ctx.clone()))
 }

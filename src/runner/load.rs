@@ -43,9 +43,7 @@ pub(crate) fn load_script_into_runtime(
     let (context, subscriptions) = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
-            state
-                .module_store
-                .remove_script_modules(&id, &graph.module_ids)?;
+            state.module_store.remove_modules(&graph.module_ids)?;
             return Err(error);
         }
     };
@@ -55,9 +53,11 @@ pub(crate) fn load_script_into_runtime(
 }
 
 fn install_host_modules(state: &WorkerState) -> Result<(), VmError> {
-    state
-        .module_store
-        .insert_host_modules(state.host_registry.import_modules()?)
+    state.module_store.insert_host_modules(
+        state
+            .host_registry
+            .import_modules(crate::registry::HostModuleStyle::Bridge)?,
+    )
 }
 
 pub(crate) fn unload_loaded_script(
@@ -65,9 +65,7 @@ pub(crate) fn unload_loaded_script(
     script_id: ScriptId,
 ) -> Result<(), VmError> {
     if let Some(script) = state.scripts.remove(&script_id) {
-        state
-            .module_store
-            .remove_script_modules(&script_id, &script.module_ids)?;
+        state.module_store.remove_modules(&script.module_ids)?;
         return Ok(());
     }
 
@@ -91,9 +89,7 @@ fn ensure_script_capacity(state: &WorkerState, script_id: &str) -> Result<(), Vm
 
 fn remove_existing_script_modules(state: &mut WorkerState, script_id: &str) -> Result<(), VmError> {
     if let Some(script) = state.scripts.remove(script_id) {
-        state
-            .module_store
-            .remove_script_modules(script_id, &script.module_ids)?;
+        state.module_store.remove_modules(&script.module_ids)?;
     }
     Ok(())
 }

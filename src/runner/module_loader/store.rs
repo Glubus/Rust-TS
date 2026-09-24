@@ -57,13 +57,9 @@ impl WorkerModuleStore {
         insertion::insert_project(&mut guard, entry_module_id, modules, graph_id)
     }
 
-    pub(crate) fn remove_script_modules(
-        &self,
-        script_id: &str,
-        module_ids: &[String],
-    ) -> std::result::Result<(), VmError> {
+    pub(crate) fn remove_modules(&self, module_ids: &[String]) -> std::result::Result<(), VmError> {
         let mut guard = self.lock_store()?;
-        removal::remove_script_modules(&mut guard, script_id, module_ids);
+        removal::remove_modules(&mut guard, module_ids);
         Ok(())
     }
 
