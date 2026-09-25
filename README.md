@@ -2,16 +2,14 @@
 
 Embeddable TypeScript scripting for Rust applications and games.
 
-RustTS is licensed under MIT. The current release is 0.2.0; 0.3 (unreleased) is
-Engine-only. See [the changelog](CHANGELOG.md) for migration notes.
+RustTS is licensed under MIT. Version 0.3 is Engine-only: it removed the worker pool
+(`RustTs`). See [the changelog](CHANGELOG.md) for migration notes.
 
 `RustTS` lets a Rust host run TypeScript scripts on its own thread through
 `Engine`, expose typed Rust host functions and callbacks to them, and generate
 the scripts' TypeScript declarations and SDK from those Rust contracts. It spawns
 no threads and has no event loop: scripts run when the host calls them. It is a
 scripting layer, not a server runtime.
-
-Version 0.3 removed the worker pool (`RustTs`); see the changelog for migration.
 
 ## What It Is For
 
