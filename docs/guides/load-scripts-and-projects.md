@@ -1,7 +1,7 @@
 # Load Scripts And Projects
 
-`RustTS` loads TypeScript code into a long-lived QuickJS worker. After a
-script is loaded, Rust calls exported TypeScript functions by:
+`Engine` loads TypeScript code and keeps it loaded until it is replaced or
+unloaded. After a script is loaded, Rust calls its exported functions by:
 
 - `script_id`: the host application's stable name for that loaded script
 - export name: the TypeScript function exported by the script
@@ -11,7 +11,7 @@ your application. Good examples:
 
 - `weather-rules`
 - `mod:zoro_moveset`
-- `tenant-42-policy`
+- `hud:inventory`
 
 Bad examples:
 
@@ -23,48 +23,41 @@ Bad examples:
 Use `load_script` when you already have one TypeScript source string.
 
 ```rust
+use rustts::{Engine, VmOptions};
+use serde_json::{Value, json};
+
+let mut engine = Engine::new(&VmOptions::default())?;
 let script_id = "weather-rules";
 
-vm.load_script(
+engine.load_script(
     script_id,
     r#"
-export function greet(input) {
+export function greet(input: { name: string }): string {
   return `hello ${input.name}`;
 }
 "#,
 )?;
 
-let output = vm.call_function(
-    script_id,
-    "greet",
-    vec![serde_json::json!({ "name": "Ada" })],
-)?;
+let output: Value = engine.call(script_id, "greet", vec![json!({ "name": "Ada" })])?;
+assert_eq!(output, json!("hello Ada"));
 ```
 
 What the arguments mean:
 
-- `script_id`: `"weather-rules"` is the runtime id for this loaded script.
+- `script_id`: `"weather-rules"` is the id of this loaded script.
 - `"greet"`: exported TypeScript function name.
-- `vec![...]`: JSON arguments passed to the exported function.
+- `vec![...]`: arguments passed to the exported function, one per item. A tuple
+  such as `(&input, 3)` passes values of different Rust types.
 
-The TypeScript source must export the function Rust calls:
-
-```ts
-export function greet(input) {
-  return `hello ${input.name}`;
-}
-```
+An inline script may import the registered host modules, not other files: use a
+project for those.
 
 ## Project Entrypoint
 
-Use `load_script_project` when the script lives on disk and imports other local
-files.
+Use `load_project` when the script lives on disk and imports other local files.
 
 ```rust
-let script_id = "zoro-moveset";
-let entrypoint = "mods/zoro_moveset/main.ts";
-
-vm.load_script_project(script_id, entrypoint)?;
+engine.load_project("zoro-moveset", "mods/zoro_moveset/main.ts")?;
 ```
 
 Example project:
@@ -88,10 +81,10 @@ export function run() {
 Then Rust calls:
 
 ```rust
-let output = vm.call_function("zoro-moveset", "run", Vec::new())?;
+let output: f64 = engine.call("zoro-moveset", "run", ())?;
 ```
 
-## `load_script` vs `load_script_project`
+## `load_script` vs `load_project`
 
 Use `load_script` when:
 
@@ -99,7 +92,7 @@ Use `load_script` when:
 - the script is a single file
 - you do not need local imports
 
-Use `load_script_project` when:
+Use `load_project` when:
 
 - the entry file is on disk
 - the script imports local modules
@@ -108,7 +101,7 @@ Use `load_script_project` when:
 
 ## Supported Project Imports
 
-Project mode supports:
+The project graph is resolved from the entry file, following:
 
 - static relative ESM imports and re-exports
 - named, default, and namespace imports
@@ -118,17 +111,49 @@ Project mode supports:
 - package imports from project-local `node_modules`
 - type-only imports and re-exports, ignored at runtime
 
-Dynamic `import(...)` is rejected because the runtime cache is built from a
-static module graph.
+An import naming a registered host module (a contract's `IMPORT_MODULE`) always
+resolves to that module, never to a file or package of the same name.
+
+The project root is the directory of the nearest `tsconfig.json` above the entry
+file, or the entry file's directory when there is none. An import that resolves
+outside the project root, symlinks included, is rejected.
+
+Dynamic `import(...)` is rejected with `VmError::Resolve`, in projects and inline
+scripts alike: the whole graph must be known at load. A missing entry file or an
+unresolvable import fails the load with `VmError::Resolve` too.
 
 ## Reloading
 
-Loading the same `script_id` again replaces the mounted script:
+Loading the same `script_id` again replaces the loaded script:
 
 ```rust
-vm.load_script_project("zoro-moveset", "mods/zoro_moveset/main.ts")?;
+engine.load_project("zoro-moveset", "mods/zoro_moveset/main.ts")?;
 ```
 
-Use this primitive to build your own watcher or hot-reload tool outside
-`RustTS`. The VM keeps the runtime registry consistent; your application
-decides when files should be reloaded.
+The new version is transpiled, resolved and initialized before it replaces the
+old one. If any step fails, the load returns the error and the previous version
+stays loaded, with its state. A successful reload starts from fresh script state
+and keeps the script's place in event delivery order.
+
+Use this primitive to build your own file watcher or hot-reload command: `Engine`
+does not watch files, your application decides when to reload.
+
+## Unloading
+
+```rust
+engine.unload_script("zoro-moveset")?;
+```
+
+Unloading removes the script and releases its modules. Calling or unloading it
+afterwards fails with `VmError::ScriptNotFound`.
+
+## Transpilation Cache
+
+By default (`VmOptions::cache_dir: None`), every load and reload transpiles the
+TypeScript in memory. With a cache directory, transpiled JavaScript is stored on
+disk and reused by later loads, including in later runs of the application.
+
+For a project, the graph is always read and resolved from disk first: a cache hit
+skips transpilation only. The cache key covers the whole project, so changing one
+module transpiles the project again. See
+[Run Scripts With `Engine`](engine.md#transpilation-cache).

@@ -1,9 +1,7 @@
-//! Configuration types for the embedded VM.
+//! Configuration types for the engine.
 
 use std::path::PathBuf;
 use std::time::Duration;
-
-use crate::types::VmMemoryPressureThresholds;
 
 /// Host contract validation policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -43,36 +41,19 @@ impl VmUnknownFieldValidation {
     }
 }
 
-/// Runtime configuration for [`crate::RustTs`].
+/// Configuration for [`crate::Engine`].
 #[derive(Debug, Clone)]
 pub struct VmOptions {
-    /// Number of worker threads to start.
-    ///
-    /// `0` means automatic sizing from available parallelism.
-    pub worker_threads: usize,
-    /// Directory used to store transpiled JavaScript artifacts.
-    pub cache_dir: PathBuf,
-    /// Maximum number of loaded script contexts per worker.
-    pub max_scripts_per_worker: usize,
-    /// Capacity of the command queue used by each background worker.
-    pub queue_capacity: usize,
-    /// Maximum wall time per JavaScript operation (excluding queue wait).
+    /// Directory for transpiled JavaScript artifacts, reused across runs and reloads.
+    /// `None` (the default) transpiles in memory on every load.
+    pub cache_dir: Option<PathBuf>,
+    /// Maximum wall time per load, call or emit, including the Promise jobs it queues.
     /// Rust host handlers must return cooperatively; they cannot be preempted.
     pub execution_timeout: Duration,
-    /// Maximum time shutdown waits for worker threads; shutdown can be retried.
-    pub shutdown_timeout: Duration,
-    /// Events retained per subscription. New events are dropped when full.
-    pub event_queue_capacity: usize,
-    /// Sleep duration for a background worker when its queue is idle.
-    pub idle_sleep: Duration,
-    /// QuickJS memory limit in bytes, applied per worker runtime.
+    /// QuickJS memory limit in bytes.
     pub memory_limit_bytes: usize,
-    /// QuickJS stack limit in bytes, applied per worker runtime.
+    /// QuickJS stack limit in bytes.
     pub max_stack_size_bytes: usize,
-    /// Optional QuickJS memory pressure thresholds used to classify runtime stats.
-    pub memory_pressure_thresholds: Option<VmMemoryPressureThresholds>,
-    /// Enables fixed-bucket operation latency histograms in manager and worker stats.
-    pub latency_histograms: bool,
     /// Host contract validation policy.
     pub contract_validation: VmContractValidation,
     /// Unknown object field validation policy for schema-backed host contracts.
@@ -82,18 +63,10 @@ pub struct VmOptions {
 impl Default for VmOptions {
     fn default() -> Self {
         Self {
-            worker_threads: 0,
-            cache_dir: PathBuf::from(".ts-embed-cache"),
-            max_scripts_per_worker: 32,
-            queue_capacity: 256,
+            cache_dir: None,
             execution_timeout: Duration::from_secs(5),
-            shutdown_timeout: Duration::from_secs(5),
-            event_queue_capacity: 256,
-            idle_sleep: Duration::from_millis(25),
             memory_limit_bytes: 16 * 1024 * 1024,
             max_stack_size_bytes: 512 * 1024,
-            memory_pressure_thresholds: None,
-            latency_histograms: false,
             contract_validation: VmContractValidation::Disabled,
             unknown_field_validation: VmUnknownFieldValidation::Allow,
         }

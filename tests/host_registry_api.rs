@@ -1,7 +1,7 @@
 #[cfg(feature = "derive")]
 use rustts::TsSchema;
 use rustts::{
-    HostCallback, HostContext, HostContract, HostContractKind, HostFunction, HostMetadata, RustTs,
+    Engine, HostCallback, HostContext, HostContract, HostContractKind, HostFunction, HostMetadata,
     Schema, TsField, TsType, VmContractValidation, VmError, VmUnknownFieldValidation,
 };
 use serde_json::{Value, json};
@@ -241,33 +241,32 @@ fn validation_input_schema() -> Schema {
 }
 
 #[test]
-fn manager_registry_supports_fluent_contract_registration() {
+fn registry_supports_fluent_contract_registration() {
     let cache_dir = TestCacheDir::new("host-registry-api");
-    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    let engine = Engine::new(&cache_dir.engine_options()).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .callback::<ScoreUpdate>()
         .and_then(|registry| registry.function::<FindUser>())
         .and_then(|registry| registry.context::<OverlayContext>())
         .expect("register host contracts");
 
-    let function = vm
+    let function = engine
         .registry()
         .descriptor(FindUser::NAME)
         .expect("get function")
         .expect("function descriptor");
-    let callback = vm
+    let callback = engine
         .registry()
         .descriptor(ScoreUpdate::NAME)
         .expect("get callback")
         .expect("callback descriptor");
-    let context = vm
+    let context = engine
         .registry()
         .descriptor(OverlayContext::NAME)
         .expect("get context")
         .expect("context descriptor");
-
-    vm.shutdown().expect("shutdown vm");
 
     assert_eq!(function.kind, HostContractKind::Function);
     assert_eq!(function.schema.name, "FindUserInput");
@@ -278,31 +277,28 @@ fn manager_registry_supports_fluent_contract_registration() {
     assert_eq!(callback.schema.name, "ScoreUpdatePayload");
     assert_eq!(context.kind, HostContractKind::Context);
     assert_eq!(
-        vm.registry().dts().expect("render dts"),
+        engine.registry().dts().expect("render dts"),
         "type OverlayContext = { visible: boolean; };\n\ndeclare const overlay: OverlayContext;\n\ntype ScoreUpdatePayload = { combo: number; };\n\ntype FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {\n  export function find(input: FindUserInput): FindUserOutput;\n}\n\ntype HostEvents = {\n  \"score.update\": ScoreUpdatePayload;\n};\n\ndeclare const ctx: {\n  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n};\n"
     );
 }
 
 #[test]
-fn manager_registry_generates_sdk_source_from_contracts() {
+fn registry_generates_sdk_source_from_contracts() {
     let cache_dir = TestCacheDir::new("host-registry-sdk");
-    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    let engine = Engine::new(&cache_dir.engine_options()).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .callback::<ScoreUpdate>()
         .and_then(|registry| registry.function::<FindUser>())
         .expect("register host contracts");
 
-    let sdk = vm.registry().sdk().expect("render sdk");
-
-    vm.shutdown().expect("shutdown vm");
+    let sdk = engine.registry().sdk().expect("render sdk");
 
     assert!(sdk.contains("type FindUserInput = number;"));
     assert!(sdk.contains("type ScoreUpdatePayload = { combo: number; };"));
     assert!(sdk.contains("type HostFunctions = {"));
-    assert!(sdk.contains(
-        "\"user.find\": { input: FindUserInput; output: FindUserOutput; async: false; };"
-    ));
+    assert!(sdk.contains("\"user.find\": { input: FindUserInput; output: FindUserOutput; };"));
     assert!(sdk.contains("export function call<K extends keyof HostFunctions>"));
     assert!(sdk.contains("export const user = {"));
     assert!(sdk.contains("find(input: FindUserInput): FindUserOutput"));
@@ -322,15 +318,14 @@ fn manager_registry_generates_sdk_source_from_contracts() {
 #[test]
 fn generated_sdk_uses_flattened_derived_input_schema() {
     let cache_dir = TestCacheDir::new("host-registry-sdk-flatten");
-    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    let engine = Engine::new(&cache_dir.engine_options()).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .function::<RecordAction>()
         .expect("register flattened host contract");
 
-    let sdk = vm.registry().sdk().expect("render sdk");
-
-    vm.shutdown().expect("shutdown vm");
+    let sdk = engine.registry().sdk().expect("render sdk");
 
     assert!(sdk.contains(
         "type RecordActionInput = { actionId: string; actorId: number; displayName: string; confirmed: boolean; };"
@@ -353,14 +348,13 @@ fn generated_sdk_uses_flattened_derived_input_schema() {
 #[test]
 fn host_context_v0_is_declarative_sdk_surface_only() {
     let cache_dir = TestCacheDir::new("host-context-v0-declarative");
-    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    let engine = Engine::new(&cache_dir.engine_options()).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .context::<OverlayContext>()
         .expect("register host context");
-    let sdk = vm.registry().sdk().expect("render sdk");
-
-    vm.shutdown().expect("shutdown vm");
+    let sdk = engine.registry().sdk().expect("render sdk");
 
     assert!(sdk.contains("type OverlayContext = { visible: boolean; };"));
     assert!(sdk.contains(
@@ -376,13 +370,14 @@ fn host_context_v0_is_declarative_sdk_surface_only() {
 #[test]
 fn importing_a_host_context_fails_at_load_instead_of_binding_undefined() {
     let cache_dir = TestCacheDir::new("host-context-import");
-    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
-    vm.registry()
+    let mut engine = Engine::new(&cache_dir.engine_options()).expect("create engine");
+    engine
+        .registry()
         .context::<OverlayContext>()
         .and_then(|registry| registry.function::<FindUser>())
         .expect("register host contracts");
 
-    let loaded = vm.load_script(
+    let loaded = engine.load_script(
         "overlay-reader",
         r#"
         import { overlay } from "test";
@@ -392,9 +387,7 @@ fn importing_a_host_context_fails_at_load_instead_of_binding_undefined() {
         }
         "#,
     );
-    let result = vm.call_function("overlay-reader", "overlayType", Vec::new());
-
-    vm.shutdown().expect("shutdown vm");
+    let result = engine.call::<Value>("overlay-reader", "overlayType", ());
 
     let Err(error) = loaded else {
         panic!("context import loaded and evaluated to {result:?}");
@@ -406,21 +399,20 @@ fn importing_a_host_context_fails_at_load_instead_of_binding_undefined() {
 }
 
 #[test]
-fn manager_registry_writes_sdk_files() {
+fn registry_writes_sdk_files() {
     let cache_dir = TestCacheDir::new("host-registry-sdk-files");
     let output_dir = cache_dir.path().join("generated");
-    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    let engine = Engine::new(&cache_dir.engine_options()).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .callback::<ScoreUpdate>()
         .and_then(|registry| registry.function::<FindUser>())
         .expect("register host contracts");
-    let written = vm
+    let written = engine
         .registry()
         .write_sdk_files(&output_dir)
         .expect("write sdk files");
-
-    vm.shutdown().expect("shutdown vm");
 
     let types = std::fs::read_to_string(&written.types_path).expect("read types");
     let sdk = std::fs::read_to_string(&written.sdk_path).expect("read sdk");
@@ -466,18 +458,17 @@ fn rustts_sdk_binary_writes_files_from_descriptor_json() {
 #[test]
 fn generated_sdk_typechecks_when_tsc_is_available() {
     let cache_dir = TestCacheDir::new("host-registry-sdk-tsc");
-    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    let engine = Engine::new(&cache_dir.engine_options()).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .callback::<ScoreUpdate>()
         .and_then(|registry| registry.function::<FindUser>())
         .and_then(|registry| registry.context::<OverlayContext>())
         .expect("register host contracts");
-    let sdk = vm.registry().sdk().expect("render sdk");
+    let sdk = engine.registry().sdk().expect("render sdk");
     let sdk_path = cache_dir.path().join("sdk.ts");
     std::fs::write(&sdk_path, sdk_usage_source(&sdk)).expect("write sdk");
-
-    vm.shutdown().expect("shutdown vm");
 
     let Some(output) = run_tsc(&sdk_path) else {
         return;
@@ -543,21 +534,21 @@ fn run_tsc(path: &std::path::Path) -> Option<std::process::Output> {
 #[test]
 fn host_contract_input_validation_is_configurable() {
     let cache_dir = TestCacheDir::new("host-contract-input-validation");
-    let mut options = cache_dir.vm_options();
+    let mut options = cache_dir.engine_options();
     options.contract_validation = VmContractValidation::Inputs;
-    let vm = RustTs::new(options).expect("create vm");
+    let mut engine = Engine::new(&options).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .function::<EchoValidation>()
         .expect("register host function");
-    vm.load_script("validation", HOST_VALIDATION_SCRIPT)
+    engine
+        .load_script("validation", HOST_VALIDATION_SCRIPT)
         .expect("load validation script");
 
-    let error = vm
-        .call_function("validation", "echo", vec![json!({ "id": "bad" })])
+    let error = engine
+        .call::<Value>("validation", "echo", vec![json!({ "id": "bad" })])
         .expect_err("invalid input should fail");
-
-    vm.shutdown().expect("shutdown vm");
 
     assert!(matches!(
         error,
@@ -571,21 +562,21 @@ fn host_contract_input_validation_is_configurable() {
 #[test]
 fn host_contract_input_validation_resolves_type_ref_dependencies() {
     let cache_dir = TestCacheDir::new("host-contract-input-validation-typeref");
-    let mut options = cache_dir.vm_options();
+    let mut options = cache_dir.engine_options();
     options.contract_validation = VmContractValidation::Inputs;
-    let vm = RustTs::new(options).expect("create vm");
+    let mut engine = Engine::new(&options).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .function::<EchoTypeRefValidation>()
         .expect("register host function");
-    vm.load_script("validation", HOST_VALIDATION_SCRIPT)
+    engine
+        .load_script("validation", HOST_VALIDATION_SCRIPT)
         .expect("load validation script");
 
-    let error = vm
-        .call_function("validation", "echoRef", vec![json!({ "user_id": "bad" })])
+    let error = engine
+        .call::<Value>("validation", "echoRef", vec![json!({ "user_id": "bad" })])
         .expect_err("invalid TypeRef input should fail");
-
-    vm.shutdown().expect("shutdown vm");
 
     assert!(matches!(
         error,
@@ -599,18 +590,18 @@ fn host_contract_input_validation_resolves_type_ref_dependencies() {
 #[test]
 fn host_contract_validation_disabled_keeps_bridge_permissive() {
     let cache_dir = TestCacheDir::new("host-contract-validation-disabled");
-    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    let mut engine = Engine::new(&cache_dir.engine_options()).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .function::<EchoValidation>()
         .expect("register host function");
-    vm.load_script("validation", HOST_VALIDATION_SCRIPT)
+    engine
+        .load_script("validation", HOST_VALIDATION_SCRIPT)
         .expect("load validation script");
-    let result = vm
-        .call_function("validation", "echo", vec![json!({ "id": "bad" })])
+    let result = engine
+        .call::<Value>("validation", "echo", vec![json!({ "id": "bad" })])
         .expect("validation disabled");
-
-    vm.shutdown().expect("shutdown vm");
 
     assert_eq!(result, json!({ "id": "bad" }));
 }
@@ -618,21 +609,21 @@ fn host_contract_validation_disabled_keeps_bridge_permissive() {
 #[test]
 fn host_contract_output_validation_can_be_enabled_for_debug() {
     let cache_dir = TestCacheDir::new("host-contract-output-validation");
-    let mut options = cache_dir.vm_options();
+    let mut options = cache_dir.engine_options();
     options.contract_validation = VmContractValidation::InputsAndOutputs;
-    let vm = RustTs::new(options).expect("create vm");
+    let mut engine = Engine::new(&options).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .function::<BadOutputValidation>()
         .expect("register host function");
-    vm.load_script("validation", HOST_VALIDATION_SCRIPT)
+    engine
+        .load_script("validation", HOST_VALIDATION_SCRIPT)
         .expect("load validation script");
 
-    let error = vm
-        .call_function("validation", "badOutput", vec![json!(1)])
+    let error = engine
+        .call::<Value>("validation", "badOutput", vec![json!(1)])
         .expect_err("invalid output should fail");
-
-    vm.shutdown().expect("shutdown vm");
 
     assert!(matches!(
         error,
@@ -645,26 +636,26 @@ fn host_contract_output_validation_can_be_enabled_for_debug() {
 #[test]
 fn host_contract_validation_can_reject_unknown_input_fields() {
     let cache_dir = TestCacheDir::new("host-contract-unknown-fields");
-    let mut options = cache_dir.vm_options();
+    let mut options = cache_dir.engine_options();
     options.contract_validation = VmContractValidation::Inputs;
     options.unknown_field_validation = VmUnknownFieldValidation::Reject;
-    let vm = RustTs::new(options).expect("create vm");
+    let mut engine = Engine::new(&options).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .function::<EchoValidation>()
         .expect("register host function");
-    vm.load_script("validation", HOST_VALIDATION_SCRIPT)
+    engine
+        .load_script("validation", HOST_VALIDATION_SCRIPT)
         .expect("load validation script");
 
-    let error = vm
-        .call_function(
+    let error = engine
+        .call::<Value>(
             "validation",
             "echo",
             vec![json!({ "id": 1, "extra": true })],
         )
         .expect_err("unknown input field should fail");
-
-    vm.shutdown().expect("shutdown vm");
 
     assert!(matches!(
         error,
@@ -679,17 +670,19 @@ fn host_contract_validation_can_reject_unknown_input_fields() {
 #[test]
 fn host_contract_validation_uses_flattened_derived_input_schema() {
     let cache_dir = TestCacheDir::new("host-contract-flatten-validation");
-    let mut options = cache_dir.vm_options();
+    let mut options = cache_dir.engine_options();
     options.contract_validation = VmContractValidation::Inputs;
     options.unknown_field_validation = VmUnknownFieldValidation::Reject;
-    let vm = RustTs::new(options).expect("create vm");
+    let mut engine = Engine::new(&options).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .function::<RecordAction>()
         .expect("register flattened host function");
-    vm.load_script(
-        "action-script",
-        r#"
+    engine
+        .load_script(
+            "action-script",
+            r#"
         export function recordGood() {
           return action.record({
             actionId: "act-1",
@@ -709,17 +702,15 @@ fn host_contract_validation_uses_flattened_derived_input_schema() {
           });
         }
         "#,
-    )
-    .expect("load action script");
+        )
+        .expect("load action script");
 
-    let result = vm
-        .call_function("action-script", "recordGood", Vec::new())
+    let result = engine
+        .call::<Value>("action-script", "recordGood", ())
         .expect("flattened input should validate");
-    let error = vm
-        .call_function("action-script", "recordBad", Vec::new())
+    let error = engine
+        .call::<Value>("action-script", "recordBad", ())
         .expect_err("nested pre-flatten field should be unknown");
-
-    vm.shutdown().expect("shutdown vm");
 
     assert_eq!(result, json!("act-1:7"));
     assert!(matches!(
@@ -734,24 +725,24 @@ fn host_contract_validation_uses_flattened_derived_input_schema() {
 #[test]
 fn host_contract_validation_allows_unknown_input_fields_by_default() {
     let cache_dir = TestCacheDir::new("host-contract-unknown-fields-default");
-    let mut options = cache_dir.vm_options();
+    let mut options = cache_dir.engine_options();
     options.contract_validation = VmContractValidation::Inputs;
-    let vm = RustTs::new(options).expect("create vm");
+    let mut engine = Engine::new(&options).expect("create engine");
 
-    vm.registry()
+    engine
+        .registry()
         .function::<EchoValidation>()
         .expect("register host function");
-    vm.load_script("validation", HOST_VALIDATION_SCRIPT)
+    engine
+        .load_script("validation", HOST_VALIDATION_SCRIPT)
         .expect("load validation script");
-    let result = vm
-        .call_function(
+    let result = engine
+        .call::<Value>(
             "validation",
             "echo",
             vec![json!({ "id": 1, "extra": true })],
         )
         .expect("unknown fields allowed by default");
-
-    vm.shutdown().expect("shutdown vm");
 
     assert_eq!(result, json!({ "id": 1, "extra": true }));
 }

@@ -19,16 +19,7 @@ cd rustts-hello
 Add dependencies:
 
 ```text
-cargo add rustts --features derive
-cargo add serde --features derive
-cargo add serde_json
-```
-
-When testing from a local checkout before publishing the crate, use a path
-dependency instead:
-
-```text
-cargo add rustts --path ../RustTS --features derive
+cargo add rustts@0.3 --features derive
 cargo add serde --features derive
 cargo add serde_json
 ```
@@ -41,8 +32,8 @@ Replace `src/main.rs` with:
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use rustts::{
-    HostContract, HostContractKind, HostFunction, Schema, SdkFileNames, TsSchema, RustTs, VmError,
-    VmOptions,
+    Engine, HostContract, HostContractKind, HostFunction, Schema, SdkFileNames, TsSchema,
+    VmError, VmOptions,
 };
 
 #[derive(Deserialize, TsSchema)]
@@ -84,13 +75,10 @@ impl HostFunction for Add {
 }
 
 fn main() -> Result<(), VmError> {
-    let vm = RustTs::new(VmOptions {
-        cache_dir: "target/rustts-cache".into(),
-        ..VmOptions::default()
-    })?;
+    let mut engine = Engine::new(&VmOptions::default())?;
 
-    vm.registry().typed_function::<Add>()?;
-    vm.registry().write_sdk_files_with_names(
+    engine.registry().typed_function::<Add>()?;
+    engine.registry().write_sdk_files_with_names(
         "target/generated",
         &SdkFileNames {
             types: "my_sdk.d.ts".into(),
@@ -98,12 +86,12 @@ fn main() -> Result<(), VmError> {
         },
     )?;
 
-    vm.load_script("math-script", include_str!("math_script.ts"))?;
+    engine.load_script("math-script", include_str!("math_script.ts"))?;
 
-    let output: Value = vm.call_function("math-script", "run", Vec::new())?;
+    let output: Value = engine.call("math-script", "run", ())?;
     println!("{output}");
 
-    vm.shutdown()
+    Ok(())
 }
 ```
 
@@ -113,7 +101,10 @@ What matters:
 - `AddInput` is the script input type.
 - `AddOutput` is the script output type.
 - `#[derive(TsSchema)]` lets the registry generate TypeScript declarations.
-- `typed_function::<Add>()` registers the Rust function in the VM.
+- `typed_function::<Add>()` registers the Rust function in the engine; register
+  contracts before loading the scripts that call them.
+- `Engine` runs the script on the current thread: `call` returns once the script
+  function has returned.
 
 ## Add The TypeScript Script
 
@@ -143,7 +134,7 @@ Expected output:
 This line:
 
 ```rust
-vm.registry().write_sdk_files_with_names(
+engine.registry().write_sdk_files_with_names(
     "target/generated",
     &SdkFileNames {
         types: "my_sdk.d.ts".into(),
@@ -161,11 +152,13 @@ target/generated/
 ```
 
 `my_sdk.d.ts` contains the TypeScript declarations for your contracts. In this
-example, it declares that the generated helper `math.add(...)` accepts
-`{ left, right }` and returns `{ value }`.
+example, it declares that the global `math.add(...)` accepts `{ left, right }` and
+returns `{ value }`. Include it in the scripts' `tsconfig.json` so `tsc --noEmit`
+type-checks them: loading a script transpiles it without type checking.
 
-`my_sdk.ts` contains the small runtime helper layer used by scripts. A host
-application can generate these files on demand through its own CLI.
+`my_sdk.ts` is the generated SDK module, with typed helpers built on the same
+host functions. A host application can generate these files on demand through
+its own CLI.
 
 For a real application package, you can also expose imports such as:
 
@@ -173,8 +166,9 @@ For a real application package, you can also expose imports such as:
 import { math } from "my_sdk";
 ```
 
-That requires setting `HostContract::IMPORT_MODULE = "my_sdk"` on the Rust
-contracts. See [Generate TypeScript SDK Files](guides/generate-sdk-files.md).
+That requires setting `HostContract::IMPORT_MODULE = "my_sdk"` and
+`HostContract::EXPORT_PATH = &["math", "add"]` on the Rust contract. See
+[Generate TypeScript SDK Files](guides/generate-sdk-files.md).
 
 ## Next
 

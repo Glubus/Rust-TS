@@ -1,6 +1,7 @@
 //! Rust <-> JS round-trip overhead on the same workloads:
-//! mlua (Lua 5.4), QuickJS called directly, the single-thread RustTS `Engine`,
-//! and the RustTS worker pool (`RustTs`).
+//! mlua (Lua 5.4), QuickJS called directly, and the RustTS `Engine`.
+//! The gap between QuickJS direct and the engine is RustTS's own overhead
+//! (argument encoding, contract dispatch, execution budget).
 //!
 //! Run: `cargo run --release --example native_roundtrip`
 
@@ -8,13 +9,13 @@
 mod quickjs_json;
 
 use std::hint::black_box;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use mlua::{Lua, LuaSerdeExt};
 use rquickjs::{Context, Ctx, Function, Runtime, Value as JsValue, prelude::Func};
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, RustTs, Schema, TsType,
-    VmError, VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsType, VmError,
+    VmOptions,
 };
 use serde_json::{Value, json};
 
@@ -307,66 +308,6 @@ impl Backend for EngineBackend {
     }
 }
 
-struct PoolBackend {
-    vm: RustTs,
-}
-
-impl PoolBackend {
-    fn new() -> Self {
-        let vm = RustTs::new(VmOptions {
-            worker_threads: 1,
-            cache_dir: std::env::temp_dir().join(format!("rustts-native-roundtrip-{}", nanos())),
-            ..VmOptions::default()
-        })
-        .expect("create vm");
-        vm.registry()
-            .typed_function::<Inc>()
-            .and_then(|registry| registry.callback::<ScoreUpdate>())
-            .expect("register vm contracts");
-        vm.load_script(SCRIPT_ID, TS_SOURCE)
-            .expect("load vm script");
-        Self { vm }
-    }
-
-    fn call(&self, function: &str, args: Vec<Value>) -> Value {
-        self.vm
-            .call_function(SCRIPT_ID, function, args)
-            .expect("vm call")
-    }
-}
-
-impl Backend for PoolBackend {
-    fn name(&self) -> &'static str {
-        "RustTS today"
-    }
-
-    fn sum(&self) -> f64 {
-        as_f64(&self.call("sum", vec![json!(20), json!(22)]))
-    }
-
-    fn host_loop(&self, n: u32) -> f64 {
-        as_f64(&self.call("hostLoop", vec![json!(n)]))
-    }
-
-    fn step(&self, x: f64) -> f64 {
-        as_f64(&self.call("step", vec![json!(x)]))
-    }
-
-    fn process(&self, input: &Value) -> Value {
-        self.call("process", vec![input.clone()])
-    }
-
-    fn emit(&self, event: &Value) {
-        self.vm
-            .emit("score.update", event.clone())
-            .expect("vm emit");
-    }
-}
-
-fn as_f64(value: &Value) -> f64 {
-    value.as_f64().expect("numeric result")
-}
-
 #[derive(Clone, Copy)]
 enum Scenario {
     RustToJs,
@@ -481,19 +422,11 @@ fn format_ms(total: Duration) -> String {
     format!("{:.2} ms", total.as_secs_f64() * 1_000.0)
 }
 
-fn nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos()
-}
-
 fn main() {
     let backends: Vec<Box<dyn Backend>> = vec![
         Box::new(LuaBackend::new()),
         Box::new(QuickJsBackend::new()),
         Box::new(EngineBackend::new()),
-        Box::new(PoolBackend::new()),
     ];
     let workload = Workload::new();
     for backend in &backends {

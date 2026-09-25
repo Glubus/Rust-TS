@@ -1,40 +1,15 @@
-//! Error types exposed by the VM.
+//! Error types exposed by the engine.
 
 use std::io;
 
 use thiserror::Error;
 
-use crate::contract::HostFunctionExecution;
-
-/// Error type for all VM operations.
+/// Error type for all engine operations.
 #[derive(Debug, Error)]
 pub enum VmError {
-    /// Workers have not finished stopping; shutdown can be retried.
-    #[error("vm shutdown timed out; a Rust host handler may still be running")]
-    ShutdownTimeout,
-    /// An asynchronous operation exceeded its execution budget.
-    #[error("javascript execution budget exceeded")]
-    ExecutionTimeout,
-    /// Background worker is no longer reachable.
-    #[error("vm worker is offline")]
-    WorkerOffline,
-    /// Command queue is full.
-    #[error("vm command queue is full")]
-    QueueFull,
-    /// Worker thread terminated unexpectedly.
-    #[error("vm worker thread panicked")]
-    WorkerPanicked,
-    /// No worker could be created from the provided configuration.
-    #[error("vm requires at least one worker thread")]
-    InvalidWorkerCount,
-    /// Script capacity was reached.
-    #[error("script limit reached on worker {worker_id}: max={max_scripts}")]
-    ScriptLimitReached {
-        /// Worker identifier.
-        worker_id: usize,
-        /// Maximum number of loaded scripts for this worker.
-        max_scripts: usize,
-    },
+    /// A lock was poisoned by a panic while it was held, typically in a host handler.
+    #[error("a lock was poisoned by a panic in a host handler")]
+    LockPoisoned,
     /// The requested script could not be found.
     #[error("script `{script_id}` is not loaded")]
     ScriptNotFound {
@@ -48,16 +23,6 @@ pub enum VmError {
         script_id: String,
         /// Exported function name.
         function_name: String,
-    },
-    /// A host contract requires a bridge capability that the current worker cannot provide.
-    #[error(
-        "host contract `{contract_name}` requires unsupported worker bridge mode: {execution:?}"
-    )]
-    UnsupportedHostBridge {
-        /// Host contract stable name.
-        contract_name: String,
-        /// Required execution mode.
-        execution: HostFunctionExecution,
     },
     /// A value crossing the host bridge does not match its registered contract schema.
     #[error("host contract `{contract_name}` {direction} validation failed: {details}")]

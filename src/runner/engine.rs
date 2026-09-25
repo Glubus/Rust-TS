@@ -1,35 +1,36 @@
-//! Single-thread engine preview: the owning thread runs QuickJS, and every call crosses
-//! the Rust/JS boundary natively, without generated source or JSON text.
+//! Single-thread engine: the owning thread runs QuickJS, and every call crosses the
+//! Rust/JS boundary natively, without generated source or JSON text.
 
-use indexmap::IndexMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use indexmap::IndexMap;
 use rquickjs::{
     Array, CatchResultExt, CaughtError, Context, Ctx, Function, Module, Object, Persistent,
     Runtime, Value as JsValue,
 };
 
-use crate::compiler::CompilerService;
 use crate::config::VmOptions;
 use crate::contract::{JsArgs, JsDecode, JsEncode, array_length};
 use crate::error::VmError;
-use crate::registry::{HostModuleStyle, InMemoryHostContractRegistry};
-use crate::types::ScriptId;
+use crate::registry::InMemoryHostContractRegistry;
+use crate::types::{MemoryStats, ScriptId};
 
-use super::bridge_capability::{WorkerBridgeCapability, ensure_host_contracts_supported};
 use super::errors::{caught_js_error, js_error};
 use super::execution::{ExecutionControl, ExecutionGuard};
+use super::memory::memory_stats;
 use super::module_loader::{
     MemoryModuleLoader, MemoryModuleResolver, RuntimeModuleGraph, WorkerModuleStore,
 };
 use super::promise_rejections::UnhandledRejections;
-use super::render::bootstrap_module_context_source;
+use super::transpile::Transpiler;
 
 const NATIVE_FUNCTIONS_GLOBAL: &str = "__rustts_native";
 const HANDLERS_GLOBAL: &str = "__vm_handlers";
 
+/// Installs the `ctx.on` event API and its handler table in a script context.
+const BOOTSTRAP_SOURCE: &str = include_str!("../../assets/bootstrap_module_context.js");
 /// Installs `__host` and the namespaced host globals on top of `__rustts_native`.
 const HOST_GLOBALS_SOURCE: &str = include_str!("../../assets/engine_host_globals.js");
 
@@ -41,22 +42,18 @@ const HOST_GLOBALS_SOURCE: &str = include_str!("../../assets/engine_host_globals
 ///
 /// Every load, call and emit runs under `VmOptions::execution_timeout`: JavaScript
 /// still running when it expires is interrupted and the operation fails with
-/// `VmError::Execution`. Like the worker pool, the budget is cooperative and cannot
-/// preempt a Rust host function.
+/// `VmError::Execution`. The budget is cooperative and cannot preempt a Rust host
+/// function.
 ///
 /// Promise jobs an operation queues run before it returns, within the same budget:
 /// an `async` export resolves to its value, and a Promise rejection that no handler
-/// caught by then fails the operation.
-///
-/// Current limits: inline scripts only, no disk cache, and no Promise-returning host
-/// functions, so a Promise that only a host could settle fails the call. Use
-/// [`RustTs`](crate::RustTs) for multi-file projects, worker threads and async host
-/// functions.
+/// caught by then fails the operation. Host functions are synchronous, so a Promise
+/// that only a host could settle fails the call.
 pub struct Engine {
     /// In load order, which is the order events are delivered in.
     scripts: IndexMap<ScriptId, EngineScript>,
     registry: Arc<InMemoryHostContractRegistry>,
-    compiler: CompilerService,
+    transpiler: Transpiler,
     module_store: WorkerModuleStore,
     next_graph_id: u64,
     execution: Arc<ExecutionControl>,
@@ -73,8 +70,8 @@ struct EngineScript {
 }
 
 impl Engine {
-    /// Creates an engine on the current thread using the memory, stack and validation
-    /// settings from `options`.
+    /// Creates an engine on the current thread using the memory, stack, cache and
+    /// validation settings from `options`.
     pub fn new(options: &VmOptions) -> Result<Self, VmError> {
         let module_store = WorkerModuleStore::default();
         let execution = Arc::new(ExecutionControl::default());
@@ -85,7 +82,7 @@ impl Engine {
                 options.contract_validation,
                 options.unknown_field_validation,
             )),
-            compiler: CompilerService::default(),
+            transpiler: Transpiler::new(options.cache_dir.as_deref())?,
             module_store,
             next_graph_id: 0,
             execution,
@@ -100,26 +97,48 @@ impl Engine {
         &self.registry
     }
 
-    /// Loads or replaces one TypeScript script. A failed load keeps the previous version.
+    /// Loads or replaces one TypeScript script. It may import host modules, not other
+    /// files; use [`Engine::load_project`] for those. A failed load keeps the previous
+    /// version.
     pub fn load_script(&mut self, id: impl Into<ScriptId>, source: &str) -> Result<(), VmError> {
         let id = id.into();
-        ensure_host_contracts_supported(&self.registry, WorkerBridgeCapability::Sync)?;
-        let transpiled = self.transpile(&id, source)?;
-        let graph = self.install_graph(&id, transpiled)?;
-        match self.mount(&graph.entry_module_id) {
-            Ok((context, exports)) => self.replace_script(
-                id,
-                EngineScript {
-                    context,
-                    exports,
-                    module_ids: graph.module_ids,
-                },
-            ),
-            Err(error) => {
-                self.module_store.remove_modules(&graph.module_ids)?;
-                Err(error)
-            }
-        }
+        let host_abi = self.registry.cache_abi_seed()?;
+        let transpiled = self.transpiler.inline(&id, source, &host_abi)?;
+        self.install_host_modules()?;
+        let graph_id = self.next_graph_id();
+        let graph = self.module_store.insert_inline(&id, transpiled, graph_id)?;
+        self.mount_graph(id, graph)
+    }
+
+    /// Loads or replaces one multi-file TypeScript project from its entry file.
+    ///
+    /// The static ESM graph is resolved from disk: relative imports, `tsconfig.json`
+    /// `paths` and `baseUrl`, and packages in the project's `node_modules`. Dynamic
+    /// `import()` is rejected. A failed load keeps the previous version.
+    pub fn load_project(
+        &mut self,
+        id: impl Into<ScriptId>,
+        entry_path: impl AsRef<Path>,
+    ) -> Result<(), VmError> {
+        let id = id.into();
+        let host_abi = self.registry.cache_abi_seed()?;
+        let external_modules = self.registry.import_module_names()?;
+        let project = self
+            .transpiler
+            .project(entry_path.as_ref(), &external_modules, &host_abi)?;
+        self.install_host_modules()?;
+        let graph_id = self.next_graph_id();
+        let graph = self.module_store.insert_project(
+            &project.entry_module_id,
+            project.modules,
+            graph_id,
+        )?;
+        self.mount_graph(id, graph)
+    }
+
+    /// QuickJS memory counters for the whole engine.
+    pub fn memory_stats(&self) -> MemoryStats {
+        memory_stats(self.runtime.memory_usage())
     }
 
     /// Unloads one script and releases its modules.
@@ -229,23 +248,34 @@ impl Engine {
         }
     }
 
-    fn transpile(&mut self, id: &str, source: &str) -> Result<String, VmError> {
-        let source_path = Path::new(id).with_extension("ts");
-        self.compiler
-            .compile_script(String::new(), source, &source_path, PathBuf::new())
-            .map(|compiled| compiled.transpiled_js)
+    fn install_host_modules(&self) -> Result<(), VmError> {
+        self.module_store
+            .insert_host_modules(self.registry.import_modules()?)
     }
 
-    fn install_graph(
-        &mut self,
-        id: &str,
-        transpiled: String,
-    ) -> Result<RuntimeModuleGraph, VmError> {
-        self.module_store
-            .insert_host_modules(self.registry.import_modules(HostModuleStyle::Native)?)?;
+    fn next_graph_id(&mut self) -> u64 {
         let graph_id = self.next_graph_id;
         self.next_graph_id += 1;
-        self.module_store.insert_inline(id, transpiled, graph_id)
+        graph_id
+    }
+
+    /// Evaluates a freshly inserted graph and swaps it in; on failure, the graph is
+    /// removed and the previous version of the script stays loaded.
+    fn mount_graph(&mut self, id: ScriptId, graph: RuntimeModuleGraph) -> Result<(), VmError> {
+        match self.mount(&graph.entry_module_id) {
+            Ok((context, exports)) => self.replace_script(
+                id,
+                EngineScript {
+                    context,
+                    exports,
+                    module_ids: graph.module_ids,
+                },
+            ),
+            Err(error) => {
+                self.module_store.remove_modules(&graph.module_ids)?;
+                Err(error)
+            }
+        }
     }
 
     fn mount(
@@ -255,7 +285,7 @@ impl Engine {
         let _budget = self.budget();
         let context = Context::full(&self.runtime).map_err(js_error)?;
         let exports = context.with(|ctx| {
-            evaluate_script(&ctx, bootstrap_module_context_source())?;
+            evaluate_script(&ctx, BOOTSTRAP_SOURCE)?;
             self.install_native_functions(&ctx)?;
             evaluate_script(&ctx, HOST_GLOBALS_SOURCE)?;
             import_exports(&ctx, entry_module_id)

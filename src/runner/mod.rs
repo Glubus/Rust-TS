@@ -1,33 +1,11 @@
-//! QuickJS runner execution plane.
+//! QuickJS execution: the single-thread [`Engine`] and its module loader.
 
-#[cfg(feature = "async-promise")]
-pub(crate) mod async_host_bridge;
-#[cfg(feature = "async-promise")]
-pub mod async_script_runtime;
-mod bridge_capability;
-mod command;
 mod engine;
 mod errors;
-mod event_dispatch;
-pub(crate) mod execution;
-mod handle;
-mod host_bridge;
-mod invocation;
-mod jobs;
-mod load;
+mod execution;
 mod memory;
 mod module_loader;
 mod promise_rejections;
-mod render;
-mod script_store;
-mod state;
-mod thread;
+mod transpile;
 
-pub(crate) use command::{
-    CallFunctionCommand, EmitEventCommand, LoadScriptCommand, ShutdownCommand, StatsCommand,
-    UnloadScriptCommand, WorkerCommand,
-};
 pub use engine::Engine;
-pub(crate) use handle::WorkerHandle;
-pub(crate) use jobs::WorkerRuntimeStats;
-pub(crate) use thread::spawn_worker;

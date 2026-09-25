@@ -2,15 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Delivery behavior for host callbacks.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum DeliveryMode {
-    /// Deliver to every active binding.
-    Broadcast,
-    /// Deliver only to the first matching active binding.
-    First,
-}
-
 /// Minimal schema carrier for V0 metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Schema {
@@ -311,37 +302,20 @@ pub struct HostContractDescriptor {
     pub abi: HostContractAbi,
 }
 
-/// Runtime metadata specific to callback contracts.
+/// Metadata specific to callback contracts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostCallbackDescriptor {
     /// Payload schema metadata.
     pub payload_schema: Schema,
-    /// Delivery behavior for this callback.
-    pub delivery: DeliveryMode,
-    /// Whether this callback is expected on the hot path.
-    pub hot: bool,
 }
 
-/// Runtime and typing metadata specific to function contracts.
+/// Typing metadata specific to function contracts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostFunctionDescriptor {
     /// Input schema metadata.
     pub input_schema: Schema,
     /// Output schema metadata.
     pub output_schema: Schema,
-    /// Execution mode exposed by this function binding.
-    pub execution: HostFunctionExecution,
-}
-
-/// Host function execution mode.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum HostFunctionExecution {
-    /// Synchronous Rust function and synchronous JavaScript bridge call.
-    Sync,
-    /// Rust future executed on Tokio, with the current JavaScript bridge waiting for completion.
-    AsyncBlockingJs,
-    /// Future non-blocking JavaScript promise bridge.
-    AsyncPromise,
 }
 
 /// Normalized ABI data for one host contract.
@@ -353,17 +327,11 @@ pub enum HostContractAbi {
         input: Schema,
         /// Output schema.
         output: Schema,
-        /// Function execution mode.
-        execution: HostFunctionExecution,
     },
     /// Callback ABI.
     Callback {
         /// Payload schema.
         payload: Schema,
-        /// Delivery behavior for this callback.
-        delivery: DeliveryMode,
-        /// Whether this callback is expected on the hot path.
-        hot: bool,
     },
     /// Context ABI.
     Context {

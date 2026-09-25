@@ -1,7 +1,8 @@
 # Generate TypeScript SDK Files
 
-`RustTS` can generate TypeScript files from the Rust-side registry. This is
-how a host application exposes a typed scripting API to users.
+`RustTS` generates TypeScript files from the Rust-side registry. This is how a
+host application exposes a typed scripting API to script authors: the Rust
+contracts are the single source of truth, and the declarations follow them.
 
 ## Register Contracts First
 
@@ -9,19 +10,22 @@ The registry is the source of truth. Register every host function and callback
 before generating files.
 
 ```rust
-let vm = RustTs::new(options)?;
+let engine = Engine::new(&options)?;
 
-vm.registry()
+engine
+    .registry()
     .typed_function::<FindUser>()?
     .typed_callback::<UserFound>()?;
 ```
+
+Every registered callback appears in the declarations and the SDK.
 
 ## Write Files
 
 ```rust
 use rustts::SdkFileNames;
 
-let written = vm.registry().write_sdk_files_with_names(
+let written = engine.registry().write_sdk_files_with_names(
     "generated",
     &SdkFileNames {
         types: "my_sdk.d.ts".into(),
@@ -41,12 +45,15 @@ generated/
   my_sdk.ts
 ```
 
-`write_sdk_files(...)` also exists for quick experiments, but real applications
-should usually call `write_sdk_files_with_names(...)` and choose names that
-match their package.
+`write_sdk_files(...)` also exists for quick experiments (it writes
+`rustts.d.ts` and `rustts.sdk.ts`), but real applications should usually call
+`write_sdk_files_with_names(...)` and choose names that match their package.
+`registry().dts()` and `registry().sdk()` return the same contents as strings.
 
-File names do not define the import name by themselves. The import name comes
-from each Rust contract's `IMPORT_MODULE`.
+## Import Modules
+
+File names do not define an import name. A contract becomes importable when it
+sets both `IMPORT_MODULE` and `EXPORT_PATH`:
 
 ```rust
 impl HostContract for FindUser {
@@ -72,8 +79,12 @@ import { user } from "my_sdk";
 const result = user.find({ userId: 7, includeRoles: true });
 ```
 
-Use the same `IMPORT_MODULE` for every contract that should be exported from the
-same virtual SDK module.
+`Engine` provides `my_sdk` as a virtual module built from the registry: a host
+function is exported at its `EXPORT_PATH`, and a callback is exported as a function
+that registers a handler (`user.found(handler)` for
+`EXPORT_PATH = ["user", "found"]`). Use the same `IMPORT_MODULE` for every contract
+that should be exported from the same module. Contexts are not exported: they
+are declarative metadata.
 
 ## What The Declaration File Contains
 
@@ -90,9 +101,12 @@ your application packages scripts.
 
 ## What The SDK Source File Contains
 
-The SDK file contains runtime helper code. Scripts can import or bundle it when
-the host application wants an explicit module, or the host can inject helpers
-globally through the VM's generated bootstrap path.
+The SDK file is an ordinary TypeScript module: typed wrappers around the host
+functions (through the `__host.callValue` bridge that `Engine` installs in every
+script), event helpers, and model helpers for object schemas. A project imports it
+like any local file, for example `import { user } from "./generated/my_sdk";`; an
+inline script can be loaded with the SDK source in front of it
+(`format!("{sdk}\n{script}")`).
 
 For a Rust contract named `user.find`, the SDK exposes:
 

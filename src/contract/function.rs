@@ -1,6 +1,6 @@
 //! Host function contract trait.
 
-use super::{HostContract, HostFunctionDescriptor, HostFunctionExecution, Schema};
+use super::{HostContract, HostFunctionDescriptor, Schema};
 use crate::error::VmError;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -30,7 +30,6 @@ pub trait HostFunction: HostContract {
         HostFunctionDescriptor {
             input_schema: Self::input_schema(),
             output_schema: Self::output_schema(),
-            execution: HostFunctionExecution::Sync,
         }
     }
 }

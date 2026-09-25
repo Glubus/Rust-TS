@@ -4,6 +4,44 @@
 
 ### Migration
 
+- **The worker pool is removed; `Engine` is the only runtime.** RustTS no longer
+  starts threads: scripts run on the thread that owns the `Engine`. Replace
+  `RustTs::new(options)` with `Engine::new(&options)` (`load_script`,
+  `load_project` and `unload_script` take `&mut self`):
+
+  | 0.2 (`RustTs`) | 0.3 (`Engine`) |
+  | --- | --- |
+  | `vm.load_script(id, src)` → `ScriptSnapshot` | `engine.load_script(id, src)` → `()` |
+  | `vm.load_script_project(id, entry)` | `engine.load_project(id, entry)` |
+  | `vm.call_function(id, f, vec![json])` → `Value` | `engine.call::<Value>(id, f, vec![json])`, or typed: `engine.call::<R>(id, f, (a, b))` |
+  | `vm.emit(event, json)` | `engine.emit(event, &payload)` |
+  | `vm.registry()` | `engine.registry()` |
+  | `vm.call_function_once(src, f, args)` | `load_script`, `call`, then `unload_script` |
+  | `vm.shutdown()` | drop the `Engine` |
+
+  To call scripts from other threads, own the `Engine` on one thread and send it work
+  over a channel.
+- Removed with the pool: `ScriptSnapshot`, retention policies and dependency
+  references, runtime introspection and stats (`VmStats`, `VmRuntimeSnapshot`,
+  latency histograms, memory pressure thresholds), lifecycle events (`VmEvent`,
+  `subscribe`), the `ScriptRegistry`, and the `rustts-` worker threads.
+  `Engine::memory_stats` reports the QuickJS memory counters (`MemoryStats`).
+- Removed async host functions: `AsyncHostFunction`, `async_function`,
+  `async_promise_function`, the async worker lane, and the `tokio` and
+  `async-promise` features. Host functions are synchronous; scripts can still use
+  Promises and `async` exports.
+- Removed `DeliveryMode`, `HostCallback::delivery`/`hot`, `HostFunctionExecution`
+  and the matching `execution`, `delivery` and `hot` fields of descriptors and ABIs.
+  Every callback now appears in the generated declarations and SDK.
+- `VmOptions` keeps `cache_dir`, `execution_timeout`, `memory_limit_bytes`,
+  `max_stack_size_bytes`, `contract_validation` and `unknown_field_validation`.
+  `cache_dir` is now `Option<PathBuf>` and `None` by default: nothing is written to
+  disk unless a cache directory is set.
+- `VmError` drops the pool variants (`ShutdownTimeout`, `ExecutionTimeout`,
+  `WorkerOffline`, `QueueFull`, `InvalidWorkerCount`, `ScriptLimitReached`,
+  `UnsupportedHostBridge`); `WorkerPanicked` becomes `LockPoisoned`.
+- The generated SDK calls host functions through `__host.callValue` only; the JSON
+  `__host.call` bridge is gone.
 - Typed registration now requires native codecs: `typed_function` /
   `register_typed_function` need `Input: TsSchema + JsDecode` and
   `Output: TsSchema + JsEncode`; `typed_callback` / `register_typed_callback` need
@@ -48,9 +86,10 @@
   `#[rustts(type = "...")]` for third-party types.
 - `NativeBytes` as input: decodes from `Uint8Array`, `ArrayBuffer` or byte arrays,
   and implements `Deserialize`.
-- `Engine` (new, API expected to grow in 0.4): single-thread runtime with native
-  calls in both directions (`call`, `emit`), under the same `execution_timeout` as
-  the worker pool. Scripts reach host functions by ESM import, by namespaced
+- `Engine`: single-thread runtime with native calls in both directions (`call`,
+  `emit`) under `execution_timeout`. It loads inline scripts and multi-file projects
+  (`load_project`), reuses the transpile cache when `cache_dir` is set, and reports
+  QuickJS memory counters. Scripts reach host functions by ESM import, by namespaced
   global (`user.find(...)`) or through the generated SDK. Promise jobs run before
   each operation returns, `async` exports resolve to their value, and an unhandled
   Promise rejection fails the operation. Events reach scripts in load order, and a
@@ -77,16 +116,6 @@
 - Deriving `TsSchema` for a struct with a flattened map no longer panics.
 - Generated SDK `models.X.is()` predicates now check every field: optional and
   union fields were missing parentheses inside `&&` chains.
-- `call_function` on the worker pool awaits `async` exports instead of returning an
-  unsettled Promise.
-- Scripts on the async lane (`async-promise`) can import host modules and call
-  synchronous host functions.
-- `load_script` / `load_script_project` on an already loaded id keep that script's
-  retention policy instead of resetting it to `KeepMounted`.
-- Unloads, demounts and loads of the same script are serialized, so the registry
-  and the worker no longer disagree after an unload races a reload.
-- Emitting an event no longer fails when a listening script is unloaded between
-  routing and delivery.
 - Importing a `HostContext` as a host module fails at load instead of binding
   `undefined`.
 - Reloading a project after a `tsconfig.json` `paths` change resolves imports

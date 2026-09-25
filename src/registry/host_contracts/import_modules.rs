@@ -1,16 +1,11 @@
 use std::collections::BTreeMap;
 
-use crate::contract::{HostContractAbi, HostContractDescriptor, HostFunctionExecution};
+use crate::contract::{HostContractAbi, HostContractDescriptor};
 
 #[derive(Debug, Clone)]
 enum HostModuleBinding {
-    Function {
-        contract_name: String,
-        execution: HostFunctionExecution,
-    },
-    Callback {
-        event_name: String,
-    },
+    Function { contract_name: String },
+    Callback { event_name: String },
 }
 
 #[derive(Debug, Default)]
@@ -19,18 +14,10 @@ struct HostModuleNode {
     binding: Option<HostModuleBinding>,
 }
 
-/// How generated host modules reach Rust host functions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HostModuleStyle {
-    /// Calls go through the `__host` bridge object by contract name.
-    Bridge,
-    /// Exports are the native functions installed in `globalThis.__rustts_native`.
-    Native,
-}
-
+/// Source of every host import module. Function exports are the native functions the
+/// engine installs in `globalThis.__rustts_native`; callback exports register handlers.
 pub(crate) fn render_host_import_modules(
     descriptors: &[HostContractDescriptor],
-    style: HostModuleStyle,
 ) -> BTreeMap<String, String> {
     let mut modules = BTreeMap::<String, HostModuleNode>::new();
 
@@ -47,7 +34,7 @@ pub(crate) fn render_host_import_modules(
 
     modules
         .into_iter()
-        .map(|(module, node)| (module, render_module_source(&node, style)))
+        .map(|(module, node)| (module, render_module_source(&node)))
         .collect()
 }
 
@@ -56,16 +43,13 @@ pub(crate) fn render_host_import_modules(
 /// silently binding `undefined`.
 fn binding_for_descriptor(descriptor: &HostContractDescriptor) -> Option<HostModuleBinding> {
     match &descriptor.abi {
-        HostContractAbi::Function { execution, .. } => Some(HostModuleBinding::Function {
+        HostContractAbi::Function { .. } => Some(HostModuleBinding::Function {
             contract_name: descriptor.name.clone(),
-            execution: *execution,
         }),
-        HostContractAbi::Callback { hot, .. } if *hot => Some(HostModuleBinding::Callback {
+        HostContractAbi::Callback { .. } => Some(HostModuleBinding::Callback {
             event_name: descriptor.name.clone(),
         }),
-        HostContractAbi::Callback { .. }
-        | HostContractAbi::Context { .. }
-        | HostContractAbi::Unknown => None,
+        HostContractAbi::Context { .. } | HostContractAbi::Unknown => None,
     }
 }
 
@@ -86,34 +70,31 @@ fn insert_binding(node: &mut HostModuleNode, path: &[String], binding: HostModul
     );
 }
 
-fn render_module_source(node: &HostModuleNode, style: HostModuleStyle) -> String {
-    let mut output = String::from(
-        "const __hostInput = input => JSON.stringify(input === undefined ? null : input);\n\
-const __hostOutput = output => JSON.parse(output);\n",
-    );
+fn render_module_source(node: &HostModuleNode) -> String {
+    let mut output = String::new();
 
     for (name, child) in &node.children {
         output.push_str("export const ");
         output.push_str(&identifier(name));
         output.push_str(" = ");
-        output.push_str(&render_node(child, 0, style));
+        output.push_str(&render_node(child, 0));
         output.push_str(";\n");
     }
 
     output
 }
 
-fn render_node(node: &HostModuleNode, depth: usize, style: HostModuleStyle) -> String {
+fn render_node(node: &HostModuleNode, depth: usize) -> String {
     if let Some(binding) = &node.binding
         && node.children.is_empty()
     {
-        return render_binding(binding, style);
+        return render_binding(binding);
     }
 
-    render_object_node(node, depth, style)
+    render_object_node(node, depth)
 }
 
-fn render_object_node(node: &HostModuleNode, depth: usize, style: HostModuleStyle) -> String {
+fn render_object_node(node: &HostModuleNode, depth: usize) -> String {
     let mut entries = Vec::new();
 
     for (name, child) in &node.children {
@@ -121,7 +102,7 @@ fn render_object_node(node: &HostModuleNode, depth: usize, style: HostModuleStyl
             "{}{}: {}",
             indent(depth + 1),
             property_name(name),
-            render_node(child, depth + 1, style)
+            render_node(child, depth + 1)
         ));
     }
 
@@ -129,7 +110,7 @@ fn render_object_node(node: &HostModuleNode, depth: usize, style: HostModuleStyl
         entries.push(format!(
             "{}default: {}",
             indent(depth + 1),
-            render_binding(binding, style)
+            render_binding(binding)
         ));
     }
 
@@ -140,37 +121,14 @@ fn render_object_node(node: &HostModuleNode, depth: usize, style: HostModuleStyl
     format!("{{\n{}\n{}}}", entries.join(",\n"), indent(depth))
 }
 
-fn render_binding(binding: &HostModuleBinding, style: HostModuleStyle) -> String {
+fn render_binding(binding: &HostModuleBinding) -> String {
     match binding {
-        HostModuleBinding::Function {
-            contract_name,
-            execution,
-        } => render_function_binding(contract_name, *execution, style),
+        HostModuleBinding::Function { contract_name } => {
+            format!("globalThis.__rustts_native[{contract_name:?}]")
+        }
         HostModuleBinding::Callback { event_name } => {
             format!("handler => globalThis.__rustts_on({event_name:?}, handler)")
         }
-    }
-}
-
-fn render_function_binding(
-    contract_name: &str,
-    execution: HostFunctionExecution,
-    style: HostModuleStyle,
-) -> String {
-    match execution {
-        HostFunctionExecution::Sync | HostFunctionExecution::AsyncBlockingJs
-            if style == HostModuleStyle::Native =>
-        {
-            format!("globalThis.__rustts_native[{contract_name:?}]")
-        }
-        HostFunctionExecution::Sync | HostFunctionExecution::AsyncBlockingJs => {
-            format!(
-                "input => __host.callValue ? __host.callValue({contract_name:?}, input === undefined ? null : input) : __hostOutput(__host.call({contract_name:?}, __hostInput(input)))"
-            )
-        }
-        HostFunctionExecution::AsyncPromise => format!(
-            "input => __host.callAsync({contract_name:?}, __hostInput(input)).then(__hostOutput)"
-        ),
     }
 }
 

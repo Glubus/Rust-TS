@@ -1,37 +1,38 @@
 # Register Host Functions And Callbacks
 
-This guide shows the normal V0 flow:
+This guide shows the normal flow:
 
-1. Create a `RustTs`.
+1. Create an `Engine`.
 2. Declare Rust payload structs.
 3. Derive `TsSchema`.
 4. Implement `HostFunction` or `HostCallback`.
 5. Register contracts with `typed_function` and `typed_callback`.
 6. Generate declaration and SDK files for your package.
-7. Use the generated SDK from TypeScript.
+7. Load scripts that call your functions and handle your events.
 
 ## Install With Derive Support
 
 ```toml
 [dependencies]
-rustts = { version = "0.1.0", features = ["derive"] }
+rustts = { version = "0.3", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 ```
 
-## Create The VM
+## Create The Engine
 
 ```rust
-use rustts::{RustTs, VmError, VmOptions};
+use rustts::{Engine, VmError, VmOptions};
 
-fn create_vm() -> Result<RustTs, VmError> {
-    let mut options = VmOptions::default();
-    options.cache_dir = "target/rustts-cache".into();
-    RustTs::new(options)
+fn create_engine() -> Result<Engine, VmError> {
+    Engine::new(&VmOptions {
+        cache_dir: Some("target/rustts-cache".into()),
+        ..VmOptions::default()
+    })
 }
 ```
 
-The cache directory stores compiled JavaScript artifacts. Use a stable directory
-for a real application so reloads can reuse compiled scripts.
+The cache directory stores transpiled JavaScript artifacts, so reloads and later
+runs reuse them. Without it (the default), every load transpiles in memory.
 
 ## Declare A Host Function
 
@@ -100,9 +101,9 @@ TypeScript shape.
 
 ## Declare A Callback
 
-Callbacks are host-emitted events delivered to subscribed scripts. The contract
-name controls both `ctx.on("user.found", ...)` and the generated ergonomic alias
-`user.onFound(...)`.
+Callbacks are events the host emits to scripts. The contract name is the event
+name scripts subscribe to with `ctx.on("user.found", ...)`; the generated SDK adds
+the ergonomic alias `user.onFound(...)`.
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -137,29 +138,35 @@ impl HostCallback for UserFound {
 
 ## Register Contracts In The Registry
 
-Use the VM's host contract registry before loading scripts:
+Register contracts in the engine's registry before loading the scripts that use
+them:
 
 ```rust
-let vm = create_vm()?;
+let mut engine = create_engine()?;
 
-vm.registry()
+engine
+    .registry()
     .typed_function::<FindUser>()?
     .typed_callback::<UserFound>()?;
 ```
 
 That registry is the source of truth for:
 
-- runtime host bridge routing
+- the host functions installed in every script
 - generated `.d.ts` declarations
 - generated TypeScript SDK helpers
-- contract ABI cache identity
+- the cache key of transpiled scripts
+
+Host functions are synchronous: a script's call to `user.find(...)` runs the Rust
+`call` on the engine's thread and returns its value directly. An `Err` returned by
+the handler is thrown in the script as an exception the script can catch.
 
 ## Generate The SDK Files
 
 ```rust
 use rustts::SdkFileNames;
 
-let written = vm.registry().write_sdk_files_with_names(
+let written = engine.registry().write_sdk_files_with_names(
     "target/generated",
     &SdkFileNames {
         types: "my_sdk.d.ts".into(),
@@ -171,7 +178,7 @@ assert!(written.types_path.ends_with("my_sdk.d.ts"));
 assert!(written.sdk_path.ends_with("my_sdk.ts"));
 ```
 
-The generated SDK includes:
+The generated SDK is a TypeScript module that exposes:
 
 ```ts
 user.find({ userId: 7, includeRoles: true });
@@ -205,27 +212,13 @@ if (FindUserInputModel.is(input)) {
 
 ## Load And Run A Script
 
-```rust
-vm.load_script("user-rules", include_str!("user_rules.ts"))?;
-
-let result = vm.call_function("user-rules", "lookup", Vec::new())?;
-println!("{result}");
-
-vm.emit_callback::<UserFound>(&UserFoundPayload {
-    user_id: 7,
-    display_name: "user-7".into(),
-    roles: vec!["admin".into(), "editor".into()],
-})?;
-
-vm.shutdown()?;
-```
-
-And the script:
+Scripts reach host functions through namespaced globals such as `user.find(...)`
+and subscribe to events with `ctx.on(...)`, without an import:
 
 ```ts
 let lastFound = "none";
 
-user.onFound(event => {
+ctx.on("user.found", event => {
   lastFound = `${event.displayName}:${event.roles.join(",")}`;
 });
 
@@ -238,6 +231,38 @@ export function observed() {
   return lastFound;
 }
 ```
+
+Rust loads the script, calls its exports and emits events to it:
+
+```rust
+engine.load_script("user-rules", include_str!("user_rules.ts"))?;
+
+let result: String = engine.call("user-rules", "lookup", ())?;
+assert_eq!(result, "user-7:2:true");
+
+engine.emit(
+    UserFound::NAME,
+    &UserFoundPayload {
+        user_id: 7,
+        display_name: "user-7".into(),
+        roles: vec!["admin".into(), "editor".into()],
+    },
+)?;
+
+let observed: String = engine.call("user-rules", "observed", ())?;
+assert_eq!(observed, "user-7:admin,editor");
+```
+
+To use the SDK helpers (`user.onFound`, `events`, `models`) in an inline script,
+load the SDK source followed by the script:
+
+```rust
+let sdk = engine.registry().sdk()?;
+engine.load_script("user-rules", &format!("{sdk}\n{}", include_str!("user_rules.ts")))?;
+```
+
+A project can import the generated SDK file instead, for example
+`import { user } from "./generated/my_sdk";`.
 
 ## Validation Policy
 

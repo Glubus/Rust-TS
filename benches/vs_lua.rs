@@ -1,14 +1,12 @@
 //! Same workloads on mlua (Lua 5.4), raw rquickjs and RustTS.
 //!
 //! `quickjs_raw` is the floor RustTS can reach on QuickJS: direct `Function::call`
-//! with native value conversion. `rustts_engine` is the single-thread [`Engine`];
-//! `rustts_pool` is the worker-thread [`RustTs`], which adds a thread hop per call.
+//! with native value conversion. `rustts_engine` is the single-thread [`Engine`].
 //! The RustTS gap to `quickjs_raw` is our own overhead; the raw QuickJS gap to mlua
 //! is the interpreter difference.
 
 use std::hint::black_box;
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use criterion::{
     BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
@@ -16,8 +14,8 @@ use criterion::{
 use mlua::{Lua, LuaSerdeExt};
 use rquickjs::{Context, Ctx, Function, Runtime, Value as JsValue, prelude::Func};
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, RustTs, Schema, TsType,
-    VmError, VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsType, VmError,
+    VmOptions,
 };
 use serde_json::{Value, json};
 
@@ -179,22 +177,6 @@ fn js_function<'js>(ctx: &Ctx<'js>, name: &str) -> Function<'js> {
     ctx.globals().get(name).expect("quickjs function")
 }
 
-fn rustts_vm(label: &str) -> RustTs {
-    let vm = RustTs::new(VmOptions {
-        worker_threads: 1,
-        cache_dir: unique_cache_dir(label),
-        ..VmOptions::default()
-    })
-    .expect("create rustts vm");
-    vm.registry()
-        .typed_function::<Inc>()
-        .and_then(|registry| registry.callback::<ScoreUpdate>())
-        .expect("register bench contracts");
-    vm.load_script("bench", TS_SOURCE)
-        .expect("load rustts source");
-    vm
-}
-
 fn rustts_engine() -> Engine {
     let mut engine = Engine::new(&VmOptions::default()).expect("create rustts engine");
     engine
@@ -213,7 +195,6 @@ struct Backends {
     lua: LuaBench,
     qjs: QuickJsBench,
     engine: Engine,
-    pool: RustTs,
 }
 
 fn configure(group: &mut BenchmarkGroup<'_, WallTime>) {
@@ -223,12 +204,7 @@ fn configure(group: &mut BenchmarkGroup<'_, WallTime>) {
 }
 
 fn bench_call_scalar(c: &mut Criterion, backends: &Backends) {
-    let Backends {
-        lua,
-        qjs,
-        engine,
-        pool,
-    } = backends;
+    let Backends { lua, qjs, engine } = backends;
     let mut group = c.benchmark_group("call_scalar");
     configure(&mut group);
     group.bench_function("mlua", |b| {
@@ -255,24 +231,11 @@ fn bench_call_scalar(c: &mut Criterion, backends: &Backends) {
             )
         });
     });
-    group.bench_function("rustts_pool", |b| {
-        b.iter(|| {
-            black_box(
-                pool.call_function("bench", "sum", vec![json!(20), json!(22)])
-                    .expect("rustts sum"),
-            )
-        });
-    });
     group.finish();
 }
 
 fn bench_call_object(c: &mut Criterion, backends: &Backends) {
-    let Backends {
-        lua,
-        qjs,
-        engine,
-        pool,
-    } = backends;
+    let Backends { lua, qjs, engine } = backends;
     let input = payload();
     let mut group = c.benchmark_group("call_object_roundtrip");
     configure(&mut group);
@@ -304,24 +267,11 @@ fn bench_call_object(c: &mut Criterion, backends: &Backends) {
             )
         });
     });
-    group.bench_function("rustts_pool", |b| {
-        b.iter(|| {
-            black_box(
-                pool.call_function("bench", "process", vec![input.clone()])
-                    .expect("rustts process"),
-            )
-        });
-    });
     group.finish();
 }
 
 fn bench_host_calls(c: &mut Criterion, backends: &Backends) {
-    let Backends {
-        lua,
-        qjs,
-        engine,
-        pool,
-    } = backends;
+    let Backends { lua, qjs, engine } = backends;
     let mut group = c.benchmark_group("script_calls_host_1000x");
     configure(&mut group);
     group.bench_function("mlua", |b| {
@@ -348,24 +298,11 @@ fn bench_host_calls(c: &mut Criterion, backends: &Backends) {
             )
         });
     });
-    group.bench_function("rustts_pool", |b| {
-        b.iter(|| {
-            black_box(
-                pool.call_function("bench", "loop", vec![json!(HOST_CALLS)])
-                    .expect("rustts loop"),
-            )
-        });
-    });
     group.finish();
 }
 
 fn bench_compute(c: &mut Criterion, backends: &Backends) {
-    let Backends {
-        lua,
-        qjs,
-        engine,
-        pool,
-    } = backends;
+    let Backends { lua, qjs, engine } = backends;
     let mut group = c.benchmark_group("compute_fib20");
     configure(&mut group);
     group.bench_function("mlua", |b| {
@@ -392,24 +329,11 @@ fn bench_compute(c: &mut Criterion, backends: &Backends) {
             )
         });
     });
-    group.bench_function("rustts_pool", |b| {
-        b.iter(|| {
-            black_box(
-                pool.call_function("bench", "fib", vec![json!(FIB_N)])
-                    .expect("rustts fib"),
-            )
-        });
-    });
     group.finish();
 }
 
 fn bench_emit(c: &mut Criterion, backends: &Backends) {
-    let Backends {
-        lua,
-        qjs,
-        engine,
-        pool,
-    } = backends;
+    let Backends { lua, qjs, engine } = backends;
     let event = json!({ "combo": 7 });
     let mut group = c.benchmark_group("emit_event_1_listener");
     configure(&mut group);
@@ -433,19 +357,10 @@ fn bench_emit(c: &mut Criterion, backends: &Backends) {
     group.bench_function("rustts_engine", |b| {
         b.iter(|| black_box(engine.emit("score.update", &event).expect("engine emit")));
     });
-    group.bench_function("rustts_pool", |b| {
-        b.iter(|| {
-            black_box(
-                pool.emit("score.update", event.clone())
-                    .expect("rustts emit"),
-            )
-        });
-    });
     group.finish();
 }
 
 fn bench_reload(c: &mut Criterion, qjs: &QuickJsBench) {
-    let pool = rustts_vm("vs-lua-reload");
     let mut engine = rustts_engine();
     let variants = [TS_SOURCE.to_owned(), format!("{TS_SOURCE}\n// variant b\n")];
     let mut group = c.benchmark_group("reload_script_warm");
@@ -475,18 +390,7 @@ fn bench_reload(c: &mut Criterion, qjs: &QuickJsBench) {
                 .expect("engine reload");
         });
     });
-    group.bench_function("rustts_pool", |b| {
-        let mut next = 0usize;
-        b.iter(|| {
-            next ^= 1;
-            black_box(
-                pool.load_script("reload", variants[next].as_str())
-                    .expect("rustts reload"),
-            )
-        });
-    });
     group.finish();
-    pool.shutdown().expect("shutdown reload vm");
 }
 
 fn vs_lua_benchmarks(c: &mut Criterion) {
@@ -494,7 +398,6 @@ fn vs_lua_benchmarks(c: &mut Criterion) {
         lua: LuaBench::new(),
         qjs: QuickJsBench::new(),
         engine: rustts_engine(),
-        pool: rustts_vm("vs-lua"),
     };
 
     bench_call_scalar(c, &backends);
@@ -502,16 +405,7 @@ fn vs_lua_benchmarks(c: &mut Criterion) {
     bench_host_calls(c, &backends);
     bench_compute(c, &backends);
     bench_emit(c, &backends);
-    backends.pool.shutdown().expect("shutdown vm");
     bench_reload(c, &backends.qjs);
-}
-
-fn unique_cache_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    std::env::temp_dir().join(format!("rustts-{label}-{nanos}"))
 }
 
 criterion_group!(benches, vs_lua_benchmarks);

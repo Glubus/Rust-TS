@@ -14,10 +14,6 @@
 
   globalThis.__host = {
     callValue: (name, input) => hostFunction(name)(input === undefined ? null : input),
-    call: (name, inputJson) => {
-      const output = hostFunction(name)(JSON.parse(inputJson));
-      return JSON.stringify(output === undefined ? null : output);
-    },
   };
 
   const namespaceChild = (parent, segment) => {

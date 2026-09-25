@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use crate::contract::{
-    DeliveryMode, HostContractAbi, HostContractDescriptor, HostFunctionExecution, Schema,
-    TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsType,
+    HostContractAbi, HostContractDescriptor, Schema, TsEnumVariant, TsField, TsLiteral,
+    TsRecordKey, TsType,
 };
 
 const DEFAULT_ENUM_TAG: &str = "type";
@@ -27,18 +27,10 @@ struct DeclarationBuffer {
 impl DeclarationBuffer {
     fn push_descriptor(&mut self, descriptor: &HostContractDescriptor) {
         match &descriptor.abi {
-            HostContractAbi::Function {
-                input,
-                output,
-                execution,
-            } => {
-                self.push_function(&descriptor.name, input, output, *execution);
+            HostContractAbi::Function { input, output } => {
+                self.push_function(&descriptor.name, input, output);
             }
-            HostContractAbi::Callback {
-                payload,
-                delivery,
-                hot,
-            } => self.push_callback(&descriptor.name, payload, *delivery, *hot),
+            HostContractAbi::Callback { payload } => self.push_callback(&descriptor.name, payload),
             HostContractAbi::Context { schema } => self.push_context(&descriptor.name, schema),
             HostContractAbi::Unknown => {}
         }
@@ -60,24 +52,14 @@ impl DeclarationBuffer {
         ));
     }
 
-    fn push_function(
-        &mut self,
-        name: &str,
-        input: &Schema,
-        output: &Schema,
-        execution: HostFunctionExecution,
-    ) {
+    fn push_function(&mut self, name: &str, input: &Schema, output: &Schema) {
         self.push_schema(input);
         self.push_schema(output);
         self.sections
-            .push(render_function_declaration(name, input, output, execution));
+            .push(render_function_declaration(name, input, output));
     }
 
-    fn push_callback(&mut self, name: &str, payload: &Schema, _delivery: DeliveryMode, hot: bool) {
-        if !hot {
-            return;
-        }
-
+    fn push_callback(&mut self, name: &str, payload: &Schema) {
         self.push_schema(payload);
         self.host_events
             .push(format!("  {name:?}: {};", schema_type_name(payload)));
@@ -118,19 +100,13 @@ impl DeclarationBuffer {
     }
 }
 
-fn render_function_declaration(
-    name: &str,
-    input: &Schema,
-    output: &Schema,
-    execution: HostFunctionExecution,
-) -> String {
+fn render_function_declaration(name: &str, input: &Schema, output: &Schema) -> String {
     let name_parts = split_contract_name(name);
-    let return_type = render_function_return_type(output, execution);
     let signature = format!(
         "function {}(input: {}): {};",
         name_parts.function_name,
         schema_type_name(input),
-        return_type
+        schema_type_name(output)
     );
 
     if name_parts.namespaces.is_empty() {
@@ -138,14 +114,6 @@ fn render_function_declaration(
     }
 
     render_nested_namespace(&name_parts.namespaces, &signature)
-}
-
-fn render_function_return_type(output: &Schema, execution: HostFunctionExecution) -> String {
-    let output_type = schema_type_name(output);
-    match execution {
-        HostFunctionExecution::Sync | HostFunctionExecution::AsyncBlockingJs => output_type,
-        HostFunctionExecution::AsyncPromise => format!("Promise<{output_type}>"),
-    }
 }
 
 struct ContractNameParts<'a> {

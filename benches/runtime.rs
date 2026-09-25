@@ -1,21 +1,31 @@
+//! Engine lifecycle costs: startup, first inline/project load with and without the
+//! transpile disk cache, SDK generation, and the memory shape of many small scripts.
+//!
+//! Per-call and emit overhead are measured against Lua and raw QuickJS in `vs_lua`.
+
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{
+    BatchSize, Bencher, BenchmarkGroup, Criterion, criterion_group, criterion_main,
+    measurement::WallTime,
+};
 use rustts::{
-    DeliveryMode, HostCallback, HostContract, HostContractKind, HostFunction, RustTs, Schema,
-    TsField, TsType, VmError, VmOptions, VmProcessMemoryStats, VmQuickJsMemoryStats, VmStats,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, MemoryStats, Schema,
+    TsField, TsType, VmError, VmOptions,
 };
 use serde_json::json;
 
 const BASIC_SCRIPT: &str = include_str!("../tests/projects/basic_math/main.ts");
-const EVENT_LISTENER_SCRIPT: &str = include_str!("../tests/projects/event_listener/main.ts");
+const MOD_PACK_ENTRY: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/projects/realistic_mod_pack/src/main.ts"
+);
 const MANY_SMALL_SCRIPT_COUNT: usize = 400;
 const MEMORY_REPORT_SCRIPT_COUNTS: &[usize] = &[100, 400, 800, 1000];
-const MEMORY_REPORT_WORKER_THREADS: usize = 2;
-const MEMORY_REPORT_MEMORY_LIMIT_BYTES: usize = 128 * 1024 * 1024;
+const MANY_SCRIPTS_MEMORY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 const MEMORY_REPORT_CHILD_ENV: &str = "RUSTTS_MEMORY_REPORT_SCRIPT_COUNT";
 const BYTES_PER_KIB: f64 = 1024.0;
 const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
@@ -27,62 +37,69 @@ fn runtime_benchmarks(c: &mut Criterion) {
     }
 
     report_many_small_scripts_process_memory_curve();
+    bench_engine_new(c);
     bench_cold_inline_load(c);
-    bench_hot_function_call(c);
-    bench_event_routing(c);
+    bench_cold_project_load(c);
     bench_sdk_generation(c);
     bench_many_small_scripts_memory_shape(c);
 }
 
+fn bench_engine_new(c: &mut Criterion) {
+    let options = VmOptions::default();
+    c.bench_function("engine_new", |b| {
+        b.iter(|| black_box(Engine::new(&options).expect("create engine")));
+    });
+}
+
+/// First load of an inline script into a fresh engine: a full transpile without a
+/// cache, a disk read of the transpiled artifact with a warm cache.
 fn bench_cold_inline_load(c: &mut Criterion) {
-    c.bench_function("cold_inline_load", |b| {
-        b.iter_batched(
-            || new_vm("bench-cold-inline-load"),
-            |vm| {
-                vm.load_script("math", BASIC_SCRIPT).expect("load script");
-                vm.shutdown().expect("shutdown vm");
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
+    let cache = CacheDir::new("bench-inline-load");
+    let cached = cache.options();
+    Engine::new(&cached)
+        .expect("create engine")
+        .load_script("math", BASIC_SCRIPT)
+        .expect("warm inline cache");
+
+    let mut group = c.benchmark_group("cold_inline_load");
+    for (label, options) in [("no_cache", VmOptions::default()), ("disk_cache", cached)] {
+        group.bench_function(label, |b| {
+            bench_fresh_engine(
+                b,
+                || Engine::new(&options).expect("create engine"),
+                |engine| engine.load_script("math", BASIC_SCRIPT),
+            );
+        });
+    }
+    group.finish();
 }
 
-fn bench_hot_function_call(c: &mut Criterion) {
-    let vm = new_vm("bench-hot-call");
-    vm.load_script("math", BASIC_SCRIPT).expect("load script");
+/// First load of the multi-file mod pack (tsconfig aliases, host imports, 8 modules).
+fn bench_cold_project_load(c: &mut Criterion) {
+    let cache = CacheDir::new("bench-project-load");
+    let cached = cache.options();
+    mod_pack_engine(&cached)
+        .load_project("raid-mod", MOD_PACK_ENTRY)
+        .expect("warm project cache");
 
-    c.bench_function("hot_function_call", |b| {
-        b.iter(|| {
-            black_box(
-                vm.call_function("math", "sum", vec![json!({ "left": 20, "right": 22 })])
-                    .expect("call function"),
-            )
+    let mut group = c.benchmark_group("cold_project_load");
+    configure_slow(&mut group);
+    for (label, options) in [("no_cache", VmOptions::default()), ("disk_cache", cached)] {
+        group.bench_function(label, |b| {
+            bench_fresh_engine(
+                b,
+                || mod_pack_engine(&options),
+                |engine| engine.load_project("raid-mod", MOD_PACK_ENTRY),
+            );
         });
-    });
-
-    vm.shutdown().expect("shutdown vm");
-}
-
-fn bench_event_routing(c: &mut Criterion) {
-    let vm = new_vm("bench-event-routing");
-    vm.load_script("listener", EVENT_LISTENER_SCRIPT)
-        .expect("load listener");
-
-    c.bench_function("hot_event_routing", |b| {
-        b.iter(|| {
-            black_box(
-                vm.emit("score.update", json!({ "combo": 7 }))
-                    .expect("emit event"),
-            )
-        });
-    });
-
-    vm.shutdown().expect("shutdown vm");
+    }
+    group.finish();
 }
 
 fn bench_sdk_generation(c: &mut Criterion) {
-    let vm = new_vm("bench-sdk-generation");
-    vm.registry()
+    let engine = Engine::new(&VmOptions::default()).expect("create engine");
+    engine
+        .registry()
         .function::<BenchFindUser>()
         .and_then(|registry| registry.function::<BenchCreateInvoice>())
         .and_then(|registry| registry.callback::<BenchScoreUpdate>())
@@ -90,29 +107,51 @@ fn bench_sdk_generation(c: &mut Criterion) {
 
     c.bench_function("sdk_generation", |b| {
         b.iter(|| {
-            let types = vm.registry().types().expect("render types");
-            let sdk = vm.registry().sdk().expect("render sdk");
+            let types = engine.registry().types().expect("render types");
+            let sdk = engine.registry().sdk().expect("render sdk");
             black_box((types, sdk));
         });
     });
-
-    vm.shutdown().expect("shutdown vm");
 }
 
 fn bench_many_small_scripts_memory_shape(c: &mut Criterion) {
-    c.bench_function("mount_400_small_scripts_memory_shape", |b| {
-        b.iter_batched(
-            || new_vm_with_capacity("bench-400-small-scripts", 2, 512),
-            |vm| {
-                load_many_small_scripts(&vm, MANY_SMALL_SCRIPT_COUNT);
-                let stats = vm.stats().expect("collect stats");
-                assert_eq!(stats.memory.active_scripts, MANY_SMALL_SCRIPT_COUNT);
-                black_box(stats.process_memory);
-                vm.shutdown().expect("shutdown vm");
+    let options = many_scripts_options();
+    let mut group = c.benchmark_group("many_small_scripts");
+    configure_slow(&mut group);
+    group.bench_function(format!("mount_{MANY_SMALL_SCRIPT_COUNT}"), |b| {
+        bench_fresh_engine(
+            b,
+            || Engine::new(&options).expect("create engine"),
+            |engine| {
+                load_many_small_scripts(engine, MANY_SMALL_SCRIPT_COUNT);
+                black_box(engine.memory_stats());
+                Ok(())
             },
-            criterion::BatchSize::SmallInput,
         );
     });
+    group.finish();
+}
+
+/// Times `load` on a fresh engine per iteration; engine creation and drop stay
+/// outside the measurement.
+fn bench_fresh_engine(
+    b: &mut Bencher<'_, WallTime>,
+    setup: impl Fn() -> Engine,
+    load: impl Fn(&mut Engine) -> Result<(), VmError>,
+) {
+    b.iter_batched(
+        setup,
+        |mut engine| {
+            load(&mut engine).expect("load script");
+            engine
+        },
+        BatchSize::SmallInput,
+    );
+}
+
+fn configure_slow(group: &mut BenchmarkGroup<'_, WallTime>) {
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(5));
 }
 
 fn report_many_small_scripts_process_memory_curve() {
@@ -124,6 +163,8 @@ fn report_many_small_scripts_process_memory_curve() {
     eprintln!();
 }
 
+/// Reruns this benchmark binary with one script count so every RSS sample starts
+/// from a clean process.
 fn run_isolated_process_memory_report(script_count: usize) {
     let current_exe = std::env::current_exe().expect("resolve current benchmark executable");
     let status = Command::new(current_exe)
@@ -148,148 +189,88 @@ fn memory_report_child_script_count() -> Option<usize> {
 
 fn report_many_small_scripts_process_memory(script_count: usize) {
     let before = read_current_process_memory();
-    let label = format!("bench-rss-{script_count}-small-scripts");
-    let vm = new_vm_for_memory_report(&label, script_count);
-    let after_vm_start = read_current_process_memory();
+    let mut engine = Engine::new(&many_scripts_options()).expect("create memory report engine");
+    let after_engine_new = read_current_process_memory();
 
-    load_many_small_scripts(&vm, script_count);
+    load_many_small_scripts(&mut engine, script_count);
+    let after_mount = read_current_process_memory();
+    let quickjs = engine.memory_stats();
 
-    let stats = vm.stats().expect("collect stats");
-    assert_eq!(stats.memory.active_scripts, script_count);
-    let quickjs_memory = quickjs_memory_report(&stats);
-    let after_mount = stats.process_memory.or_else(read_current_process_memory);
-
-    vm.shutdown().expect("shutdown vm");
-    let after_shutdown = read_current_process_memory();
-    drop(vm);
+    drop(engine);
     let after_drop = read_current_process_memory();
 
-    let report = ProcessMemoryReport {
+    print_process_memory_report(&ProcessMemoryReport {
         script_count,
-        worker_threads: MEMORY_REPORT_WORKER_THREADS,
-        memory_limit_bytes: MEMORY_REPORT_MEMORY_LIMIT_BYTES,
         before,
-        after_vm_start,
+        after_engine_new,
         after_mount,
-        after_shutdown,
         after_drop,
-        quickjs_memory,
-    };
-    print_process_memory_report(&report);
+        quickjs,
+    });
 }
 
-fn max_scripts_per_worker_for(script_count: usize) -> usize {
-    script_count
-        .div_ceil(MEMORY_REPORT_WORKER_THREADS)
-        .saturating_add(32)
-        .max(64)
-}
-
-fn load_many_small_scripts(vm: &RustTs, script_count: usize) {
+fn load_many_small_scripts(engine: &mut Engine, script_count: usize) {
     for index in 0..script_count {
-        vm.load_script(format!("script-{index}"), BASIC_SCRIPT)
+        engine
+            .load_script(format!("script-{index}"), BASIC_SCRIPT)
             .expect("load small script");
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ProcessMemoryReport {
-    script_count: usize,
-    worker_threads: usize,
-    memory_limit_bytes: usize,
-    before: Option<VmProcessMemoryStats>,
-    after_vm_start: Option<VmProcessMemoryStats>,
-    after_mount: Option<VmProcessMemoryStats>,
-    after_shutdown: Option<VmProcessMemoryStats>,
-    after_drop: Option<VmProcessMemoryStats>,
-    quickjs_memory: QuickJsMemoryReport,
+struct ProcessMemory {
+    resident_bytes: u64,
+    virtual_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct QuickJsMemoryReport {
-    sync_used_bytes: u64,
-    async_used_bytes: u64,
-    limit_bytes: u64,
+struct ProcessMemoryReport {
+    script_count: usize,
+    before: Option<ProcessMemory>,
+    after_engine_new: Option<ProcessMemory>,
+    after_mount: Option<ProcessMemory>,
+    after_drop: Option<ProcessMemory>,
+    quickjs: MemoryStats,
 }
 
 fn print_process_memory_report(report: &ProcessMemoryReport) {
     eprintln!();
     eprintln!("memory_rss_{}_small_scripts:", report.script_count);
     eprintln!(
-        "  config: workers={}, quickjs_memory_limit_per_worker={:.2} MiB",
-        report.worker_threads,
-        bytes_to_mib(report.memory_limit_bytes as u64)
+        "  config: quickjs_memory_limit={:.2} MiB",
+        bytes_to_mib(MANY_SCRIPTS_MEMORY_LIMIT_BYTES as u64)
     );
     print_process_memory_snapshot("before", report.before);
-    print_process_memory_snapshot("after_vm_start", report.after_vm_start);
+    print_process_memory_snapshot("after_engine_new", report.after_engine_new);
     print_process_memory_snapshot("after_mount", report.after_mount);
-    print_process_memory_snapshot("after_shutdown", report.after_shutdown);
     print_process_memory_snapshot("after_drop", report.after_drop);
-    print_process_memory_delta("vm_start_delta", report.before, report.after_vm_start);
-    print_process_memory_delta("mount_delta", report.after_vm_start, report.after_mount);
+    print_process_memory_delta("engine_new_delta", report.before, report.after_engine_new);
+    print_process_memory_delta("mount_delta", report.after_engine_new, report.after_mount);
     print_process_memory_delta("total_delta", report.before, report.after_mount);
-    print_quickjs_memory_report(report.quickjs_memory);
+    print_quickjs_memory(report.script_count, report.quickjs);
     print_per_script_delta(
         report.script_count,
-        report.after_vm_start,
+        report.after_engine_new,
         report.after_mount,
     );
     eprintln!();
 }
 
-fn quickjs_memory_report(stats: &VmStats) -> QuickJsMemoryReport {
-    let mut report = QuickJsMemoryReport {
-        sync_used_bytes: 0,
-        async_used_bytes: 0,
-        limit_bytes: 0,
-    };
-
-    for worker in &stats.workers {
-        add_quickjs_memory(
-            &mut report.sync_used_bytes,
-            &mut report.limit_bytes,
-            worker.sync_quickjs_memory,
-        );
-        add_quickjs_memory(
-            &mut report.async_used_bytes,
-            &mut report.limit_bytes,
-            worker.async_quickjs_memory,
-        );
-    }
-
-    report
-}
-
-fn add_quickjs_memory(
-    used_total: &mut u64,
-    limit_total: &mut u64,
-    memory: Option<VmQuickJsMemoryStats>,
-) {
-    if let Some(memory) = memory {
-        *used_total = used_total.saturating_add(memory.memory_used_bytes);
-        *limit_total = limit_total.saturating_add(memory.malloc_limit_bytes);
-    }
-}
-
-fn print_quickjs_memory_report(report: QuickJsMemoryReport) {
+fn print_quickjs_memory(script_count: usize, stats: MemoryStats) {
     eprintln!(
-        "  quickjs_sync_used: {:.2} MiB",
-        bytes_to_mib(report.sync_used_bytes)
+        "  quickjs_used: {:.2} MiB ({}), objects={}, functions={}",
+        bytes_to_mib(stats.memory_used_bytes),
+        format_pressure(stats.memory_used_bytes, stats.malloc_limit_bytes),
+        stats.object_count,
+        stats.function_count
     );
     eprintln!(
-        "  quickjs_async_used: {:.2} MiB",
-        bytes_to_mib(report.async_used_bytes)
-    );
-    eprintln!(
-        "  quickjs_total_pressure: {}",
-        format_pressure(
-            report.sync_used_bytes + report.async_used_bytes,
-            report.limit_bytes
-        )
+        "  quickjs_used_per_script: {:.2} KiB",
+        stats.memory_used_bytes as f64 / script_count as f64 / BYTES_PER_KIB
     );
 }
 
-fn print_process_memory_snapshot(label: &str, snapshot: Option<VmProcessMemoryStats>) {
+fn print_process_memory_snapshot(label: &str, snapshot: Option<ProcessMemory>) {
     match snapshot {
         Some(stats) => {
             eprintln!(
@@ -306,8 +287,8 @@ fn print_process_memory_snapshot(label: &str, snapshot: Option<VmProcessMemorySt
 
 fn print_process_memory_delta(
     label: &str,
-    before: Option<VmProcessMemoryStats>,
-    after: Option<VmProcessMemoryStats>,
+    before: Option<ProcessMemory>,
+    after: Option<ProcessMemory>,
 ) {
     match (before, after) {
         (Some(before), Some(after)) => {
@@ -327,8 +308,8 @@ fn print_process_memory_delta(
 
 fn print_per_script_delta(
     script_count: usize,
-    before: Option<VmProcessMemoryStats>,
-    after: Option<VmProcessMemoryStats>,
+    before: Option<ProcessMemory>,
+    after: Option<ProcessMemory>,
 ) {
     match (script_count, before, after) {
         (0, _, _) | (_, None, _) | (_, _, None) => {
@@ -344,15 +325,11 @@ fn print_per_script_delta(
     }
 }
 
-fn read_current_process_memory() -> Option<VmProcessMemoryStats> {
+fn read_current_process_memory() -> Option<ProcessMemory> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    parse_process_status_memory(&status)
-}
-
-fn parse_process_status_memory(status: &str) -> Option<VmProcessMemoryStats> {
-    Some(VmProcessMemoryStats {
-        resident_bytes: parse_status_kib_value(status, "VmRSS:")?,
-        virtual_bytes: parse_status_kib_value(status, "VmSize:")?,
+    Some(ProcessMemory {
+        resident_bytes: parse_status_kib_value(&status, "VmRSS:")?,
+        virtual_bytes: parse_status_kib_value(&status, "VmSize:")?,
     })
 }
 
@@ -384,7 +361,10 @@ fn format_pressure(used_bytes: u64, limit_bytes: u64) -> String {
         return String::from("unlimited");
     }
 
-    format!("{:.2}%", used_bytes as f64 / limit_bytes as f64 * 100.0)
+    format!(
+        "{:.2}% of limit",
+        used_bytes as f64 / limit_bytes as f64 * 100.0
+    )
 }
 
 fn format_signed_float(value: f64, unit: &str) -> String {
@@ -397,6 +377,8 @@ struct BenchScoreUpdate;
 
 impl HostContract for BenchFindUser {
     const NAME: &'static str = "user.find";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
     fn schema() -> Schema {
         Schema::typed("FindUserInput", TsType::Number)
@@ -459,6 +441,8 @@ impl HostFunction for BenchCreateInvoice {
 
 impl HostContract for BenchScoreUpdate {
     const NAME: &'static str = "score.update";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
 
     fn schema() -> Schema {
         Schema::typed(
@@ -474,47 +458,50 @@ impl HostContract for BenchScoreUpdate {
 
 impl HostCallback for BenchScoreUpdate {
     type Payload = serde_json::Value;
+}
 
-    fn delivery() -> DeliveryMode {
-        DeliveryMode::Broadcast
+/// Engine with the host contracts `realistic_mod_pack` imports from `"test"`.
+fn mod_pack_engine(options: &VmOptions) -> Engine {
+    let engine = Engine::new(options).expect("create engine");
+    engine
+        .registry()
+        .function::<BenchFindUser>()
+        .and_then(|registry| registry.callback::<BenchScoreUpdate>())
+        .expect("register mod pack contracts");
+    engine
+}
+
+fn many_scripts_options() -> VmOptions {
+    VmOptions {
+        memory_limit_bytes: MANY_SCRIPTS_MEMORY_LIMIT_BYTES,
+        ..VmOptions::default()
     }
 }
 
-fn new_vm(label: &str) -> RustTs {
-    new_vm_with_capacity(label, 1, 64)
+/// Temporary transpile cache directory, removed on drop.
+struct CacheDir(PathBuf);
+
+impl CacheDir {
+    fn new(label: &str) -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos();
+        Self(std::env::temp_dir().join(format!("rustts-{label}-{nanos}")))
+    }
+
+    fn options(&self) -> VmOptions {
+        VmOptions {
+            cache_dir: Some(self.0.clone()),
+            ..VmOptions::default()
+        }
+    }
 }
 
-fn new_vm_with_capacity(
-    label: &str,
-    worker_threads: usize,
-    max_scripts_per_worker: usize,
-) -> RustTs {
-    RustTs::new(VmOptions {
-        worker_threads,
-        cache_dir: unique_cache_dir(label),
-        max_scripts_per_worker,
-        ..VmOptions::default()
-    })
-    .expect("create vm")
-}
-
-fn new_vm_for_memory_report(label: &str, script_count: usize) -> RustTs {
-    RustTs::new(VmOptions {
-        worker_threads: MEMORY_REPORT_WORKER_THREADS,
-        cache_dir: unique_cache_dir(label),
-        max_scripts_per_worker: max_scripts_per_worker_for(script_count),
-        memory_limit_bytes: MEMORY_REPORT_MEMORY_LIMIT_BYTES,
-        ..VmOptions::default()
-    })
-    .expect("create memory report vm")
-}
-
-fn unique_cache_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    std::env::temp_dir().join(format!("rustts-{label}-{nanos}"))
+impl Drop for CacheDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 criterion_group!(benches, runtime_benchmarks);

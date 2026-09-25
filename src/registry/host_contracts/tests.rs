@@ -2,10 +2,8 @@ use serde_json::Value;
 
 use super::{HostContractRegistry, InMemoryHostContractRegistry};
 use crate::contract::{
-    HostCallback, HostCallbackDescriptor, HostContext, HostContract, HostContractAbi,
-    HostContractDescriptor, HostContractKind, HostFunction, HostFunctionDescriptor,
-    HostFunctionExecution, HostImportBinding, HostMetadata, Schema, TsEnumVariant, TsField,
-    TsLiteral, TsRecordKey, TsType,
+    HostCallback, HostContext, HostContract, HostContractAbi, HostContractKind, HostFunction,
+    HostMetadata, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsType,
 };
 use crate::error::VmError;
 
@@ -124,16 +122,10 @@ fn register_function_stores_descriptor() {
     let function = descriptor.function.expect("function descriptor");
     assert_eq!(function.input_schema.name, "DemoFunctionInput");
     assert_eq!(function.output_schema.name, "unknown");
-    assert_eq!(function.execution, HostFunctionExecution::Sync);
     assert!(matches!(
         descriptor.abi,
-        HostContractAbi::Function {
-            input,
-            output,
-            execution,
-        } if input.name == "DemoFunctionInput"
-            && output.name == "unknown"
-            && execution == HostFunctionExecution::Sync
+        HostContractAbi::Function { input, output }
+            if input.name == "DemoFunctionInput" && output.name == "unknown"
     ));
 }
 
@@ -149,12 +141,9 @@ fn register_callback_stores_descriptor() {
     assert_eq!(descriptor.schema.name, "DemoCallbackPayload");
     let callback = descriptor.callback.unwrap();
     assert_eq!(callback.payload_schema.name, "DemoCallbackPayload");
-    assert_eq!(callback.delivery, crate::contract::DeliveryMode::Broadcast);
-    assert!(callback.hot);
     assert!(matches!(
         descriptor.abi,
-        HostContractAbi::Callback { payload, hot, .. }
-            if payload.name == "DemoCallbackPayload" && hot
+        HostContractAbi::Callback { payload } if payload.name == "DemoCallbackPayload"
     ));
 }
 
@@ -388,74 +377,4 @@ fn types_alias_returns_declaration_output() {
     registry.register_function::<GeneratedFunction>().unwrap();
 
     assert_eq!(registry.types().unwrap(), registry.dts().unwrap());
-}
-
-#[test]
-fn dts_renders_promise_return_only_for_async_promise_contracts() {
-    let descriptors = vec![HostContractDescriptor {
-        name: String::from("user.find"),
-        kind: HostContractKind::Function,
-        schema: Schema::typed("FindUserInput", TsType::Number),
-        metadata: HostMetadata {
-            name: String::from("user.find"),
-            tags: Vec::new(),
-        },
-        import: HostImportBinding {
-            module: String::from("test"),
-            export_path: vec![String::from("user"), String::from("find")],
-        },
-        callback: Option::<HostCallbackDescriptor>::None,
-        function: Some(HostFunctionDescriptor {
-            input_schema: Schema::typed("FindUserInput", TsType::Number),
-            output_schema: Schema::typed("FindUserOutput", TsType::String),
-            execution: HostFunctionExecution::AsyncPromise,
-        }),
-        abi: HostContractAbi::Function {
-            input: Schema::typed("FindUserInput", TsType::Number),
-            output: Schema::typed("FindUserOutput", TsType::String),
-            execution: HostFunctionExecution::AsyncPromise,
-        },
-    }];
-
-    let declarations = super::declarations::render_typescript_declarations(&descriptors);
-
-    assert_eq!(
-        declarations,
-        "type FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {\n  export function find(input: FindUserInput): Promise<FindUserOutput>;\n}\n"
-    );
-}
-
-#[test]
-fn sdk_renders_promise_return_only_for_async_promise_contracts() {
-    let descriptors = vec![HostContractDescriptor {
-        name: String::from("user.find"),
-        kind: HostContractKind::Function,
-        schema: Schema::typed("FindUserInput", TsType::Number),
-        metadata: HostMetadata {
-            name: String::from("user.find"),
-            tags: Vec::new(),
-        },
-        import: HostImportBinding {
-            module: String::from("test"),
-            export_path: vec![String::from("user"), String::from("find")],
-        },
-        callback: Option::<HostCallbackDescriptor>::None,
-        function: Some(HostFunctionDescriptor {
-            input_schema: Schema::typed("FindUserInput", TsType::Number),
-            output_schema: Schema::typed("FindUserOutput", TsType::String),
-            execution: HostFunctionExecution::AsyncPromise,
-        }),
-        abi: HostContractAbi::Function {
-            input: Schema::typed("FindUserInput", TsType::Number),
-            output: Schema::typed("FindUserOutput", TsType::String),
-            execution: HostFunctionExecution::AsyncPromise,
-        },
-    }];
-
-    let sdk = super::sdk::render_typescript_sdk(&descriptors);
-
-    assert!(sdk.contains("async function __hostCallAsync<T>"));
-    assert!(sdk.contains("find(input: FindUserInput): Promise<FindUserOutput>"));
-    assert!(sdk.contains("return __hostCallAsync<FindUserOutput>(\"user.find\", input);"));
-    assert!(sdk.contains("export const rusttsSdk = {"));
 }

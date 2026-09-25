@@ -1,32 +1,33 @@
 # RustTS
 
-`RustTS` lets a Rust application embed TypeScript scripts, expose Rust host
-APIs to those scripts, and generate TypeScript declarations plus a small SDK from
-the Rust-side contract registry.
+`RustTS` is an embeddable TypeScript scripting layer for Rust applications and
+games. The host exposes typed Rust functions and events to scripts, runs the
+scripts on its own thread through `Engine`, and generates the scripts' TypeScript
+declarations and SDK from the Rust contracts.
 
 The short version:
 
 - Rust owns the truth: host functions, callbacks, and context metadata are
   declared in Rust.
-- Scripts call generated helpers such as `user.find(...)`.
-- Scripts subscribe to callbacks with `ctx.on("user.found", ...)`, generated
-  event wrappers such as `events.user.found(...)`, or friendly domain aliases
-  such as `user.onFound(...)`.
+- Scripts call host functions such as `user.find(...)` directly; each call runs
+  the Rust handler and returns its value.
+- Scripts subscribe to host events with `ctx.on("user.found", ...)`, or through
+  the generated SDK's event wrappers such as `events.user.found(...)` and friendly
+  domain aliases such as `user.onFound(...)`.
 - The generated files are regular TypeScript. The host application chooses the
   file names, for example `my_sdk.d.ts` and `my_sdk.ts`.
 
 ## What You Can Build
 
-This is a good fit for game scripting, modding tools, editor automation,
-simulation rules, or plugin-like systems where the host is Rust and scripts are
-TypeScript.
+Game UI, gameplay rules, mods, editor and tool automation, simulation rules, or
+plugin-like systems where the host is Rust and scripts are TypeScript.
 
 Example script:
 
 ```ts
 let lastUser = "none";
 
-user.onFound(event => {
+ctx.on("user.found", event => {
   lastUser = `${event.displayName}:${event.roles.join(",")}`;
 });
 
@@ -36,14 +37,18 @@ export function lookup() {
 }
 ```
 
-## Current V0 Boundaries
+## What It Is Not
 
-V0 intentionally keeps the core small:
+RustTS is not a server runtime and not a Node or Deno replacement:
 
+- it starts no threads and has no event loop, timers, network or filesystem API;
+  scripts run only when the host calls them, and reach the outside world only
+  through the host functions you register
+- an `Engine` stays on the thread that created it
 - imports must be statically discoverable; dynamic `import(...)` is rejected
+- host functions are synchronous; scripts can still use Promises and `async`
+  exports, which settle before each call returns
 - `HostContext` is declarative metadata only
-- the normal host bridge is synchronous
-- `async-promise` is experimental and uses the async worker-lane path
 
-Start with synchronous host functions and typed callbacks. They are the stable
-path today.
+Start with [Getting Started](getting-started.md), then
+[Run Scripts With `Engine`](guides/engine.md).

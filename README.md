@@ -1,16 +1,22 @@
 # RustTS
 
-Small embedded TypeScript runtime for Rust applications.
+Embeddable TypeScript scripting for Rust applications and games.
 
-Version 0.2.0 is licensed under MIT. See [the changelog](CHANGELOG.md) for migration notes.
+RustTS is licensed under MIT. The current release is 0.2.0; 0.3 (unreleased) is
+Engine-only. See [the changelog](CHANGELOG.md) for migration notes.
 
-`RustTS` lets a Rust host load TypeScript scripts, expose Rust host
-functions and callbacks, and generate TypeScript declaration/SDK files from the
-Rust-side contract registry.
+`RustTS` lets a Rust host run TypeScript scripts on its own thread through
+`Engine`, expose typed Rust host functions and callbacks to them, and generate
+the scripts' TypeScript declarations and SDK from those Rust contracts. It spawns
+no threads and has no event loop: scripts run when the host calls them. It is a
+scripting layer, not a server runtime.
+
+Version 0.3 removed the worker pool (`RustTs`); see the changelog for migration.
 
 ## What It Is For
 
-- game scripting and modding APIs
+- game UI and gameplay rules
+- modding APIs
 - plugin systems inside Rust applications
 - editor or tool automation
 - simulation rules written in TypeScript
@@ -20,34 +26,40 @@ Rust-side contract registry.
 
 1. Define Rust host contracts with `HostFunction` and `HostCallback`.
 2. Derive `TsSchema` for input/output payloads.
-3. Register contracts in the VM registry.
+3. Register contracts in the engine's registry.
 4. Generate TypeScript declaration and SDK files for your package.
-5. Load TypeScript scripts and call exported functions.
+5. Load TypeScript scripts, call their exports and emit events to them.
 
 ```rust
-let vm = RustTs::new(VmOptions::default())?;
+let mut engine = Engine::new(&VmOptions::default())?;
 
-vm.registry()
+engine
+    .registry()
     .typed_function::<FindUser>()?
     .typed_callback::<UserFound>()?;
 
-vm.registry().write_sdk_files_with_names("generated", &SdkFileNames {
+engine.registry().write_sdk_files_with_names("generated", &SdkFileNames {
     types: "my_sdk.d.ts".into(),
     sdk: "my_sdk.ts".into(),
 })?;
-vm.load_script("weather-rules", include_str!("weather_rules.ts"))?;
+engine.load_script("weather-rules", include_str!("weather_rules.ts"))?;
 
-let output = vm.call_function("weather-rules", "run", Vec::new())?;
+let output: serde_json::Value = engine.call("weather-rules", "run", ())?;
+engine.emit("user.found", &UserFoundPayload { user_id: 7, display_name: "Ada".into() })?;
 ```
 
-Scripts then use the generated API:
+Scripts call host functions and handle host events:
 
 ```ts
-const result = user.find({ userId: 7 });
+let lastFound = "none";
 
 ctx.on("user.found", event => {
-  console.log(event.displayName);
+  lastFound = event.displayName;
 });
+
+export function run() {
+  return user.find({ userId: 7 });
+}
 ```
 
 ## Documentation
@@ -57,12 +69,13 @@ The docs are an mdBook source tree in [`docs/`](docs/SUMMARY.md).
 Useful starting points:
 
 - [Getting Started](docs/getting-started.md)
+- [Run Scripts With Engine](docs/guides/engine.md)
 - [Register Host Functions And Callbacks](docs/guides/register-host-functions.md)
 - [Generate TypeScript SDK Files](docs/guides/generate-sdk-files.md)
 - [Rust And TypeScript Types](docs/guides/type-mapping.md)
-- [Run Scripts On Your Thread With Engine](docs/guides/engine.md)
 - [Load Scripts And Projects](docs/guides/load-scripts-and-projects.md)
 - [Use Native Bytes](docs/guides/native-bytes.md)
+- [Runtime Guarantees](docs/guides/runtime-guarantees.md)
 
 Build the book with:
 
@@ -74,22 +87,24 @@ mdbook build
 
 The current core is focused on the Rust-first contract model:
 
-- `Engine`: QuickJS on your own thread, with direct native calls in both directions
-- `RustTs`: long-lived QuickJS worker threads through `rquickjs`
-- TypeScript transpilation through `oxc`
-- static ESM project graphs
+- `Engine`: QuickJS (through `rquickjs`) on your own thread, with direct native
+  calls in both directions
+- TypeScript transpilation through `oxc`, with an optional disk cache
+- inline scripts and static ESM project graphs
 - typed host functions and callbacks
 - native Rust ↔ JavaScript value conversion with `serde_json` semantics
 - generated TypeScript declarations and SDK helpers
 - optional contract validation
 - native `Uint8Array` in both directions through `NativeBytes`
+- execution budget per load, call and emit
 
 ## Performance
 
-With `Engine`, a Rust → TypeScript call costs about 130 ns and a round trip with a
-20-field object about 2.7 µs, close to calling QuickJS directly and to mlua
-(36 ns and 2.8 µs). See [the Engine guide](docs/guides/engine.md#performance) for
-the full `cargo bench --bench vs_lua` comparison.
+A Rust → TypeScript call costs about 130 ns and a round trip with a 20-field
+object about 2.7 µs, close to calling QuickJS directly and to mlua (36 ns and
+2.8 µs), on the reference Windows machine. See
+[the Engine guide](docs/guides/engine.md#performance) for the full
+`cargo bench --bench vs_lua` comparison.
 
 ## Toolchain
 
@@ -101,12 +116,12 @@ Local checks:
 cargo fmt --all --check
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo test --workspace --all-features
+cargo test --workspace --no-default-features
 cargo check --benches --features derive
 ```
 
 Install the pinned SDK type checker with `npm ci` before running the tests.
 CI requires it; locally, set `RUSTTS_REQUIRE_TSC=1` to enforce the same rule.
 
-Execution budgets, shutdown, reload, cancellation and cache guarantees are
-documented in [Runtime Guarantees](docs/guides/runtime-guarantees.md).
-Run `cargo run --release --example operational_probe` for operational measurements.
+Execution budget, reload and cache guarantees are documented in
+[Runtime Guarantees](docs/guides/runtime-guarantees.md).

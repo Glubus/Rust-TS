@@ -1,4 +1,4 @@
-# Runtime guarantees and limits
+# Runtime Guarantees And Limits
 
 ## TypeScript and contracts
 
@@ -11,97 +11,66 @@ Repository SDK tests use the pinned TypeScript package installed by `npm ci`.
 CI (or `RUSTTS_REQUIRE_TSC=1`) fails if that compiler is missing. Local Rust-only
 development can skip these checks when the package is absent, with a diagnostic.
 
-## Execution and isolation
+## Threads and isolation
 
-Each script owns a separate QuickJS context and runtime-scoped ESM graph. Scripts
-on the same worker share its thread, heap limit, stack configuration, GC and host
-registry. This is not process isolation or a per-script memory quota. Host APIs
-are capabilities granted to every script using that registry.
+`Engine` runs every load, call and emit on the thread that owns it, one at a time.
+RustTS starts no threads and runs no background work: between two calls, no script
+code runs.
 
-`VmOptions::execution_timeout` defaults to 5 seconds. It limits wall time starting
-when a worker begins JavaScript work, excluding compilation and queue wait.
-QuickJS's interrupt handler stops CPU loops during loading, calls, event delivery
-and synchronous idle jobs. Promise-aware operations also have an executor-independent
-timer, so a Promise that never settles cannot keep a managed operation waiting
-forever. Interrupt errors surface as `VmError::Execution`; expiration while waiting
-for a Promise surfaces as `VmError::ExecutionTimeout`.
+Each script owns a separate QuickJS context and ESM module graph, so scripts do not
+share globals. Scripts of the same `Engine` share its QuickJS runtime: memory limit,
+stack limit and garbage collector. This is not process isolation or a per-script
+memory quota. Host functions are capabilities granted to every script of that
+engine.
 
-Synchronous event delivery uses one budget for the worker command; async delivery
-uses one budget per targeted script. Limits are cooperative, not real-time scheduling
-guarantees. A Rust host handler cannot be preempted: it must return, have its own I/O
-timeouts, and avoid unbounded blocking. For hostile native extensions, use a separate
-process. JavaScript state mutations and host side effects before interruption remain.
+## Execution budget
 
-Calls are serialized within a worker. The low-level async runtime also serializes
-its public operations to keep the shared interrupt deadline consistent.
+`VmOptions::execution_timeout` defaults to 5 seconds. It limits the wall time of
+each load, call and emit, starting when JavaScript starts running: it excludes
+transpilation and module resolution, and includes every Promise job the operation
+queues. One `emit` has one budget for all the scripts it reaches.
 
-## Reentrancy and shutdown
+QuickJS's interrupt handler stops JavaScript still running when the budget
+expires; the operation fails with `VmError::Execution` and the engine stays
+usable. Limits are cooperative, not real-time scheduling guarantees. A Rust host
+function cannot be preempted: it must return, have its own I/O timeouts, and avoid
+unbounded blocking. For hostile native extensions, use a separate process.
+JavaScript state mutations and host side effects made before the interruption
+remain.
 
-The registry lock is released before a host handler runs. A handler may register
-another contract without recursively acquiring that lock. However, synchronously
-calling back into the same worker through the manager is unsupported: that worker
-is already executing the handler. Schedule follow-up work after the handler returns.
-Cross-worker dependency cycles can deadlock too. Do not call `shutdown()` from a
-handler that is running in the VM being shut down.
+## Promises
 
-Shutdown requests use a separate shared stop signal, independent of queue capacity.
-They interrupt current JavaScript, reject new dispatches and abandon queued work;
-they do not drain all work gracefully. Disconnected replies return `WorkerOffline`.
-Shutdown tracks requested/completed states, joins both execution lanes, and emits
-the shutdown event once. Each lane can wait up to `shutdown_timeout` (default 5 seconds).
-If a Rust handler is still running, `ShutdownTimeout` is returned and shutdown can
-be retried. Rust threads are not forcibly terminated. Dropping the last VM handle
-attempts this same bounded shutdown; external host work may outlive it.
+Promise jobs queued by an operation run before it returns, for every script.
+An `async` export resolves before `call` returns its value. A Promise that no
+script job can settle fails the call instead of waiting. A Promise rejection that
+no handler caught by the end of the operation fails it, even when the operation's
+own work succeeded.
 
-## Reload and cancellation
+## Reload
 
-A new script context and module graph are prepared before replacing the mounted
-instance. Initialization failure removes the temporary graph and preserves the old
-instance, state and registry entry. Successful reload resets script-local state.
-This guarantees replacement of the VM instance, not rollback of side effects:
-host calls made during failed initialization may already have changed the host.
+A new script context and module graph are prepared before replacing the loaded
+script. A failure at any step, from transpilation to top-level code, leaves the
+previous version loaded with its state; the partially prepared graph is removed.
+A successful reload resets script-local state.
+
+This guarantees replacement of the script, not rollback of side effects: host
+calls made during a failed initialization may already have changed the host.
 Preparing both versions temporarily needs memory for both.
 
-Dropping a Tokio façade future does not cancel its `spawn_blocking` task. Dropping
-a managed Promise-call future likewise does not retract a command already queued.
-Execution limits and shutdown still apply on the worker. Timing out a Promise wait
-does not undo mutations or necessarily cancel a host future spawned on another
-executor. Do not assume cancellation means the operation had no effect.
+## Transpilation cache
 
-## Events and cache
-
-Each lifecycle subscription retains at most `event_queue_capacity` events
-(default 256). A full queue drops the **new** event without blocking execution;
-`VmSubscription::dropped_events()` reports the cumulative loss. Already queued
-events retain FIFO order. This bounds the number of events, not each payload's size.
-Shutdown notifications can be dropped too. Script callback delivery is separate
-from this observational event bus.
-
-Cache writes use temporary files in the cache directory and atomic replacement.
-An integrity header detects truncated or modified contents; missing, legacy or
+The cache is off by default (`VmOptions::cache_dir: None`). When enabled, cache
+writes use temporary files in the cache directory and atomic replacement. A
+checksum header detects truncated or modified contents; missing, older-format or
 corrupt artifacts are rebuilt. This checksum is not authentication: keep cache
-directories writable only by trusted users. Sharing a cache between VM instances
-does not expose partially written artifacts. Atomic replacement is not a guarantee
-of durability against every filesystem or power-loss failure.
+directories writable only by trusted users. Engines sharing a cache directory do
+not see partially written artifacts. Atomic replacement is not a guarantee of
+durability against every filesystem or power-loss failure.
 
-Project loading discovers sources and resolves the graph before looking up the
-cache. A hit skips transpilation, but still pays for filesystem reads, import
-parsing, resolution and runtime mounting. Compilation is cached for the whole
-project; changing one module currently recompiles that project.
-
-## Measuring changes
-
-Run `cargo run --release --example operational_probe` for JSON measurements of
-31-module cold/warm loads, accepted/rejected latency under saturation, serial versus
-concurrent loads, and QuickJS memory before/after three idle seconds. The probe
-prints its PID before the idle interval for external CPU/RSS sampling. On Windows,
-use `Get-Process -Id <pid>`; built-in process-memory snapshots currently require Linux.
-After building the release example on Windows, `./scripts/measure-probe.ps1`
-runs it and samples process CPU time and working set inside the announced idle phase.
-
-Cold means an empty RustTS artifact cache, not a cold OS filesystem cache. The
-global synchronous load lock still serializes loads; idle maintenance still runs
-GC. Use repeated measurements on an otherwise idle machine before changing these
-policies. Do not interpret one short probe as a throughput or memory guarantee.
-
-The first measured results are recorded in the [operational baseline](../operational-measurements.md).
+Artifact keys include the source (for a project: every module source, the
+resolved import graph, the `package.json` files enclosing its modules and the
+project's lockfiles), the compiler, resolver and runtime versions, and the
+registered host contracts. Project loading discovers sources and resolves the
+graph before looking up the cache: a hit skips transpilation, but still pays for
+filesystem reads, import parsing and resolution, and module evaluation. Changing
+one module transpiles the whole project again.

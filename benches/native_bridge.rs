@@ -1,7 +1,5 @@
 use std::hint::black_box;
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rquickjs::{
@@ -9,7 +7,7 @@ use rquickjs::{
     prelude::Func,
 };
 use rustts::{
-    HostContract, HostContractKind, HostContractRegistry, HostFunction, NativeBytes, RustTs,
+    Engine, HostContract, HostContractKind, HostContractRegistry, HostFunction, NativeBytes,
     Schema, TsField, TsSchema, TsType, VmContractValidation, VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -21,10 +19,8 @@ static FIXTURES: OnceLock<Arc<NativeFixtures>> = OnceLock::new();
 
 fn native_bridge_benchmarks(c: &mut Criterion) {
     let bench = NativeBridgeBench::new();
-    let integrated_disabled =
-        IntegratedBridgeBench::new("disabled", VmContractValidation::Disabled);
-    let integrated_validated =
-        IntegratedBridgeBench::new("validated", VmContractValidation::InputsAndOutputs);
+    let integrated_disabled = IntegratedBridgeBench::new(VmContractValidation::Disabled);
+    let integrated_validated = IntegratedBridgeBench::new(VmContractValidation::InputsAndOutputs);
 
     bench_struct_bridge_shapes(c, &bench);
     bench_byte_bridge_shapes(c, &bench);
@@ -107,7 +103,6 @@ fn bench_integrated_bridge_shapes(c: &mut Criterion, bench: &IntegratedBridgeBen
     let mut group = c.benchmark_group(format!("native_bridge_integrated_{label}"));
     group.sample_size(10);
 
-    bench_vm_function(&mut group, bench, "host_text_small_struct", "hostTextSmall");
     bench_vm_function(
         &mut group,
         bench,
@@ -119,12 +114,6 @@ fn bench_integrated_bridge_shapes(c: &mut Criterion, bench: &IntegratedBridgeBen
         bench,
         "typed_host_value_small_struct",
         "typedHostValueSmall",
-    );
-    bench_vm_function(
-        &mut group,
-        bench,
-        "host_text_large_struct_all_fields",
-        "hostTextLargeAll",
     );
     bench_vm_function(
         &mut group,
@@ -170,13 +159,6 @@ fn bench_integrated_bridge_shapes(c: &mut Criterion, bench: &IntegratedBridgeBen
     );
 
     for &byte_count in BYTE_COUNTS {
-        bench_vm_function_with_len(
-            &mut group,
-            bench,
-            "host_text_json_array_bytes",
-            "hostTextJsonArrayBytes",
-            byte_count,
-        );
         bench_vm_function_with_len(
             &mut group,
             bench,
@@ -295,22 +277,19 @@ impl NativeBridgeBench {
 }
 
 struct IntegratedBridgeBench {
-    vm: RustTs,
+    engine: Engine,
 }
 
 impl IntegratedBridgeBench {
-    fn new(label: &str, validation: VmContractValidation) -> Self {
-        let vm = RustTs::new(VmOptions {
-            worker_threads: 1,
-            cache_dir: unique_cache_dir(&format!("native-bridge-{label}")),
-            max_scripts_per_worker: 8,
+    fn new(validation: VmContractValidation) -> Self {
+        let mut engine = Engine::new(&VmOptions {
             memory_limit_bytes: 512 * 1024 * 1024,
             contract_validation: validation,
             ..VmOptions::default()
         })
-        .expect("create integrated vm");
+        .expect("create integrated engine");
 
-        let registry = vm.registry();
+        let registry = engine.registry();
         registry
             .register_function::<HostSmallCopyJson>()
             .expect("register small json copy");
@@ -336,28 +315,23 @@ impl IntegratedBridgeBench {
             .register_typed_function::<HostBytesNative>()
             .expect("register native bytes");
 
-        vm.load_script("native-bridge", INTEGRATED_BRIDGE_SCRIPT)
+        engine
+            .load_script("native-bridge", INTEGRATED_BRIDGE_SCRIPT)
             .expect("load integrated bridge script");
 
-        Self { vm }
+        Self { engine }
     }
 
-    fn call(&self, function_name: &'static str) -> Value {
-        self.vm
-            .call_function("native-bridge", function_name, Vec::new())
+    fn call(&self, function_name: &'static str) -> f64 {
+        self.engine
+            .call("native-bridge", function_name, ())
             .expect("call integrated benchmark export")
     }
 
-    fn call_with_len(&self, function_name: &'static str, byte_count: usize) -> Value {
-        self.vm
-            .call_function("native-bridge", function_name, vec![json!(byte_count)])
+    fn call_with_len(&self, function_name: &'static str, byte_count: usize) -> f64 {
+        self.engine
+            .call("native-bridge", function_name, (byte_count,))
             .expect("call integrated benchmark export")
-    }
-}
-
-impl Drop for IntegratedBridgeBench {
-    fn drop(&mut self) {
-        let _ = self.vm.shutdown();
     }
 }
 
@@ -891,10 +865,6 @@ globalThis.sumBytesSharedArray = function (byteCount) {
 "#;
 
 const INTEGRATED_BRIDGE_SCRIPT: &str = r#"
-function hostText(name, input) {
-  return JSON.parse(globalThis.__host.call(name, JSON.stringify(input)));
-}
-
 function hostValue(name, input) {
   return globalThis.__host.callValue(name, input);
 }
@@ -915,11 +885,6 @@ function sumSparseBytes(bytes) {
   return total + bytes.length;
 }
 
-export function hostTextSmall() {
-  const value = hostText("bench.small.copyJson", null);
-  return value.id + value.hp + value.mp;
-}
-
 export function hostValueSmall() {
   const value = hostValue("bench.small.copyJson", null);
   return value.id + value.hp + value.mp;
@@ -928,10 +893,6 @@ export function hostValueSmall() {
 export function typedHostValueSmall() {
   const value = hostValue("bench.small.copyTyped", {});
   return value.id + value.hp + value.mp;
-}
-
-export function hostTextLargeAll() {
-  return sumFields(hostText("bench.large.copyJson", null).fields);
 }
 
 export function hostValueLargeAll() {
@@ -970,10 +931,6 @@ export function nativeMemoryLargeOne() {
   return hostValue("bench.native.readU32", { handle: 2, index: 7 });
 }
 
-export function hostTextJsonArrayBytes(byteCount) {
-  return sumSparseBytes(hostText("bench.bytes.jsonArray", { byteCount }));
-}
-
 export function hostValueJsonArrayBytes(byteCount) {
   return sumSparseBytes(hostValue("bench.bytes.jsonArray", { byteCount }));
 }
@@ -986,14 +943,6 @@ export function hostValueNativeUint8ArrayBytes(byteCount) {
   return sumSparseBytes(hostValue("bench.bytes.native", { byteCount }));
 }
 "#;
-
-fn unique_cache_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    std::env::temp_dir().join(format!("rustts-{label}-{nanos}"))
-}
 
 criterion_group!(benches, native_bridge_benchmarks);
 criterion_main!(benches);

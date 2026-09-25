@@ -1,8 +1,7 @@
-//! Compiler service and artifact assembly.
+//! TypeScript transpilation through oxc.
 
-use std::collections::BTreeSet;
 use std::mem;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use oxc::CompilerInterface;
 use oxc::codegen::CodegenReturn;
@@ -11,24 +10,12 @@ use oxc::span::SourceType;
 use oxc::transformer::{Module, TransformOptions};
 
 use super::imports::validate_static_module_graph;
-use super::project::{CompiledModule, DiscoveredProject, ProjectCompileOutput, discover_project};
+use super::project::{CompiledModule, DiscoveredProject, ProjectCompileOutput};
 use crate::error::VmError;
-
-/// Compiled JavaScript artifact prepared by the control plane.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CompiledScript {
-    pub(crate) cache_key: String,
-    pub(crate) transpiled_js: String,
-    pub(crate) transpiled_path: PathBuf,
-    pub(crate) entry_path: Option<String>,
-    pub(crate) modules: Vec<super::project::CompiledModule>,
-}
 
 /// TypeScript to JavaScript compiler configured for runtime execution.
 #[derive(Debug, Clone)]
-pub struct CompilerService {
-    #[cfg(test)]
-    pub(crate) compilation_count: usize,
+pub(crate) struct CompilerService {
     printed: String,
     errors: Diagnostics,
     transform_options: TransformOptions,
@@ -40,8 +27,6 @@ impl Default for CompilerService {
         transform_options.env.module = Module::Esm;
 
         Self {
-            #[cfg(test)]
-            compilation_count: 0,
             printed: String::new(),
             errors: Diagnostics::default(),
             transform_options,
@@ -51,16 +36,12 @@ impl Default for CompilerService {
 
 impl CompilerService {
     /// Compiles one TypeScript source into executable JavaScript.
-    pub fn execute(
+    fn execute(
         &mut self,
         source_text: &str,
         source_type: SourceType,
         source_path: &Path,
     ) -> Result<String, VmError> {
-        #[cfg(test)]
-        {
-            self.compilation_count += 1;
-        }
         self.compile(source_text, source_type, source_path);
 
         if self.errors.is_empty() {
@@ -72,43 +53,21 @@ impl CompilerService {
         })
     }
 
-    pub(crate) fn execute_module(
-        &mut self,
-        source_text: &str,
-        source_path: &Path,
-    ) -> Result<String, VmError> {
+    fn execute_module(&mut self, source_text: &str, source_path: &Path) -> Result<String, VmError> {
         let source_type = SourceType::from_path(source_path).map_err(|error| VmError::Resolve {
             details: error.to_string(),
         })?;
         self.execute(source_text, source_type.with_module(true), source_path)
     }
 
-    /// Compiles TypeScript source and builds the cache artifact description.
-    pub(crate) fn compile_script(
+    /// Compiles one inline TypeScript module; it may only import host modules.
+    pub(crate) fn compile_inline(
         &mut self,
-        cache_key: String,
         source_text: &str,
         source_path: &Path,
-        transpiled_path: PathBuf,
-    ) -> Result<CompiledScript, VmError> {
+    ) -> Result<String, VmError> {
         validate_static_module_graph(source_text, source_path)?;
-        let transpiled_js =
-            self.execute(source_text, SourceType::ts().with_module(true), source_path)?;
-        Ok(CompiledScript {
-            cache_key,
-            transpiled_js,
-            transpiled_path,
-            entry_path: None,
-            modules: Vec::new(),
-        })
-    }
-
-    pub(crate) fn discover_project(
-        &mut self,
-        entry_path: &Path,
-        external_modules: &BTreeSet<String>,
-    ) -> Result<DiscoveredProject, VmError> {
-        discover_project(entry_path, external_modules)
+        self.execute(source_text, SourceType::ts().with_module(true), source_path)
     }
 
     pub(crate) fn transpile_project(
@@ -132,21 +91,6 @@ impl CompilerService {
             cache_seed: project.cache_seed,
             entry_module_id: project.entry_module_id,
             modules,
-        })
-    }
-
-    pub(crate) fn build_project_script(
-        &mut self,
-        cache_key: String,
-        transpiled_path: PathBuf,
-        project: &ProjectCompileOutput,
-    ) -> Result<CompiledScript, VmError> {
-        Ok(CompiledScript {
-            cache_key,
-            transpiled_js: String::new(),
-            transpiled_path,
-            entry_path: Some(project.entry_module_id.clone()),
-            modules: project.modules.clone(),
         })
     }
 }

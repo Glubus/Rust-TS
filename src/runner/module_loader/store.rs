@@ -86,6 +86,6 @@ impl WorkerModuleStore {
     fn lock_store(
         &self,
     ) -> std::result::Result<std::sync::MutexGuard<'_, ModuleStoreInner>, VmError> {
-        self.inner.lock().map_err(|_| VmError::WorkerPanicked)
+        self.inner.lock().map_err(|_| VmError::LockPoisoned)
     }
 }

@@ -39,21 +39,19 @@ impl TestCacheDir {
         Self { path }
     }
 
-    pub(crate) fn vm_options(&self) -> VmOptions {
+    /// Engine options caching transpiled artifacts in [`TestCacheDir::cache_path`].
+    #[allow(dead_code)]
+    pub(crate) fn engine_options(&self) -> VmOptions {
         VmOptions {
-            worker_threads: 1,
-            cache_dir: self.path.clone(),
-            max_scripts_per_worker: 8,
-            queue_capacity: 32,
-            idle_sleep: std::time::Duration::from_millis(5),
-            memory_limit_bytes: 16 * 1024 * 1024,
-            max_stack_size_bytes: 512 * 1024,
-            memory_pressure_thresholds: None,
-            latency_histograms: false,
-            contract_validation: Default::default(),
-            unknown_field_validation: Default::default(),
+            cache_dir: Some(self.cache_path()),
             ..VmOptions::default()
         }
+    }
+
+    /// Transpile cache directory, kept apart from project files written under `path()`.
+    #[allow(dead_code)]
+    pub(crate) fn cache_path(&self) -> PathBuf {
+        self.path.join("cache")
     }
 
     #[allow(dead_code)]

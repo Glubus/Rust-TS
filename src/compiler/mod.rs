@@ -1,11 +1,9 @@
-//! Control-plane TypeScript compiler service.
+//! TypeScript compilation: transpilation and static ESM project graphs.
 
 mod imports;
 mod project;
 mod resolver;
 mod service;
 
-pub(crate) use imports::validate_static_module_graph;
-pub(crate) use project::{CompiledModule, ProjectCompileOutput};
-pub(crate) use service::CompiledScript;
-pub use service::CompilerService;
+pub(crate) use project::{CompiledModule, ProjectCompileOutput, discover_project};
+pub(crate) use service::CompilerService;

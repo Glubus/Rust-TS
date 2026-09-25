@@ -2,27 +2,19 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Mutex;
 
-#[cfg(feature = "async-promise")]
-use std::future::Future;
-#[cfg(feature = "async-promise")]
-use std::pin::Pin;
-
 use rquickjs::{Ctx, Result as JsResult, Value as JsValue};
 use serde_json::Value;
 
 use super::bindings::FunctionBindingStore;
 use super::declarations::render_typescript_declarations;
-use super::import_modules::{HostModuleStyle, render_host_import_modules};
+use super::import_modules::render_host_import_modules;
 use super::interface::HostContractRegistry;
 use super::sdk::render_typescript_sdk;
 use crate::config::{VmContractValidation, VmUnknownFieldValidation};
-#[cfg(feature = "tokio")]
-use crate::contract::AsyncHostFunction;
 use crate::contract::validation::{SchemaValidationOptions, validate_schema_with_options};
 use crate::contract::{
     HostCallback, HostContext, HostContractAbi, HostContractDescriptor, HostFunction,
-    HostFunctionDescriptor, HostFunctionExecution, JsDecode, JsEncode, TsSchema, js_value_to_json,
-    json_to_js_value,
+    HostFunctionDescriptor, JsDecode, JsEncode, TsSchema, js_value_to_json, json_to_js_value,
 };
 use crate::error::VmError;
 use crate::sdk_files::{
@@ -87,26 +79,6 @@ impl InMemoryHostContractRegistry {
         Ok(self)
     }
 
-    /// Registers one async host function contract and returns the registry for chaining.
-    #[cfg(feature = "tokio")]
-    pub fn async_function<T>(&self) -> Result<&Self, VmError>
-    where
-        T: AsyncHostFunction + Send + Sync + 'static,
-    {
-        self.register_async_function::<T>()?;
-        Ok(self)
-    }
-
-    /// Registers one async host function as a JavaScript Promise bridge and returns the registry for chaining.
-    #[cfg(feature = "async-promise")]
-    pub fn async_promise_function<T>(&self) -> Result<&Self, VmError>
-    where
-        T: AsyncHostFunction + Send + Sync + 'static,
-    {
-        self.register_async_promise_function::<T>()?;
-        Ok(self)
-    }
-
     /// Registers one host callback contract and returns the registry for chaining.
     pub fn callback<T>(&self) -> Result<&Self, VmError>
     where
@@ -157,11 +129,9 @@ impl InMemoryHostContractRegistry {
             .collect())
     }
 
-    pub(crate) fn import_modules(
-        &self,
-        style: HostModuleStyle,
-    ) -> Result<BTreeMap<String, String>, VmError> {
-        Ok(render_host_import_modules(&self.descriptors()?, style))
+    /// Source of every host import module, keyed by module name.
+    pub(crate) fn import_modules(&self) -> Result<BTreeMap<String, String>, VmError> {
+        Ok(render_host_import_modules(&self.descriptors()?))
     }
 
     /// Installs every sync host function on `target` as a native QuickJS function keyed
@@ -282,42 +252,8 @@ impl InMemoryHostContractRegistry {
         self.function_bindings.invoke_js(ctx, name, input)
     }
 
-    #[cfg(feature = "async-promise")]
-    pub(crate) fn invoke_function_async(
-        &self,
-        name: String,
-        input: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, VmError>> + Send + 'static>> {
-        let descriptor = match self.descriptor(&name) {
-            Ok(descriptor) => descriptor,
-            Err(error) => return Box::pin(std::future::ready(Err(error))),
-        };
-        let Some(descriptor) = descriptor else {
-            return Box::pin(std::future::ready(Ok(None)));
-        };
-        if let Err(error) = self.validate_function_input(&descriptor, &input) {
-            return Box::pin(std::future::ready(Err(error)));
-        }
-
-        let validation = self.validation;
-        let unknown_field_validation = self.unknown_field_validation;
-        let future = self.function_bindings.invoke_async(name, input);
-        Box::pin(async move {
-            let output = future.await?;
-            if let Some(output) = &output {
-                validate_function_output_with_policy(
-                    validation,
-                    unknown_field_validation,
-                    &descriptor,
-                    output,
-                )?;
-            }
-            Ok(output)
-        })
-    }
-
     fn insert_descriptor(&self, descriptor: HostContractDescriptor) -> Result<(), VmError> {
-        let mut guard = self.by_name.lock().map_err(|_| VmError::WorkerPanicked)?;
+        let mut guard = self.by_name.lock().map_err(|_| VmError::LockPoisoned)?;
         guard.insert(descriptor.name.clone(), descriptor);
         Ok(())
     }
@@ -350,37 +286,23 @@ impl InMemoryHostContractRegistry {
         descriptor: &HostContractDescriptor,
         output: &Value,
     ) -> Result<(), VmError> {
-        validate_function_output_with_policy(
-            self.validation,
-            self.unknown_field_validation,
-            descriptor,
+        if !self.validation.validates_outputs() {
+            return Ok(());
+        }
+        let Some(function) = &descriptor.function else {
+            return Ok(());
+        };
+        validate_schema_with_options(
+            &function.output_schema,
             output,
+            validation_options(self.unknown_field_validation),
         )
+        .map_err(|details| VmError::ContractValidation {
+            contract_name: descriptor.name.clone(),
+            direction: "output",
+            details,
+        })
     }
-}
-
-fn validate_function_output_with_policy(
-    validation: VmContractValidation,
-    unknown_field_validation: VmUnknownFieldValidation,
-    descriptor: &HostContractDescriptor,
-    output: &Value,
-) -> Result<(), VmError> {
-    if !validation.validates_outputs() {
-        return Ok(());
-    }
-    let Some(function) = &descriptor.function else {
-        return Ok(());
-    };
-    validate_schema_with_options(
-        &function.output_schema,
-        output,
-        validation_options(unknown_field_validation),
-    )
-    .map_err(|details| VmError::ContractValidation {
-        contract_name: descriptor.name.clone(),
-        direction: "output",
-        details,
-    })
 }
 
 fn validation_options(
@@ -400,7 +322,6 @@ where
     HostFunctionDescriptor {
         input_schema: T::Input::schema(),
         output_schema: T::Output::schema(),
-        execution: HostFunctionExecution::Sync,
     }
 }
 
@@ -414,7 +335,6 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         descriptor.abi = HostContractAbi::Function {
             input: function.input_schema.clone(),
             output: function.output_schema.clone(),
-            execution: function.execution,
         };
         descriptor.function = Some(function);
         self.insert_descriptor(descriptor)?;
@@ -433,54 +353,10 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         descriptor.abi = HostContractAbi::Function {
             input: function.input_schema.clone(),
             output: function.output_schema.clone(),
-            execution: function.execution,
         };
         descriptor.function = Some(function);
         self.insert_descriptor(descriptor)?;
         self.function_bindings.insert_typed_static::<T>()
-    }
-
-    #[cfg(feature = "tokio")]
-    fn register_async_function<T>(&self) -> Result<(), VmError>
-    where
-        T: AsyncHostFunction + Send + Sync + 'static,
-    {
-        let handle = tokio::runtime::Handle::try_current().map_err(|error| VmError::Execution {
-            details: format!("registering async host function requires a tokio runtime: {error}"),
-        })?;
-        let mut descriptor = T::descriptor();
-        let function = T::function_descriptor();
-        descriptor.abi = HostContractAbi::Function {
-            input: function.input_schema.clone(),
-            output: function.output_schema.clone(),
-            execution: function.execution,
-        };
-        descriptor.function = Some(function);
-        self.insert_descriptor(descriptor)?;
-        self.function_bindings.insert_async_static::<T>(handle)
-    }
-
-    #[cfg(feature = "async-promise")]
-    fn register_async_promise_function<T>(&self) -> Result<(), VmError>
-    where
-        T: AsyncHostFunction + Send + Sync + 'static,
-    {
-        let handle = tokio::runtime::Handle::try_current().map_err(|error| VmError::Execution {
-            details: format!(
-                "registering async promise host function requires a tokio runtime: {error}"
-            ),
-        })?;
-        let mut descriptor = T::descriptor();
-        let mut function = T::function_descriptor();
-        function.execution = HostFunctionExecution::AsyncPromise;
-        descriptor.abi = HostContractAbi::Function {
-            input: function.input_schema.clone(),
-            output: function.output_schema.clone(),
-            execution: function.execution,
-        };
-        descriptor.function = Some(function);
-        self.insert_descriptor(descriptor)?;
-        self.function_bindings.insert_async_static::<T>(handle)
     }
 
     fn register_callback<T>(&self) -> Result<(), VmError>
@@ -491,8 +367,6 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         let callback = T::callback_descriptor();
         descriptor.abi = HostContractAbi::Callback {
             payload: callback.payload_schema.clone(),
-            delivery: callback.delivery,
-            hot: callback.hot,
         };
         descriptor.callback = Some(callback);
         self.insert_descriptor(descriptor)
@@ -509,8 +383,6 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         descriptor.schema = callback.payload_schema.clone();
         descriptor.abi = HostContractAbi::Callback {
             payload: callback.payload_schema.clone(),
-            delivery: callback.delivery,
-            hot: callback.hot,
         };
         descriptor.callback = Some(callback);
         self.insert_descriptor(descriptor)
@@ -528,12 +400,12 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
     }
 
     fn get(&self, name: &str) -> Result<Option<HostContractDescriptor>, VmError> {
-        let guard = self.by_name.lock().map_err(|_| VmError::WorkerPanicked)?;
+        let guard = self.by_name.lock().map_err(|_| VmError::LockPoisoned)?;
         Ok(guard.get(name).cloned())
     }
 
     fn list(&self) -> Result<Vec<HostContractDescriptor>, VmError> {
-        let guard = self.by_name.lock().map_err(|_| VmError::WorkerPanicked)?;
+        let guard = self.by_name.lock().map_err(|_| VmError::LockPoisoned)?;
         let mut descriptors = guard.values().cloned().collect::<Vec<_>>();
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(descriptors)

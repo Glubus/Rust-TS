@@ -4,16 +4,8 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
 use super::identity::CacheIdentity;
 use crate::error::VmError;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct CachedArtifact {
-    pub(crate) cache_key: String,
-    pub(crate) js_path: PathBuf,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ScriptCache {
@@ -42,8 +34,7 @@ impl ScriptCache {
         }
     }
 
-    pub(crate) fn store(&self, cache_key: &str, js: &str) -> Result<CachedArtifact, VmError> {
-        let path = self.js_path(cache_key);
+    pub(crate) fn store(&self, cache_key: &str, js: &str) -> Result<(), VmError> {
         let mut temporary = tempfile::NamedTempFile::new_in(&self.root)?;
         writeln!(
             temporary,
@@ -52,27 +43,8 @@ impl ScriptCache {
         )?;
         temporary.write_all(js.as_bytes())?;
         temporary.as_file().sync_all()?;
-        persist_atomic(temporary, &path)?;
-        Ok(CachedArtifact {
-            cache_key: cache_key.to_owned(),
-            js_path: path,
-        })
-    }
-
-    pub(crate) fn entry_count(&self) -> Result<usize, VmError> {
-        let mut count = 0usize;
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) == Some("js") {
-                count += 1;
-            }
-        }
-        Ok(count)
-    }
-
-    pub(crate) fn artifact_path(&self, cache_key: &str) -> PathBuf {
-        self.js_path(cache_key)
+        persist_atomic(temporary, &self.js_path(cache_key))?;
+        Ok(())
     }
 
     fn js_path(&self, cache_key: &str) -> PathBuf {
@@ -148,7 +120,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let cache = ScriptCache::new(root.path()).unwrap();
         for content in ["legacy", "// rustts-cache-v2 invalid\npartial"] {
-            fs::write(cache.artifact_path("broken"), content).unwrap();
+            fs::write(cache.js_path("broken"), content).unwrap();
             assert_eq!(cache.load("broken").unwrap(), None);
         }
         cache.store("broken", "export const answer = 42;").unwrap();

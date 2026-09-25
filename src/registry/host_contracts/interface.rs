@@ -1,5 +1,3 @@
-#[cfg(feature = "tokio")]
-use crate::contract::AsyncHostFunction;
 use crate::contract::{
     HostCallback, HostContext, HostContractDescriptor, HostFunction, JsDecode, JsEncode, TsSchema,
 };
@@ -21,18 +19,6 @@ pub trait HostContractRegistry: Send + Sync {
         T: HostFunction + Send + Sync + 'static,
         T::Input: TsSchema + JsDecode,
         T::Output: TsSchema + JsEncode;
-
-    /// Registers one async host function contract.
-    #[cfg(feature = "tokio")]
-    fn register_async_function<T>(&self) -> Result<(), VmError>
-    where
-        T: AsyncHostFunction + Send + Sync + 'static;
-
-    /// Registers one async host function contract as a JavaScript Promise bridge.
-    #[cfg(feature = "async-promise")]
-    fn register_async_promise_function<T>(&self) -> Result<(), VmError>
-    where
-        T: AsyncHostFunction + Send + Sync + 'static;
 
     /// Registers one host callback contract.
     fn register_callback<T>(&self) -> Result<(), VmError>

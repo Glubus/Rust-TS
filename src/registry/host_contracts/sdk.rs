@@ -4,8 +4,8 @@ mod tree;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::{
-    HostContractAbi, HostContractDescriptor, HostFunctionExecution, Schema, TsEnumVariant, TsField,
-    TsLiteral, TsRecordKey, TsType,
+    HostContractAbi, HostContractDescriptor, Schema, TsEnumVariant, TsField, TsLiteral,
+    TsRecordKey, TsType,
 };
 
 use super::declarations::{is_unknown_schema, render_ts_type, schema_type_name};
@@ -34,42 +34,29 @@ struct SdkBuilder {
     host_functions: BTreeMap<String, SdkFunctionType>,
     host_events: BTreeMap<String, String>,
     has_host_functions: bool,
-    has_async_functions: bool,
 }
 
 impl SdkBuilder {
     fn push_descriptor(&mut self, descriptor: &HostContractDescriptor) {
         match &descriptor.abi {
-            HostContractAbi::Function {
-                input,
-                output,
-                execution,
-            } => self.push_function(&descriptor.name, input, output, *execution),
-            HostContractAbi::Callback { payload, hot, .. } => {
-                self.push_callback(&descriptor.name, payload, *hot);
+            HostContractAbi::Function { input, output } => {
+                self.push_function(&descriptor.name, input, output);
             }
+            HostContractAbi::Callback { payload } => self.push_callback(&descriptor.name, payload),
             HostContractAbi::Context { schema } => self.push_context(&descriptor.name, schema),
             HostContractAbi::Unknown => {}
         }
     }
 
-    fn push_function(
-        &mut self,
-        name: &str,
-        input: &Schema,
-        output: &Schema,
-        execution: HostFunctionExecution,
-    ) {
+    fn push_function(&mut self, name: &str, input: &Schema, output: &Schema) {
         self.schemas.push(input);
         self.schemas.push(output);
         self.has_host_functions = true;
-        self.has_async_functions |= execution == HostFunctionExecution::AsyncPromise;
         self.host_functions.insert(
             name.to_owned(),
             SdkFunctionType {
                 input_type: schema_type_name(input),
                 output_type: schema_type_name(output),
-                execution,
             },
         );
         self.functions.insert(
@@ -79,16 +66,11 @@ impl SdkBuilder {
                 input_type: schema_type_name(input),
                 output_type: schema_type_name(output),
                 takes_input: !matches!(input.ts_type, TsType::Void),
-                execution,
             },
         );
     }
 
-    fn push_callback(&mut self, name: &str, payload: &Schema, hot: bool) {
-        if !hot {
-            return;
-        }
-
+    fn push_callback(&mut self, name: &str, payload: &Schema) {
         self.schemas.push(payload);
         let payload_type = schema_type_name(payload);
         self.host_events
@@ -144,13 +126,8 @@ impl SdkBuilder {
     }
 
     fn host_helpers(&self) -> Option<String> {
-        self.has_host_functions.then(|| {
-            if self.has_async_functions {
-                HOST_HELPERS.trim().to_owned()
-            } else {
-                remove_async_helper(HOST_HELPERS).trim().to_owned()
-            }
-        })
+        self.has_host_functions
+            .then(|| HOST_HELPERS.trim().to_owned())
     }
 
     fn host_event_types(&self) -> Option<String> {
@@ -172,10 +149,7 @@ impl SdkBuilder {
             return None;
         }
 
-        Some(render_host_function_api(
-            &self.host_functions,
-            self.has_async_functions,
-        ))
+        Some(render_host_function_api(&self.host_functions))
     }
 
     fn event_helpers(&self) -> Option<String> {
@@ -226,13 +200,11 @@ struct SdkFunction {
     input_type: String,
     output_type: String,
     takes_input: bool,
-    execution: HostFunctionExecution,
 }
 
 struct SdkFunctionType {
     input_type: String,
     output_type: String,
-    execution: HostFunctionExecution,
 }
 
 struct SdkEvent {
@@ -701,39 +673,16 @@ fn any_of(predicates: Vec<String>) -> String {
     format!("({})", join_predicates(predicates, " || "))
 }
 
-fn render_host_function_api(
-    functions: &BTreeMap<String, SdkFunctionType>,
-    has_async_functions: bool,
-) -> String {
+fn render_host_function_api(functions: &BTreeMap<String, SdkFunctionType>) -> String {
     let host_functions = render_host_function_type_map(functions);
-    let modes = render_host_function_mode_map(functions);
-    let body = render_host_function_call_body(has_async_functions);
     format!(
         "{host_functions}\n\n\
 type HostFunctionInput<K extends keyof HostFunctions> = HostFunctions[K][\"input\"];\n\
 type HostFunctionOutput<K extends keyof HostFunctions> = HostFunctions[K][\"output\"];\n\
-type HostFunctionReturn<K extends keyof HostFunctions> = HostFunctions[K][\"async\"] extends true ? Promise<HostFunctionOutput<K>> : HostFunctionOutput<K>;\n\
 type HostFunctionArgs<K extends keyof HostFunctions> = HostFunctionInput<K> extends void ? [] : [input: HostFunctionInput<K>];\n\n\
-{modes}\n\n\
-export function call<K extends keyof HostFunctions>(name: K, ...args: HostFunctionArgs<K>): HostFunctionReturn<K> {{\n\
-  const input = args[0] as HostFunctionInput<K> | undefined;\n\
-{body}\n\
+export function call<K extends keyof HostFunctions>(name: K, ...args: HostFunctionArgs<K>): HostFunctionOutput<K> {{\n\
+  return __hostCall<HostFunctionOutput<K>>(name, args[0]);\n\
 }}"
-    )
-}
-
-fn render_host_function_call_body(has_async_functions: bool) -> String {
-    if has_async_functions {
-        return String::from(
-            "  if (__hostFunctionModes[name] === \"async\") {\n\
-    return __hostCallAsync<HostFunctionOutput<K>>(name, input) as HostFunctionReturn<K>;\n\
-  }\n\
-  return __hostCall<HostFunctionOutput<K>>(name, input) as HostFunctionReturn<K>;",
-        );
-    }
-
-    String::from(
-        "  return __hostCall<HostFunctionOutput<K>>(name, input) as HostFunctionReturn<K>;",
     )
 }
 
@@ -742,43 +691,13 @@ fn render_host_function_type_map(functions: &BTreeMap<String, SdkFunctionType>) 
         .iter()
         .map(|(name, function)| {
             format!(
-                "  {name:?}: {{ input: {}; output: {}; async: {}; }};",
-                function.input_type,
-                function.output_type,
-                is_async_promise(function.execution)
+                "  {name:?}: {{ input: {}; output: {}; }};",
+                function.input_type, function.output_type,
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
     format!("type HostFunctions = {{\n{entries}\n}};")
-}
-
-fn render_host_function_mode_map(functions: &BTreeMap<String, SdkFunctionType>) -> String {
-    let entries = functions
-        .iter()
-        .map(|(name, function)| {
-            let mode = if is_async_promise(function.execution) {
-                "async"
-            } else {
-                "sync"
-            };
-            format!("  {name:?}: {mode:?},")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("const __hostFunctionModes = {{\n{entries}\n}} as const;")
-}
-
-fn is_async_promise(execution: HostFunctionExecution) -> bool {
-    execution == HostFunctionExecution::AsyncPromise
-}
-
-fn remove_async_helper(source: &str) -> String {
-    let Some(start) = source.find("\nasync function __hostCallAsync") else {
-        return source.to_owned();
-    };
-
-    source[..start].to_owned()
 }
 
 fn render_export_reference_object<T>(
@@ -895,29 +814,19 @@ fn render_namespace_entry<T>(
 
 fn render_function_binding(name: &str, function: &SdkFunction, depth: usize) -> String {
     let parameter = function_parameter(function);
-    let return_type = function_return_type(function);
-    let input_argument = function_input_argument(function);
-    let call = match function.execution {
-        HostFunctionExecution::Sync | HostFunctionExecution::AsyncBlockingJs => {
-            format!(
-                "return __hostCall<{}>({:?}{});",
-                function.output_type, function.contract_name, input_argument
-            )
-        }
-        HostFunctionExecution::AsyncPromise => {
-            format!(
-                "return __hostCallAsync<{}>({:?}{});",
-                function.output_type, function.contract_name, input_argument
-            )
-        }
-    };
+    let call = format!(
+        "return __hostCall<{}>({:?}{});",
+        function.output_type,
+        function.contract_name,
+        function_input_argument(function)
+    );
 
     format!(
         "{}{}({}): {} {{\n{}{}\n{}}},",
         indent(depth),
         property_name(name),
         parameter,
-        return_type,
+        function.output_type,
         indent(depth + 1),
         call,
         indent(depth)
@@ -929,15 +838,6 @@ fn function_parameter(function: &SdkFunction) -> String {
         format!("input: {}", function.input_type)
     } else {
         String::new()
-    }
-}
-
-fn function_return_type(function: &SdkFunction) -> String {
-    match function.execution {
-        HostFunctionExecution::Sync | HostFunctionExecution::AsyncBlockingJs => {
-            function.output_type.clone()
-        }
-        HostFunctionExecution::AsyncPromise => format!("Promise<{}>", function.output_type),
     }
 }
 

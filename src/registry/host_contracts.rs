@@ -10,7 +10,6 @@ mod sdk;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use import_modules::HostModuleStyle;
 pub use interface::HostContractRegistry;
 pub use memory::InMemoryHostContractRegistry;
 

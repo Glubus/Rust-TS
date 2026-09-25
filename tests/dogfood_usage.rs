@@ -3,11 +3,10 @@
 mod support;
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, RustTs, Schema, TsSchema,
-    VmError, VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsSchema, VmError,
+    VmOptions,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use support::TestCacheDir;
 
@@ -120,50 +119,6 @@ impl HostCallback for DogfoodUserFound {
 }
 
 #[test]
-fn typed_contracts_generated_sdk_and_script_bridge_are_usable_together() {
-    let cache_dir = TestCacheDir::new("dogfood-typed-contracts");
-    let output_dir = cache_dir.path().join("generated");
-    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
-
-    vm.registry()
-        .typed_function::<DogfoodFindUser>()
-        .and_then(|registry| registry.typed_callback::<DogfoodUserFound>())
-        .expect("register typed dogfood contracts");
-    let written = vm
-        .registry()
-        .write_sdk_files(&output_dir)
-        .expect("write generated SDK files");
-
-    let sdk = std::fs::read_to_string(&written.sdk_path).expect("read generated SDK");
-    assert_sdk_exposes_dogfood_surface(&sdk);
-    typecheck_sdk_usage_when_tsc_is_available(cache_dir.path(), &sdk);
-
-    vm.load_script("dogfood", DOGFOOD_SCRIPT)
-        .expect("load dogfood script");
-    let lookup = vm
-        .call_function("dogfood", "lookup", Vec::new())
-        .expect("call dogfood lookup");
-    let delivered = vm
-        .emit_callback::<DogfoodUserFound>(&DogfoodUserFoundPayload {
-            user_id: 7,
-            display_name: String::from("user-7"),
-            roles: vec![String::from("admin"), String::from("editor")],
-        })
-        .expect("emit dogfood callback");
-    let observed = vm
-        .call_function("dogfood", "observed", Vec::new())
-        .expect("read callback state");
-
-    vm.shutdown().expect("shutdown vm");
-
-    assert_eq!(written.types_path, output_dir.join("rustts.d.ts"));
-    assert_eq!(written.sdk_path, output_dir.join("rustts.sdk.ts"));
-    assert_eq!(lookup, json!("user-7:2:true"));
-    assert_eq!(delivered, 1);
-    assert_eq!(observed, json!("user-7:admin,editor"));
-}
-
-#[test]
 fn engine_runs_the_dogfood_script_through_injected_globals() {
     let mut engine = dogfood_engine();
     engine
@@ -177,6 +132,9 @@ fn engine_runs_the_dogfood_script_through_injected_globals() {
 fn engine_runs_a_script_built_on_the_generated_sdk() {
     let mut engine = dogfood_engine();
     let sdk = engine.registry().sdk().expect("render generated SDK");
+    assert_sdk_exposes_dogfood_surface(&sdk);
+    typecheck_sdk_usage_when_tsc_is_available(&sdk);
+
     engine
         .load_script("dogfood", &format!("{sdk}\n{DOGFOOD_SDK_SCRIPT}"))
         .expect("load SDK-based dogfood script");
@@ -237,8 +195,9 @@ fn assert_sdk_exposes_dogfood_surface(sdk: &str) {
     assert!(sdk.contains("wrap(value: DogfoodFindUserInput): DogfoodFindUserInputModel"));
 }
 
-fn typecheck_sdk_usage_when_tsc_is_available(cache_dir: &std::path::Path, sdk: &str) {
-    let usage_path = cache_dir.join("dogfood-sdk-usage.ts");
+fn typecheck_sdk_usage_when_tsc_is_available(sdk: &str) {
+    let temp_dir = TestCacheDir::new("dogfood-sdk-usage");
+    let usage_path = temp_dir.path().join("dogfood-sdk-usage.ts");
     std::fs::write(&usage_path, dogfood_sdk_usage_source(sdk)).expect("write SDK usage source");
 
     let Some(output) = run_tsc(&usage_path) else {
