@@ -42,9 +42,6 @@ pub trait HostContractRegistry: Send + Sync {
     /// Returns every stored descriptor.
     fn list(&self) -> Result<Vec<HostContractDescriptor>, VmError>;
 
-    /// Returns a stable ABI fingerprint seed for cache invalidation.
-    fn abi_seed(&self) -> Result<String, VmError>;
-
     /// Renders TypeScript declarations from registered ABI and schema metadata.
     fn typescript_declarations(&self) -> Result<String, VmError>;
 

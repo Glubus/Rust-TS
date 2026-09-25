@@ -1,104 +1,40 @@
-//! Versioned cache identity for compiled script artifacts.
+//! Versioned cache keys for transpiled modules.
 
-use serde::Serialize;
-
-const CACHE_SCHEMA_VERSION: &str = "1";
-const AUTHOR_MODULE_BRIDGE_VERSION: &str = "native-esm-v1";
-const COMPILER_MODULE_FORMAT: &str = "esm";
+/// Bump when the artifact layout or the transpile settings change.
+const CACHE_SCHEMA_VERSION: &str = "2";
 const OXC_VERSION: &str = "0.137.0";
-const OXC_RESOLVER_VERSION: &str = "11.21.3";
-const RQUICKJS_VERSION: &str = "0.14.0";
-const RUNTIME_BRIDGE_VERSION: &str = "quickjs-native-esm-loader-v1";
-const RESOLVER_POLICY_VERSION: &str = "local-relative-package-index-v2";
+const COMPILER_MODULE_FORMAT: &str = "esm";
 
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct CacheIdentity<'a> {
-    schema_version: &'static str,
-    artifact_kind: CacheArtifactKind,
-    source_seed: &'a str,
-    compiler: CompilerIdentity,
-    resolver: ResolverIdentity,
-    runtime: RuntimeIdentity,
-    host_contract_abi: &'a str,
-}
-
-impl<'a> CacheIdentity<'a> {
-    pub(crate) fn inline(source_seed: &'a str, host_contract_abi: &'a str) -> Self {
-        Self::new(CacheArtifactKind::Inline, source_seed, host_contract_abi)
+/// Key of one transpiled module. Transpiling depends only on the source text, its
+/// source type (the file extension) and the compiler, never on import resolution, so
+/// every module of every project shares one content-addressed cache.
+pub(crate) fn module_cache_key(source: &str, source_type: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for part in [
+        CACHE_SCHEMA_VERSION,
+        env!("CARGO_PKG_VERSION"),
+        OXC_VERSION,
+        COMPILER_MODULE_FORMAT,
+        source_type,
+    ] {
+        hasher.update(part.as_bytes());
+        hasher.update(&[0]);
     }
-
-    pub(crate) fn project(source_seed: &'a str, host_contract_abi: &'a str) -> Self {
-        Self::new(CacheArtifactKind::Project, source_seed, host_contract_abi)
-    }
-
-    fn new(
-        artifact_kind: CacheArtifactKind,
-        source_seed: &'a str,
-        host_contract_abi: &'a str,
-    ) -> Self {
-        Self {
-            schema_version: CACHE_SCHEMA_VERSION,
-            artifact_kind,
-            source_seed,
-            compiler: CompilerIdentity::current(),
-            resolver: ResolverIdentity::current(),
-            runtime: RuntimeIdentity::current(),
-            host_contract_abi,
-        }
-    }
+    hasher.update(source.as_bytes());
+    hasher.finalize().to_hex().to_string()
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
-enum CacheArtifactKind {
-    Inline,
-    Project,
-}
+#[cfg(test)]
+mod tests {
+    use super::module_cache_key;
 
-#[derive(Debug, Clone, Serialize)]
-struct CompilerIdentity {
-    oxc_version: &'static str,
-    module_format: &'static str,
-    author_module_bridge: &'static str,
-}
+    #[test]
+    fn same_source_with_another_source_type_gets_another_key() {
+        let source = "export const view = <div />;";
 
-impl CompilerIdentity {
-    fn current() -> Self {
-        Self {
-            oxc_version: OXC_VERSION,
-            module_format: COMPILER_MODULE_FORMAT,
-            author_module_bridge: AUTHOR_MODULE_BRIDGE_VERSION,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ResolverIdentity {
-    oxc_resolver_version: &'static str,
-    policy: &'static str,
-}
-
-impl ResolverIdentity {
-    fn current() -> Self {
-        Self {
-            oxc_resolver_version: OXC_RESOLVER_VERSION,
-            policy: RESOLVER_POLICY_VERSION,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct RuntimeIdentity {
-    crate_version: &'static str,
-    rquickjs_version: &'static str,
-    bridge_version: &'static str,
-}
-
-impl RuntimeIdentity {
-    fn current() -> Self {
-        Self {
-            crate_version: env!("CARGO_PKG_VERSION"),
-            rquickjs_version: RQUICKJS_VERSION,
-            bridge_version: RUNTIME_BRIDGE_VERSION,
-        }
+        assert_ne!(
+            module_cache_key(source, "ts"),
+            module_cache_key(source, "tsx")
+        );
     }
 }

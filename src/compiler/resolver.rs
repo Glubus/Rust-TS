@@ -14,16 +14,14 @@ const MODULE_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs
 pub(crate) struct ModuleResolver {
     resolver: Resolver,
     project_root: PathBuf,
+    tsconfig_path: Option<PathBuf>,
 }
 
-impl Default for ModuleResolver {
-    fn default() -> Self {
-        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self {
-            resolver: Resolver::new(resolve_options(None)),
-            project_root,
-        }
-    }
+#[derive(Debug)]
+/// Canonical path of a resolved module, and the `package.json` that applied to it.
+pub(crate) struct ResolvedModule {
+    pub(crate) path: PathBuf,
+    pub(crate) package_json: Option<PathBuf>,
 }
 
 impl ModuleResolver {
@@ -38,46 +36,53 @@ impl ModuleResolver {
         Ok(Self {
             resolver,
             project_root,
+            tsconfig_path,
         })
+    }
+
+    /// The `tsconfig.json` this project resolves `paths` and `baseUrl` with.
+    pub(crate) fn tsconfig_path(&self) -> Option<&Path> {
+        self.tsconfig_path.as_deref()
+    }
+
+    /// Canonical root of the project: the `tsconfig.json` directory, else the entry's.
+    pub(crate) fn project_root(&self) -> &Path {
+        &self.project_root
     }
 
     pub(crate) fn resolve_request(
         &self,
         from_path: &Path,
         request: &str,
-    ) -> Result<PathBuf, VmError> {
+    ) -> Result<ResolvedModule, VmError> {
         let base_dir = parent_dir(from_path)?;
-        let resolved_path = self.resolve_from_dir(base_dir, request, from_path)?;
-        self.validate_project_scope(request, &resolved_path)?;
+        let resolution =
+            self.resolver
+                .resolve(base_dir, request)
+                .map_err(|error| VmError::Resolve {
+                    details: format!(
+                        "unable to resolve import `{request}` from {}: {error}",
+                        from_path.display()
+                    ),
+                })?;
+        let path = self.canonical_in_project(request, resolution.path())?;
 
-        Ok(resolved_path)
+        Ok(ResolvedModule {
+            path,
+            package_json: resolution
+                .package_json()
+                .map(|package_json| package_json.path().to_path_buf()),
+        })
     }
 
-    pub(crate) fn project_root(&self) -> &Path {
-        &self.project_root
-    }
-
-    fn resolve_from_dir(
+    fn canonical_in_project(
         &self,
-        base_dir: &Path,
         request: &str,
-        from_path: &Path,
+        resolved_path: &Path,
     ) -> Result<PathBuf, VmError> {
-        self.resolver
-            .resolve(base_dir, request)
-            .map(|resolution| resolution.into_path_buf())
-            .map_err(|error| VmError::Resolve {
-                details: format!(
-                    "unable to resolve import `{request}` from {}: {error}",
-                    from_path.display()
-                ),
-            })
-    }
-
-    fn validate_project_scope(&self, request: &str, resolved_path: &Path) -> Result<(), VmError> {
         let canonical_resolved_path = resolved_path.canonicalize().map_err(VmError::from)?;
         if canonical_resolved_path.starts_with(&self.project_root) {
-            return Ok(());
+            return Ok(canonical_resolved_path);
         }
 
         Err(VmError::Resolve {
@@ -152,7 +157,12 @@ mod tests {
             .resolve_request(&root.join("main.ts"), "./src/math")
             .expect("resolve module");
 
-        assert_eq!(resolved, src.join("math.ts"));
+        assert_eq!(
+            resolved.path,
+            src.join("math.ts")
+                .canonicalize()
+                .expect("canonical fixture path")
+        );
     }
 
     #[test]
@@ -168,7 +178,12 @@ mod tests {
             .resolve_request(&root.join("main.ts"), "./src")
             .expect("resolve index module");
 
-        assert_eq!(resolved, src.join("index.ts"));
+        assert_eq!(
+            resolved.path,
+            src.join("index.ts")
+                .canonicalize()
+                .expect("canonical fixture path")
+        );
     }
 
     #[test]
@@ -202,7 +217,13 @@ mod tests {
             .resolve_request(&root.join("main.ts"), "demo-pkg")
             .expect("resolve package import");
 
-        assert_eq!(resolved, package.join("index.ts"));
+        assert_eq!(
+            resolved.path,
+            package
+                .join("index.ts")
+                .canonicalize()
+                .expect("canonical fixture path")
+        );
     }
 
     #[cfg(unix)]
@@ -262,7 +283,12 @@ mod tests {
             .resolve_request(&root.join("main.ts"), "@app/math")
             .expect("resolve aliased module");
 
-        assert_eq!(resolved, src.join("math.ts"));
+        assert_eq!(
+            resolved.path,
+            src.join("math.ts")
+                .canonicalize()
+                .expect("canonical fixture path")
+        );
     }
 
     #[test]
@@ -287,7 +313,12 @@ mod tests {
             .resolve_request(&root.join("main.ts"), "src/math")
             .expect("resolve baseUrl module");
 
-        assert_eq!(resolved, src.join("math.ts"));
+        assert_eq!(
+            resolved.path,
+            src.join("math.ts")
+                .canonicalize()
+                .expect("canonical fixture path")
+        );
     }
 
     fn temp_fixture_dir(name: &str) -> PathBuf {

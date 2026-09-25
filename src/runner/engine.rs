@@ -1,7 +1,7 @@
 //! Single-thread engine: the owning thread runs QuickJS, and every call crosses the
 //! Rust/JS boundary natively, without generated source or JSON text.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,11 +11,12 @@ use rquickjs::{
     Runtime, Value as JsValue,
 };
 
+use crate::compiler::WatchedFiles;
 use crate::config::VmOptions;
 use crate::contract::{JsArgs, JsDecode, JsEncode, array_length};
 use crate::error::VmError;
 use crate::registry::InMemoryHostContractRegistry;
-use crate::types::{MemoryStats, ScriptId};
+use crate::types::{MemoryStats, ReloadReport, ScriptId};
 
 use super::errors::{caught_js_error, js_error};
 use super::execution::{ExecutionControl, ExecutionGuard};
@@ -29,10 +30,9 @@ use super::transpile::Transpiler;
 const NATIVE_FUNCTIONS_GLOBAL: &str = "__rustts_native";
 const HANDLERS_GLOBAL: &str = "__vm_handlers";
 
-/// Installs the `ctx.on` event API and its handler table in a script context.
-const BOOTSTRAP_SOURCE: &str = include_str!("../../assets/bootstrap_module_context.js");
-/// Installs `__host` and the namespaced host globals on top of `__rustts_native`.
-const HOST_GLOBALS_SOURCE: &str = include_str!("../../assets/engine_host_globals.js");
+/// Installs `ctx.on` and its handler table, `__host` and the namespaced host globals
+/// on top of `__rustts_native`.
+const CONTEXT_PRELUDE: &str = include_str!("../../assets/context_prelude.js");
 
 /// Single-thread RustTS engine.
 ///
@@ -67,6 +67,20 @@ struct EngineScript {
     context: Context,
     exports: Persistent<Object<'static>>,
     module_ids: Vec<String>,
+    origin: ScriptOrigin,
+}
+
+/// Where a script's code came from, kept for hot reload and the transpile memo.
+struct ScriptOrigin {
+    /// Content keys of its transpiled modules.
+    module_keys: Vec<String>,
+    /// Entry file and watched files of a project; `None` for inline scripts.
+    project: Option<ProjectFiles>,
+}
+
+struct ProjectFiles {
+    entry_path: PathBuf,
+    watched: WatchedFiles,
 }
 
 impl Engine {
@@ -102,30 +116,33 @@ impl Engine {
     /// version.
     pub fn load_script(&mut self, id: impl Into<ScriptId>, source: &str) -> Result<(), VmError> {
         let id = id.into();
-        let host_abi = self.registry.cache_abi_seed()?;
-        let transpiled = self.transpiler.inline(&id, source, &host_abi)?;
+        let script = self.transpiler.inline(&id, source)?;
         self.install_host_modules()?;
         let graph_id = self.next_graph_id();
-        let graph = self.module_store.insert_inline(&id, transpiled, graph_id)?;
-        self.mount_graph(id, graph)
+        let graph = self.module_store.insert_inline(&id, script.js, graph_id)?;
+        let origin = ScriptOrigin {
+            module_keys: vec![script.module_key],
+            project: None,
+        };
+        self.mount_graph(id, graph, origin)
     }
 
     /// Loads or replaces one multi-file TypeScript project from its entry file.
     ///
     /// The static ESM graph is resolved from disk: relative imports, `tsconfig.json`
     /// `paths` and `baseUrl`, and packages in the project's `node_modules`. Dynamic
-    /// `import()` is rejected. A failed load keeps the previous version.
+    /// `import()` is rejected. Modules are transpiled one by one and remembered by
+    /// content, so reloading a project only transpiles the files that changed. A
+    /// failed load keeps the previous version.
     pub fn load_project(
         &mut self,
         id: impl Into<ScriptId>,
         entry_path: impl AsRef<Path>,
     ) -> Result<(), VmError> {
         let id = id.into();
-        let host_abi = self.registry.cache_abi_seed()?;
+        let entry_path = entry_path.as_ref();
         let external_modules = self.registry.import_module_names()?;
-        let project = self
-            .transpiler
-            .project(entry_path.as_ref(), &external_modules, &host_abi)?;
+        let project = self.transpiler.project(entry_path, &external_modules)?;
         self.install_host_modules()?;
         let graph_id = self.next_graph_id();
         let graph = self.module_store.insert_project(
@@ -133,7 +150,56 @@ impl Engine {
             project.modules,
             graph_id,
         )?;
-        self.mount_graph(id, graph)
+        let origin = ScriptOrigin {
+            module_keys: project.module_keys,
+            project: Some(ProjectFiles {
+                entry_path: entry_path.to_path_buf(),
+                watched: project.watched,
+            }),
+        };
+        self.mount_graph(id, graph, origin)
+    }
+
+    /// Reloads, in load order, every project whose files changed since it was loaded,
+    /// and reports which reloads succeeded and which failed.
+    ///
+    /// A project is checked through the size and modification time of its module
+    /// files, their directories, its `tsconfig.json` and the `package.json` files its
+    /// imports resolved through; nothing is read unless one of them changed. Inline
+    /// scripts are never reloaded here. A failed reload keeps the previous version
+    /// running and is reported once: the next report only lists it again after
+    /// another change. Call it from the host loop, for example once per second
+    /// during development; it starts no thread.
+    pub fn reload_changed(&mut self) -> ReloadReport {
+        let changed = self
+            .scripts
+            .iter()
+            .filter_map(|(id, script)| {
+                let project = script.origin.project.as_ref()?;
+                project
+                    .watched
+                    .changed()
+                    .then(|| (id.clone(), project.entry_path.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        let mut report = ReloadReport::default();
+        for (id, entry_path) in changed {
+            match self.load_project(id.clone(), &entry_path) {
+                Ok(()) => report.reloaded.push(id),
+                Err(error) => {
+                    if let Some(project) = self
+                        .scripts
+                        .get_mut(&id)
+                        .and_then(|script| script.origin.project.as_mut())
+                    {
+                        project.watched.restamp();
+                    }
+                    report.failed.push((id, error));
+                }
+            }
+        }
+        report
     }
 
     /// QuickJS memory counters for the whole engine.
@@ -147,7 +213,9 @@ impl Engine {
             .scripts
             .shift_remove(id)
             .ok_or_else(|| script_not_found(id))?;
-        self.module_store.remove_modules(&script.module_ids)
+        self.module_store.remove_modules(&script.module_ids)?;
+        self.forget_unused_modules();
+        Ok(())
     }
 
     /// Calls one exported function. Arguments encode through [`JsArgs`] (a tuple, a
@@ -261,7 +329,12 @@ impl Engine {
 
     /// Evaluates a freshly inserted graph and swaps it in; on failure, the graph is
     /// removed and the previous version of the script stays loaded.
-    fn mount_graph(&mut self, id: ScriptId, graph: RuntimeModuleGraph) -> Result<(), VmError> {
+    fn mount_graph(
+        &mut self,
+        id: ScriptId,
+        graph: RuntimeModuleGraph,
+        origin: ScriptOrigin,
+    ) -> Result<(), VmError> {
         match self.mount(&graph.entry_module_id) {
             Ok((context, exports)) => self.replace_script(
                 id,
@@ -269,6 +342,7 @@ impl Engine {
                     context,
                     exports,
                     module_ids: graph.module_ids,
+                    origin,
                 },
             ),
             Err(error) => {
@@ -285,9 +359,8 @@ impl Engine {
         let _budget = self.budget();
         let context = Context::full(&self.runtime).map_err(js_error)?;
         let exports = context.with(|ctx| {
-            evaluate_script(&ctx, BOOTSTRAP_SOURCE)?;
             self.install_native_functions(&ctx)?;
-            evaluate_script(&ctx, HOST_GLOBALS_SOURCE)?;
+            evaluate_script(&ctx, CONTEXT_PRELUDE)?;
             import_exports(&ctx, entry_module_id)
         });
         Ok((context, self.settle(exports)?))
@@ -304,10 +377,29 @@ impl Engine {
     }
 
     fn replace_script(&mut self, id: ScriptId, script: EngineScript) -> Result<(), VmError> {
-        let Some(previous) = self.scripts.insert(id.clone(), script) else {
-            return Ok(());
-        };
-        self.module_store.remove_modules(&previous.module_ids)
+        if let Some(previous) = self.scripts.insert(id, script) {
+            self.module_store.remove_modules(&previous.module_ids)?;
+            self.forget_unused_modules();
+        }
+        Ok(())
+    }
+
+    /// Drops memoized modules and project states no loaded script uses anymore, so
+    /// editing files during a long session does not grow them.
+    fn forget_unused_modules(&mut self) {
+        let modules = self
+            .scripts
+            .values()
+            .flat_map(|script| &script.origin.module_keys)
+            .map(String::as_str)
+            .collect();
+        let projects = self
+            .scripts
+            .values()
+            .filter_map(|script| script.origin.project.as_ref())
+            .map(|project| project.entry_path.as_path())
+            .collect();
+        self.transpiler.retain_used(&modules, &projects);
     }
 
     fn script(&self, id: &str) -> Result<&EngineScript, VmError> {

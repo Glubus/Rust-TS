@@ -4,7 +4,6 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use super::identity::CacheIdentity;
 use crate::error::VmError;
 
 #[derive(Debug, Clone)]
@@ -17,11 +16,6 @@ impl ScriptCache {
         let root = root.into();
         fs::create_dir_all(&root)?;
         Ok(Self { root })
-    }
-
-    pub(crate) fn cache_key(&self, identity: &CacheIdentity<'_>) -> Result<String, VmError> {
-        let identity = serde_json::to_vec(identity)?;
-        Ok(blake3::hash(&identity).to_hex().to_string())
     }
 
     pub(crate) fn load(&self, cache_key: &str) -> Result<Option<String>, VmError> {
@@ -128,18 +122,5 @@ mod tests {
             cache.load("broken").unwrap().unwrap(),
             "export const answer = 42;"
         );
-    }
-
-    #[test]
-    fn cache_key_changes_when_host_abi_changes() {
-        let cache = ScriptCache::new(std::env::temp_dir()).unwrap();
-        let source = "export function run() { return 1; }";
-        let first = CacheIdentity::inline(source, "abi-a");
-        let second = CacheIdentity::inline(source, "abi-b");
-
-        let first_key = cache.cache_key(&first).unwrap();
-        let second_key = cache.cache_key(&second).unwrap();
-
-        assert_ne!(first_key, second_key);
     }
 }

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::VmError;
+
 /// Stable identifier for a loaded script.
 pub type ScriptId = String;
 
@@ -24,4 +26,14 @@ pub struct MemoryStats {
     pub object_count: u64,
     /// JavaScript function count reported by QuickJS.
     pub function_count: u64,
+}
+
+/// Outcome of [`Engine::reload_changed`](crate::Engine::reload_changed).
+#[derive(Debug, Default)]
+pub struct ReloadReport {
+    /// Scripts reloaded because their files changed, in load order.
+    pub reloaded: Vec<ScriptId>,
+    /// Scripts whose files changed but whose reload failed; each keeps running its
+    /// previous version.
+    pub failed: Vec<(ScriptId, VmError)>,
 }

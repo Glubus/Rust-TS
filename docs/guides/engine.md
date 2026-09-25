@@ -99,6 +99,33 @@ transpiled, resolved and initialized first; if any of that fails (syntax error,
 resolution error, exception or timeout in top-level code), the previous version
 stays loaded. A successful reload starts from fresh script state.
 
+## Hot Reload
+
+`reload_changed()` reloads every project whose files changed since it was loaded,
+in load order, and returns a `ReloadReport` with the reloaded ids and the failed
+ones. Call it from your loop; it starts no thread:
+
+```rust
+// For example once per second during development.
+let report = engine.reload_changed();
+for (id, error) in &report.failed {
+    eprintln!("{id} kept its previous version: {error}");
+}
+```
+
+- A project is checked through the size and modification time of its module
+  files, the directories from each module up to the project root, its
+  `tsconfig.json` and the `package.json` files its imports resolved through. When
+  nothing changed, the check reads no file.
+- A reload only reads, parses and transpiles the modules whose files changed. While
+  no file was added or removed and `tsconfig.json` / `package.json` are unchanged,
+  the imports of unchanged modules are not resolved again either.
+- A failed reload keeps the previous version running and is reported once; the
+  project is retried after its next change.
+- Inline scripts (`load_script`) have no files and are never reloaded here.
+- Changes outside the watched paths (for example a new file in a `paths` fallback
+  directory that holds no loaded module) need an explicit `load_project`.
+
 ## Execution Budget
 
 Every load, call and emit runs under `VmOptions::execution_timeout` (5 seconds by
@@ -123,11 +150,17 @@ let engine = Engine::new(&VmOptions {
 })?;
 ```
 
-The directory is created if it does not exist. An artifact is keyed by the source
-(the whole resolved graph for a project), the compiler, resolver and runtime
-versions, and the registered host contracts, so changing any of them transpiles
-again. See [Runtime Guarantees](runtime-guarantees.md#transpilation-cache) for
-integrity and atomic writes.
+The directory is created if it does not exist. The cache holds one artifact per
+module, keyed by the module source, its file extension, and the compiler and crate
+versions: two projects sharing a file share its artifact, and editing one file of a
+project transpiles that file only. Import resolution is never cached on disk; it
+runs on every load. See
+[Runtime Guarantees](runtime-guarantees.md#transpilation-cache) for integrity and
+atomic writes.
+
+Independently of the disk cache, an `Engine` remembers in memory the transpiled
+modules of its loaded scripts, so reloads within one run never transpile an
+unchanged module.
 
 ## Memory
 

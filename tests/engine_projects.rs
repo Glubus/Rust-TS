@@ -335,8 +335,10 @@ fn inline_cache_artifact_is_shared_by_scripts_with_the_same_source() {
     );
 }
 
+/// The cache holds one artifact per module; loading the same project again, even
+/// from a restarted engine, adds none.
 #[test]
-fn project_cache_artifact_is_shared_by_loads_of_the_same_project() {
+fn project_cache_artifacts_are_shared_by_loads_of_the_same_project() {
     let cache = TestCacheDir::new("project-cache-reuse");
     let mut engine = Engine::new(&cache.engine_options()).expect("create engine");
     let entry = fixture("multi_module/main.ts");
@@ -355,7 +357,7 @@ fn project_cache_artifact_is_shared_by_loads_of_the_same_project() {
         .load_project("project-c", &entry)
         .expect("load cached project from a restarted engine");
 
-    assert_eq!(cached_artifacts(&cache), 1);
+    assert_eq!(cached_artifacts(&cache), 5, "one artifact per module");
     assert_eq!(
         call(
             &restarted,
@@ -367,6 +369,7 @@ fn project_cache_artifact_is_shared_by_loads_of_the_same_project() {
     );
 }
 
+/// Changing one dependency transpiles only that module again.
 #[test]
 fn project_cache_is_invalidated_when_a_dependency_changes() {
     let cache = TestCacheDir::new("project-cache-invalidation");
@@ -397,12 +400,14 @@ fn project_cache_is_invalidated_when_a_dependency_changes() {
     let second = call(&engine, "project-b", "read", Vec::new());
 
     assert_eq!((first, second), (json!(1), json!(2)));
-    assert_eq!(cached_artifacts(&cache), 2);
+    assert_eq!(cached_artifacts(&cache), 3, "entry, old and new dependency");
 }
 
+/// Resolution is recomputed on every load, never read from the cache: a package whose
+/// `main` now points to another file resolves to that file.
 #[test]
-fn project_cache_is_invalidated_when_a_package_manifest_changes() {
-    let cache = TestCacheDir::new("project-package-cache-invalidation");
+fn project_reload_follows_a_package_manifest_change() {
+    let cache = TestCacheDir::new("project-package-manifest-change");
     let mut engine = Engine::new(&cache.engine_options()).expect("create engine");
     let project_root = cache.path().join("project");
     let package_dir = project_root.join("node_modules").join("demo-pkg");
@@ -416,6 +421,8 @@ fn project_cache_is_invalidated_when_a_package_manifest_changes() {
     .expect("write project entry");
     fs::write(package_dir.join("index.ts"), "export const value = 7;\n")
         .expect("write package entry");
+    fs::write(package_dir.join("next.ts"), "export const value = 8;\n")
+        .expect("write next package entry");
     fs::write(
         &manifest_path,
         r#"{"name":"demo-pkg","version":"1.0.0","main":"index.ts"}"#,
@@ -423,22 +430,20 @@ fn project_cache_is_invalidated_when_a_package_manifest_changes() {
     .expect("write package manifest");
 
     engine
-        .load_project("project-a", &entry_path)
+        .load_project("project", &entry_path)
         .expect("load first package version");
-    engine
-        .unload_script("project-a")
-        .expect("unload first project");
+    let before = call(&engine, "project", "read", Vec::new());
     fs::write(
         &manifest_path,
-        r#"{"name":"demo-pkg","version":"1.0.1","main":"index.ts"}"#,
+        r#"{"name":"demo-pkg","version":"1.0.1","main":"next.ts"}"#,
     )
     .expect("rewrite package manifest");
     engine
-        .load_project("project-b", &entry_path)
+        .load_project("project", &entry_path)
         .expect("load second package version");
+    let after = call(&engine, "project", "read", Vec::new());
 
-    assert_eq!(cached_artifacts(&cache), 2);
-    assert_eq!(call(&engine, "project-b", "read", Vec::new()), json!(7));
+    assert_eq!((before, after), (json!(7), json!(8)));
 }
 
 #[test]

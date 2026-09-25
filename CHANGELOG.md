@@ -42,6 +42,11 @@
   `UnsupportedHostBridge`); `WorkerPanicked` becomes `LockPoisoned`.
 - The generated SDK calls host functions through `__host.callValue` only; the JSON
   `__host.call` bridge is gone.
+- The transpile cache is now per module: existing cache artifacts are rebuilt once.
+  `HostContractRegistry::abi_seed` is removed: host contracts no longer take part in
+  cache keys, since they do not change transpiled code.
+- `load_project` reuses what it read from an unchanged file: a module whose size and
+  modification time are unchanged is not read again.
 - Typed registration now requires native codecs: `typed_function` /
   `register_typed_function` need `Input: TsSchema + JsDecode` and
   `Output: TsSchema + JsEncode`; `typed_callback` / `register_typed_callback` need
@@ -95,6 +100,14 @@
   Promise rejection fails the operation. Events reach scripts in load order, and a
   throwing handler does not stop the others. See
   [the Engine guide](docs/guides/engine.md) and `examples/native_roundtrip.rs`.
+- `Engine::reload_changed` and `ReloadReport`: hot reload without a watcher thread.
+  It reloads, in load order, the projects whose files changed (module files, their
+  directories up to the project root, `tsconfig.json`, the `package.json` files
+  used), reports failed reloads once, and keeps their previous version running.
+  Reloads reuse the resolver and the resolutions of unchanged modules while the
+  project structure is unchanged, and only transpile the edited files: reloading a
+  9-file project after editing one file went from about 1.5 ms to 0.7 ms on the
+  development machine.
 - `benches/vs_lua.rs`: the same workloads on mlua, raw QuickJS and RustTS.
 - Flattened string-keyed maps (`#[serde(flatten)] rest: BTreeMap<String, V>`,
   `HashMap`, `serde_json::Value`, or an `Option` of one) in derived schemas: rendered

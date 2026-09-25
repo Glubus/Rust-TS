@@ -135,8 +135,10 @@ old one. If any step fails, the load returns the error and the previous version
 stays loaded, with its state. A successful reload starts from fresh script state
 and keeps the script's place in event delivery order.
 
-Use this primitive to build your own file watcher or hot-reload command: `Engine`
-does not watch files, your application decides when to reload.
+To reload projects when their files change, call `engine.reload_changed()` from
+your loop, for example once per second during development: it reloads the projects
+whose files changed and reports failures, without starting a thread. See
+[Hot Reload](engine.md#hot-reload).
 
 ## Unloading
 
@@ -149,11 +151,10 @@ afterwards fails with `VmError::ScriptNotFound`.
 
 ## Transpilation Cache
 
-By default (`VmOptions::cache_dir: None`), every load and reload transpiles the
-TypeScript in memory. With a cache directory, transpiled JavaScript is stored on
-disk and reused by later loads, including in later runs of the application.
+By default (`VmOptions::cache_dir: None`), transpiled modules are only remembered in
+memory by the engine. With a cache directory, they are also stored on disk and
+reused by later loads, including in later runs of the application.
 
-For a project, the graph is always read and resolved from disk first: a cache hit
-skips transpilation only. The cache key covers the whole project, so changing one
-module transpiles the project again. See
+The cache works per module: changing one file of a project transpiles that file
+only. The graph itself is always read and resolved from disk. See
 [Run Scripts With `Engine`](engine.md#transpilation-cache).

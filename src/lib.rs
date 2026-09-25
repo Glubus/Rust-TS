@@ -48,4 +48,4 @@ pub use rustts_macros::TsSchema;
 pub use sdk_files::{
     GeneratedSdkFiles, SdkFileNames, write_host_sdk_files, write_host_sdk_files_with_names,
 };
-pub use types::{MemoryStats, ScriptId};
+pub use types::{MemoryStats, ReloadReport, ScriptId};

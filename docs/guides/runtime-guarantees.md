@@ -57,6 +57,11 @@ This guarantees replacement of the script, not rollback of side effects: host
 calls made during a failed initialization may already have changed the host.
 Preparing both versions temporarily needs memory for both.
 
+`reload_changed` detects changes through file sizes and modification times. A
+change that keeps both identical (same size, within the filesystem's timestamp
+resolution) is not seen; `load_project` always rereads every module whose stamp
+changed and resolves again whenever the watched structure changed.
+
 ## Transpilation cache
 
 The cache is off by default (`VmOptions::cache_dir: None`). When enabled, cache
@@ -67,10 +72,9 @@ directories writable only by trusted users. Engines sharing a cache directory do
 not see partially written artifacts. Atomic replacement is not a guarantee of
 durability against every filesystem or power-loss failure.
 
-Artifact keys include the source (for a project: every module source, the
-resolved import graph, the `package.json` files enclosing its modules and the
-project's lockfiles), the compiler, resolver and runtime versions, and the
-registered host contracts. Project loading discovers sources and resolves the
-graph before looking up the cache: a hit skips transpilation, but still pays for
-filesystem reads, import parsing and resolution, and module evaluation. Changing
-one module transpiles the whole project again.
+Each artifact is one transpiled module, keyed by its source, its file extension,
+and the compiler and crate versions. Import resolution is never cached on disk. An
+engine reuses a project's resolutions in memory only while the watched structure
+(directories, `tsconfig.json`, `package.json`, registered host modules) is
+unchanged, so new files and configuration changes take effect on the next load.
+Changing one module transpiles that module only.

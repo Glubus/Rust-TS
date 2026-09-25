@@ -1,211 +1,227 @@
-//! Multi-file project compilation and dependency resolution.
+//! Multi-file project discovery: the static ESM graph reachable from an entry file,
+//! rebuilt incrementally from the previous discovery of the same project.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
-use super::imports::extract_static_import_requests;
 use super::resolver::ModuleResolver;
+use super::stamp::{FileStamp, WatchedFiles};
 use crate::error::VmError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Returns the static import requests of one module source.
+pub(crate) type ImportsOf<'a> = dyn FnMut(&str, &Path) -> Result<BTreeSet<String>, VmError> + 'a;
+
+/// One transpiled module, ready for the module store.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompiledModule {
     pub(crate) module_id: String,
     pub(crate) transpiled_js: String,
     pub(crate) resolved_requests: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ProjectCompileOutput {
-    pub(crate) cache_seed: String,
-    pub(crate) entry_module_id: String,
-    pub(crate) modules: Vec<CompiledModule>,
-}
-
 pub(crate) struct DiscoveredProject {
-    pub(crate) cache_seed: String,
     pub(crate) entry_module_id: String,
     pub(crate) modules: Vec<DiscoveredModule>,
+    /// Module files plus everything resolution depended on.
+    pub(crate) watched: WatchedFiles,
 }
 
 pub(crate) struct DiscoveredModule {
     pub(crate) module_id: String,
+    pub(crate) path: PathBuf,
     pub(crate) source: String,
     pub(crate) resolved_requests: BTreeMap<String, String>,
 }
 
+/// What the discovery of one project learned, reused by its next discovery.
+///
+/// Resolution only depends on the project structure (which files exist,
+/// `tsconfig.json`, `package.json`), never on module contents. While the structure is
+/// unchanged, the resolver keeps its file system cache and a module whose file is
+/// unchanged is neither read, nor parsed, nor resolved again.
+pub(crate) struct ProjectState {
+    resolver: ModuleResolver,
+    /// Directories from each module up to the project root, `tsconfig.json` and the
+    /// `package.json` files resolution read.
+    structure: WatchedFiles,
+    /// Host module names imports were resolved against.
+    external_modules: BTreeSet<String>,
+    modules: HashMap<PathBuf, KnownModule>,
+}
+
+struct KnownModule {
+    stamp: Option<FileStamp>,
+    source: String,
+    resolved_requests: BTreeMap<String, String>,
+    dependencies: Vec<PathBuf>,
+    package_jsons: Vec<PathBuf>,
+}
+
+/// Walks the static import graph from `entry_path`, reusing `previous` when it is the
+/// state of the same project. `imports_of` returns the static import requests of one
+/// module source; requests naming `external_modules` stay unresolved for the module
+/// loader. Returns the graph and the state for the next discovery.
 pub(crate) fn discover_project(
     entry_path: &Path,
     external_modules: &BTreeSet<String>,
-) -> Result<DiscoveredProject, VmError> {
+    previous: Option<ProjectState>,
+    imports_of: &mut ImportsOf<'_>,
+) -> Result<(DiscoveredProject, ProjectState), VmError> {
     let entry_path = normalize_entry_path(entry_path)?;
-    let resolver = ModuleResolver::for_entry(&entry_path)?;
-    let mut visited = BTreeMap::<PathBuf, DiscoveredModule>::new();
-    let mut cache_parts = Vec::<(String, String)>::new();
-    compile_module_recursive(
-        &resolver,
-        &entry_path,
+    let (resolver, structure, known, structure_unchanged) = match previous {
+        Some(state)
+            if state.external_modules == *external_modules && !state.structure.changed() =>
+        {
+            (state.resolver, state.structure, state.modules, true)
+        }
+        Some(state) => (
+            ModuleResolver::for_entry(&entry_path)?,
+            WatchedFiles::default(),
+            state.modules,
+            false,
+        ),
+        None => (
+            ModuleResolver::for_entry(&entry_path)?,
+            WatchedFiles::default(),
+            HashMap::new(),
+            false,
+        ),
+    };
+    let mut discovery = Discovery {
+        resolver: &resolver,
         external_modules,
-        &mut visited,
-        &mut cache_parts,
-    )?;
+        imports_of,
+        known,
+        structure_unchanged,
+        structure,
+        modules: BTreeMap::new(),
+    };
+    if let Some(tsconfig) = resolver.tsconfig_path() {
+        discovery.structure.watch(tsconfig);
+    }
+    discovery.visit(entry_path.clone())?;
 
-    let entry_module_id = module_id(&entry_path)?;
-    append_resolved_requests(visited.values(), &mut cache_parts);
-    append_cache_metadata(&resolver, visited.keys(), &mut cache_parts)?;
-    let cache_seed = build_cache_seed(&cache_parts);
-    let modules = visited.into_values().collect();
-
-    Ok(DiscoveredProject {
-        cache_seed,
-        entry_module_id,
-        modules,
-    })
-}
-
-fn compile_module_recursive(
-    resolver: &ModuleResolver,
-    path: &Path,
-    external_modules: &BTreeSet<String>,
-    visited: &mut BTreeMap<PathBuf, DiscoveredModule>,
-    cache_parts: &mut Vec<(String, String)>,
-) -> Result<(), VmError> {
-    if visited.contains_key(path) {
-        return Ok(());
+    let Discovery {
+        structure,
+        modules: visited,
+        ..
+    } = discovery;
+    let mut watched = structure.clone();
+    let mut modules = Vec::with_capacity(visited.len());
+    let mut known = HashMap::with_capacity(visited.len());
+    for (path, module) in visited {
+        watched.watch_stamped(&path, module.stamp);
+        modules.push(DiscoveredModule {
+            module_id: module_id(&path),
+            path: path.clone(),
+            source: module.source.clone(),
+            resolved_requests: module.resolved_requests.clone(),
+        });
+        known.insert(path, module);
     }
 
-    let source_text = fs::read_to_string(path)?;
-    cache_parts.push((module_id(path)?, source_text.clone()));
-
-    let requests = extract_static_import_requests(&source_text, path)?;
-    let mut resolved_requests = BTreeMap::<String, String>::new();
-    let mut dependencies = BTreeSet::<PathBuf>::new();
-
-    for request in requests {
-        if external_modules.contains(&request) {
-            resolved_requests.insert(request.clone(), request);
-            continue;
-        }
-        let resolved_path = resolver.resolve_request(path, &request)?;
-        resolved_requests.insert(request, module_id(&resolved_path)?);
-        dependencies.insert(resolved_path);
-    }
-
-    visited.insert(
-        path.to_path_buf(),
-        DiscoveredModule {
-            module_id: module_id(path)?,
-            source: source_text,
-            resolved_requests,
+    Ok((
+        DiscoveredProject {
+            entry_module_id: module_id(&entry_path),
+            modules,
+            watched,
         },
-    );
-
-    for dependency in dependencies {
-        compile_module_recursive(
+        ProjectState {
             resolver,
-            &dependency,
-            external_modules,
-            visited,
-            cache_parts,
-        )?;
-    }
-
-    Ok(())
+            structure,
+            external_modules: external_modules.clone(),
+            modules: known,
+        },
+    ))
 }
 
-/// Seeds the cache with the resolved import graph: resolution can change (for example
-/// through `tsconfig.json` paths) while every module source stays the same.
-fn append_resolved_requests<'a>(
-    modules: impl Iterator<Item = &'a DiscoveredModule>,
-    cache_parts: &mut Vec<(String, String)>,
-) {
-    for module in modules {
-        let mut resolution = String::new();
-        for (request, target) in &module.resolved_requests {
-            resolution.push_str(request);
-            resolution.push_str(" => ");
-            resolution.push_str(target);
-            resolution.push('\n');
-        }
-        cache_parts.push((format!("{} imports", module.module_id), resolution));
-    }
+struct Discovery<'a> {
+    resolver: &'a ModuleResolver,
+    external_modules: &'a BTreeSet<String>,
+    imports_of: &'a mut ImportsOf<'a>,
+    /// Modules of the previous discovery.
+    known: HashMap<PathBuf, KnownModule>,
+    /// Whether the previous resolutions still hold.
+    structure_unchanged: bool,
+    structure: WatchedFiles,
+    modules: BTreeMap<PathBuf, KnownModule>,
 }
 
-fn append_cache_metadata<'a>(
-    resolver: &ModuleResolver,
-    module_paths: impl Iterator<Item = &'a PathBuf>,
-    cache_parts: &mut Vec<(String, String)>,
-) -> Result<(), VmError> {
-    for metadata_path in cache_metadata_paths(resolver.project_root(), module_paths)? {
-        cache_parts.push((
-            module_id(&metadata_path)?,
-            fs::read_to_string(metadata_path)?,
-        ));
-    }
-    Ok(())
-}
-
-fn cache_metadata_paths<'a>(
-    project_root: &Path,
-    module_paths: impl Iterator<Item = &'a PathBuf>,
-) -> Result<BTreeSet<PathBuf>, VmError> {
-    let mut paths = project_lockfiles(project_root)?;
-
-    for module_path in module_paths {
-        paths.extend(package_manifests_for_module(project_root, module_path)?);
-    }
-
-    Ok(paths)
-}
-
-fn project_lockfiles(project_root: &Path) -> Result<BTreeSet<PathBuf>, VmError> {
-    const LOCKFILES: &[&str] = &[
-        "package-lock.json",
-        "npm-shrinkwrap.json",
-        "pnpm-lock.yaml",
-        "yarn.lock",
-        "bun.lock",
-    ];
-
-    LOCKFILES
-        .iter()
-        .map(|name| project_root.join(name))
-        .filter(|path| path.is_file())
-        .map(canonicalize_cache_metadata_path)
-        .collect()
-}
-
-fn package_manifests_for_module(
-    project_root: &Path,
-    module_path: &Path,
-) -> Result<BTreeSet<PathBuf>, VmError> {
-    let mut paths = BTreeSet::new();
-    let module_path = module_path.canonicalize().map_err(VmError::from)?;
-    let mut current = module_path.parent();
-
-    while let Some(dir) = current {
-        if !dir.starts_with(project_root) {
-            break;
+impl Discovery<'_> {
+    /// `path` is canonical: the entry is canonicalized once and resolution returns
+    /// canonical paths, so it is also the module id.
+    fn visit(&mut self, path: PathBuf) -> Result<(), VmError> {
+        if self.modules.contains_key(&path) {
+            return Ok(());
         }
 
-        let manifest = dir.join("package.json");
-        if manifest.is_file() {
-            paths.insert(canonicalize_cache_metadata_path(manifest)?);
+        // A file added in any directory between the module and the project root can
+        // take precedence in resolution (`./src/value` -> `src/value.ts` over
+        // `src/value/index.ts`), so every such directory is watched.
+        for directory in path.ancestors().skip(1) {
+            if !directory.starts_with(self.resolver.project_root()) {
+                break;
+            }
+            self.structure.watch(directory);
         }
 
-        if dir == project_root {
-            break;
+        // Stamped before reading: an edit racing this read shows up as a change.
+        let stamp = FileStamp::of(&path);
+        let module = match self.known.remove(&path) {
+            Some(known) if stamp.is_some() && known.stamp == stamp && self.structure_unchanged => {
+                known
+            }
+            Some(known) if stamp.is_some() && known.stamp == stamp => {
+                self.resolve_module(&path, stamp, known.source)?
+            }
+            _ => {
+                let source = fs::read_to_string(&path)?;
+                self.resolve_module(&path, stamp, source)?
+            }
+        };
+        for package_json in &module.package_jsons {
+            self.structure.watch(package_json);
         }
-        current = dir.parent();
+        let dependencies = module.dependencies.clone();
+        self.modules.insert(path, module);
+
+        for dependency in dependencies {
+            self.visit(dependency)?;
+        }
+        Ok(())
     }
 
-    Ok(paths)
-}
+    fn resolve_module(
+        &mut self,
+        path: &Path,
+        stamp: Option<FileStamp>,
+        source: String,
+    ) -> Result<KnownModule, VmError> {
+        let requests = (self.imports_of)(&source, path)?;
+        let mut resolved_requests = BTreeMap::new();
+        let mut dependencies = BTreeSet::new();
+        let mut package_jsons = Vec::new();
 
-fn canonicalize_cache_metadata_path(path: PathBuf) -> Result<PathBuf, VmError> {
-    path.canonicalize().map_err(VmError::from)
+        for request in requests {
+            if self.external_modules.contains(&request) {
+                resolved_requests.insert(request.clone(), request);
+                continue;
+            }
+            let resolved = self.resolver.resolve_request(path, &request)?;
+            package_jsons.extend(resolved.package_json);
+            resolved_requests.insert(request, module_id(&resolved.path));
+            dependencies.insert(resolved.path);
+        }
+
+        Ok(KnownModule {
+            stamp,
+            source,
+            resolved_requests,
+            dependencies: dependencies.into_iter().collect(),
+            package_jsons,
+        })
+    }
 }
 
 fn normalize_entry_path(entry_path: &Path) -> Result<PathBuf, VmError> {
@@ -218,19 +234,6 @@ fn normalize_entry_path(entry_path: &Path) -> Result<PathBuf, VmError> {
     entry_path.canonicalize().map_err(VmError::from)
 }
 
-fn module_id(path: &Path) -> Result<String, VmError> {
-    path.canonicalize()
-        .map(|path| path.to_string_lossy().into_owned())
-        .map_err(VmError::from)
-}
-
-fn build_cache_seed(parts: &[(String, String)]) -> String {
-    let mut output = String::new();
-    for (module_id, source) in parts {
-        output.push_str(module_id);
-        output.push('\n');
-        output.push_str(source);
-        output.push_str("\n---\n");
-    }
-    output
+fn module_id(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }

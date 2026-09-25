@@ -117,10 +117,6 @@ impl InMemoryHostContractRegistry {
         self.list()
     }
 
-    pub(crate) fn cache_abi_seed(&self) -> Result<String, VmError> {
-        self.abi_seed()
-    }
-
     pub(crate) fn import_module_names(&self) -> Result<BTreeSet<String>, VmError> {
         Ok(self
             .descriptors()?
@@ -409,10 +405,6 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         let mut descriptors = guard.values().cloned().collect::<Vec<_>>();
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(descriptors)
-    }
-
-    fn abi_seed(&self) -> Result<String, VmError> {
-        serde_json::to_string(&self.list()?).map_err(VmError::from)
     }
 
     fn typescript_declarations(&self) -> Result<String, VmError> {
