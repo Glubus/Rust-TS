@@ -54,6 +54,20 @@ const HOST_BRIDGE_SCRIPT: &str = include_str!("projects/host_bridge/main.ts");
 const LAZY_HOST_BRIDGE_SCRIPT: &str = include_str!("projects/lazy_host_bridge/main.ts");
 const VERSION_SCRIPT: &str = include_str!("projects/version_only/main.ts");
 const THROWING_SCRIPT: &str = include_str!("projects/throwing/main.ts");
+const ASYNC_EXPORT_SCRIPT: &str = r#"
+async function double(value: number): Promise<number> {
+  await null;
+  return value * 2;
+}
+
+export async function compute(value: number): Promise<{ doubled: number }> {
+  return { doubled: await double(value) };
+}
+
+export function pending(): Promise<never> {
+  return new Promise(() => {});
+}
+"#;
 
 struct FindUser;
 struct FindInvoice;
@@ -476,6 +490,88 @@ fn demount_when_idle_unloads_after_call() {
             worker_id: 0,
             script_id: String::from("math"),
         })
+    );
+}
+
+#[test]
+fn reload_without_policy_keeps_existing_retention_policy() {
+    let cache_dir = TestCacheDir::new("reload-keeps-retention-policy");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    let args = || vec![json!({ "left": 1, "right": 2 })];
+
+    vm.load_script_with_policy(
+        "inline",
+        DEMO_SCRIPT,
+        ScriptRetentionPolicy::DemountWhenIdle,
+    )
+    .expect("load idle-demounted inline script");
+    vm.load_script("inline", DEMO_SCRIPT)
+        .expect("reload inline script without a policy");
+    let inline_first = vm.call_function("inline", "sum", args());
+    let inline_second = vm.call_function("inline", "sum", args());
+
+    vm.load_script_with_policy(
+        "project",
+        DEMO_SCRIPT,
+        ScriptRetentionPolicy::DemountWhenIdle,
+    )
+    .expect("load idle-demounted script");
+    vm.load_script_project("project", MULTI_MODULE_ENTRY)
+        .expect("reload as project without a policy");
+    let project_first = vm.call_function("project", "compute", args());
+    let project_second = vm.call_function("project", "compute", args());
+
+    vm.load_script_with_policy(
+        "explicit",
+        DEMO_SCRIPT,
+        ScriptRetentionPolicy::DemountWhenIdle,
+    )
+    .expect("load idle-demounted script");
+    vm.load_script_with_policy("explicit", DEMO_SCRIPT, ScriptRetentionPolicy::KeepMounted)
+        .expect("reload with an explicit policy");
+    let explicit_first = vm.call_function("explicit", "sum", args());
+    let explicit_second = vm.call_function("explicit", "sum", args());
+
+    vm.shutdown().expect("shutdown vm");
+
+    assert_eq!(inline_first.expect("call reloaded inline script"), json!(3));
+    assert!(matches!(
+        inline_second,
+        Err(VmError::ScriptNotFound { script_id }) if script_id == "inline"
+    ));
+    project_first.expect("call reloaded project script");
+    assert!(matches!(
+        project_second,
+        Err(VmError::ScriptNotFound { script_id }) if script_id == "project"
+    ));
+    assert_eq!(explicit_first.expect("call explicit reload"), json!(3));
+    assert_eq!(explicit_second.expect("explicit policy wins"), json!(3));
+}
+
+#[test]
+fn sync_lane_call_function_awaits_async_exports() {
+    let cache_dir = TestCacheDir::new("sync-lane-async-export");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+
+    vm.load_script("async-export", ASYNC_EXPORT_SCRIPT)
+        .expect("load script with async exports");
+    let resolved = vm.call_function("async-export", "compute", vec![json!(21)]);
+    let pending = vm.call_function("async-export", "pending", Vec::new());
+
+    vm.shutdown().expect("shutdown vm");
+
+    assert_eq!(
+        resolved.expect("call async export"),
+        json!({ "doubled": 42 })
+    );
+    let error = pending.expect_err("a Promise that never settles has no result");
+    assert!(
+        matches!(
+            &error,
+            VmError::Execution { details }
+                if details.contains("`pending`") && details.contains("never settles")
+        ),
+        "unexpected error: {error}"
     );
 }
 

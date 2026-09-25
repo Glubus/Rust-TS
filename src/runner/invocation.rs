@@ -1,6 +1,6 @@
-//! Exported function invocation inside loaded scripts.
+//! Exported function invocation inside loaded scripts, shared by the sync and async lanes.
 
-use rquickjs::{CatchResultExt, Promise};
+use rquickjs::{CatchResultExt, CaughtError, Promise};
 use serde_json::Value;
 
 use crate::error::VmError;
@@ -9,6 +9,8 @@ use super::errors::caught_js_error_details;
 use super::render::function_call_source;
 use super::script_store::{LoadedScript, LoadedScriptMap, get_loaded_script};
 
+/// Calls one export on the synchronous lane. An async export settles by draining the
+/// QuickJS job queue within the current execution budget.
 pub(crate) fn call_script_function(
     scripts: &LoadedScriptMap,
     script_id: &str,
@@ -21,7 +23,8 @@ pub(crate) fn call_script_function(
     deserialize_function_result(&result_json)
 }
 
-fn build_function_call_source(
+/// Script source whose Promise settles to the JSON text of the export's result.
+pub(crate) fn build_function_call_source(
     module_id: &str,
     function_name: &str,
     args: &[Value],
@@ -50,11 +53,19 @@ fn eval_function_call(
     })
 }
 
-fn map_function_call_error(
-    error: rquickjs::CaughtError<'_>,
+pub(crate) fn map_function_call_error(
+    error: CaughtError<'_>,
     script_id: &str,
     function_name: &str,
 ) -> VmError {
+    if matches!(error, CaughtError::Error(rquickjs::Error::WouldBlock)) {
+        return VmError::Execution {
+            details: format!(
+                "function `{function_name}` of script `{script_id}` returned a Promise that never settles on the synchronous worker lane"
+            ),
+        };
+    }
+
     let details = caught_js_error_details(&error);
     if details.contains("missing function:") {
         VmError::FunctionNotFound {
@@ -66,6 +77,6 @@ fn map_function_call_error(
     }
 }
 
-fn deserialize_function_result(result_json: &str) -> Result<Value, VmError> {
+pub(crate) fn deserialize_function_result(result_json: &str) -> Result<Value, VmError> {
     serde_json::from_str(result_json).map_err(VmError::from)
 }

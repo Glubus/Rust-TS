@@ -374,6 +374,38 @@ fn host_context_v0_is_declarative_sdk_surface_only() {
 }
 
 #[test]
+fn importing_a_host_context_fails_at_load_instead_of_binding_undefined() {
+    let cache_dir = TestCacheDir::new("host-context-import");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    vm.registry()
+        .context::<OverlayContext>()
+        .and_then(|registry| registry.function::<FindUser>())
+        .expect("register host contracts");
+
+    let loaded = vm.load_script(
+        "overlay-reader",
+        r#"
+        import { overlay } from "test";
+
+        export function overlayType() {
+          return typeof overlay;
+        }
+        "#,
+    );
+    let result = vm.call_function("overlay-reader", "overlayType", Vec::new());
+
+    vm.shutdown().expect("shutdown vm");
+
+    let Err(error) = loaded else {
+        panic!("context import loaded and evaluated to {result:?}");
+    };
+    assert!(
+        matches!(&error, VmError::Execution { details } if details.contains("overlay")),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn manager_registry_writes_sdk_files() {
     let cache_dir = TestCacheDir::new("host-registry-sdk-files");
     let output_dir = cache_dir.path().join("generated");

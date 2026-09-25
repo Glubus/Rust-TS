@@ -54,7 +54,7 @@ impl ScriptManager {
             ),
             Err(error) => {
                 if should_demount {
-                    self.demount_script(worker_id, &script_id)?;
+                    self.demount_if_idle(&script_id)?;
                 }
                 Err(error)
             }
@@ -96,7 +96,7 @@ impl ScriptManager {
         self.load_script_project_with_policy(
             script_id.clone(),
             entry_path,
-            ScriptRetentionPolicy::DemountWhenIdle,
+            Some(ScriptRetentionPolicy::DemountWhenIdle),
         )?;
         self.call_function(script_id, function_name, args)
     }
@@ -116,7 +116,7 @@ impl ScriptManager {
             result: result.clone(),
         });
         if should_demount {
-            self.demount_script(worker_id, &script_id)?;
+            self.demount_if_idle(&script_id)?;
         }
         Ok(result)
     }

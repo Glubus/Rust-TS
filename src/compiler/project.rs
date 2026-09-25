@@ -53,6 +53,7 @@ pub(crate) fn discover_project(
     )?;
 
     let entry_module_id = module_id(&entry_path)?;
+    append_resolved_requests(visited.values(), &mut cache_parts);
     append_cache_metadata(&resolver, visited.keys(), &mut cache_parts)?;
     let cache_seed = build_cache_seed(&cache_parts);
     let modules = visited.into_values().collect();
@@ -112,6 +113,24 @@ fn compile_module_recursive(
     }
 
     Ok(())
+}
+
+/// Seeds the cache with the resolved import graph: resolution can change (for example
+/// through `tsconfig.json` paths) while every module source stays the same.
+fn append_resolved_requests<'a>(
+    modules: impl Iterator<Item = &'a DiscoveredModule>,
+    cache_parts: &mut Vec<(String, String)>,
+) {
+    for module in modules {
+        let mut resolution = String::new();
+        for (request, target) in &module.resolved_requests {
+            resolution.push_str(request);
+            resolution.push_str(" => ");
+            resolution.push_str(target);
+            resolution.push('\n');
+        }
+        cache_parts.push((format!("{} imports", module.module_id), resolution));
+    }
 }
 
 fn append_cache_metadata<'a>(

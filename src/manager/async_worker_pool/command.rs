@@ -23,7 +23,7 @@ pub(super) enum AsyncWorkerCommand {
 
 pub(super) struct AsyncLoadScriptCommand {
     pub(super) script_id: ScriptId,
-    pub(super) cache_key: String,
+    pub(super) instance: u64,
     pub(super) transpiled_js: String,
     pub(super) entry_module_id: Option<String>,
     pub(super) modules: Vec<CompiledModule>,
@@ -32,7 +32,7 @@ pub(super) struct AsyncLoadScriptCommand {
 
 pub(super) struct AsyncCallFunctionCommand {
     pub(super) script_id: ScriptId,
-    pub(super) cache_key: String,
+    pub(super) instance: u64,
     pub(super) function_name: String,
     pub(super) args: Vec<Value>,
     pub(super) reply: AsyncWorkerReply<Value>,
@@ -65,7 +65,7 @@ impl AsyncEmitEventReply {
 
 pub(super) struct AsyncUnloadScriptCommand {
     pub(super) script_id: ScriptId,
-    pub(super) cache_key: Option<String>,
+    pub(super) instance: u64,
 }
 
 pub(super) struct AsyncStatsCommand {

@@ -74,6 +74,21 @@
 - Deriving `TsSchema` for a struct with a flattened map no longer panics.
 - Generated SDK `models.X.is()` predicates now check every field: optional and
   union fields were missing parentheses inside `&&` chains.
+- `call_function` on the worker pool awaits `async` exports instead of returning an
+  unsettled Promise.
+- Scripts on the async lane (`async-promise`) can import host modules and call
+  synchronous host functions.
+- `load_script` / `load_script_project` on an already loaded id keep that script's
+  retention policy instead of resetting it to `KeepMounted`.
+- Unloads, demounts and loads of the same script are serialized, so the registry
+  and the worker no longer disagree after an unload races a reload.
+- Emitting an event no longer fails when a listening script is unloaded between
+  routing and delivery.
+- Importing a `HostContext` as a host module fails at load instead of binding
+  `undefined`.
+- Reloading a project after a `tsconfig.json` `paths` change resolves imports
+  against the new configuration instead of reusing the cached graph. Existing project
+  cache artifacts are rebuilt once.
 
 ## 0.2.0 — 2026-09-17
 

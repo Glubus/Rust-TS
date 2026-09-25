@@ -8,7 +8,6 @@ use crate::config::VmOptions;
 use crate::registry::InMemoryHostContractRegistry;
 use crate::types::WorkerId;
 
-use super::bridge_capability::WorkerBridgeCapability;
 use super::module_loader::{MemoryModuleLoader, MemoryModuleResolver, WorkerModuleStore};
 use super::script_store::LoadedScriptMap;
 
@@ -16,7 +15,6 @@ pub(crate) struct WorkerState {
     pub(crate) worker_id: WorkerId,
     pub(crate) options: VmOptions,
     pub(crate) runtime: Runtime,
-    pub(crate) bridge_capability: WorkerBridgeCapability,
     pub(crate) module_store: WorkerModuleStore,
     pub(crate) scripts: LoadedScriptMap,
     pub(crate) host_registry: Arc<InMemoryHostContractRegistry>,
@@ -41,7 +39,6 @@ impl WorkerState {
         Ok(Self {
             worker_id,
             runtime,
-            bridge_capability: WorkerBridgeCapability::Sync,
             module_store,
             scripts: LoadedScriptMap::with_capacity(options.max_scripts_per_worker),
             options,

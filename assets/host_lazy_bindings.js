@@ -1,46 +1,34 @@
 (() => {
+  // [contract name, returns a Promise] for every host function contract.
   const contracts = __contracts__;
-  const bridgeMethod = __bridge_method__;
-  const returnsPromise = __returns_promise__;
   const roots = Object.create(null);
   const cache = new Map();
 
-  for (const contractName of contracts) {
-    let node = roots;
-    const segments = contractName.split(".");
-    for (const segment of segments) {
-      node[segment] = node[segment] ?? { contractName: undefined, children: Object.create(null) };
-      node = node[segment].children;
+  for (const [contractName, returnsPromise] of contracts) {
+    let children = roots;
+    let node;
+    for (const segment of contractName.split(".")) {
+      node = children[segment] ??
+        (children[segment] = { contractName: undefined, returnsPromise: false, children: Object.create(null) });
+      children = node.children;
     }
-
-    let leaf = roots;
-    for (const segment of segments) {
-      leaf = leaf[segment].children;
-    }
-    const leafName = segments[segments.length - 1];
-    let parent = roots;
-    for (const segment of segments.slice(0, -1)) {
-      parent = parent[segment].children;
-    }
-    parent[leafName].contractName = contractName;
+    node.contractName = contractName;
+    node.returnsPromise = returnsPromise;
   }
 
   const hostPayload = (args) => {
     const payload = args.length <= 1 ? args[0] : args;
-    return JSON.stringify(payload === undefined ? null : payload);
+    return payload === undefined ? null : payload;
   };
 
-  const invokeHost = (contractName, args) => {
-    if (!returnsPromise && globalThis.__host.callValue) {
-      const payload = args.length <= 1 ? args[0] : args;
-      return globalThis.__host.callValue(contractName, payload === undefined ? null : payload);
+  const invokeHost = (node, args) => {
+    const payload = hostPayload(args);
+    if (node.returnsPromise) {
+      return globalThis.__host
+        .callAsync(node.contractName, JSON.stringify(payload))
+        .then((json) => JSON.parse(json));
     }
-
-    const response = globalThis.__host[bridgeMethod](contractName, hostPayload(args));
-    if (returnsPromise) {
-      return response.then((json) => JSON.parse(json));
-    }
-    return JSON.parse(response);
+    return globalThis.__host.callValue(node.contractName, payload);
   };
 
   const materialize = (path, node) => {
@@ -49,7 +37,7 @@
     }
 
     const target = node.contractName ? function (...args) {
-      return invokeHost(node.contractName, args);
+      return invokeHost(node, args);
     } : {};
 
     const proxy = new Proxy(target, {
@@ -73,7 +61,7 @@
         if (!node.contractName) {
           throw new TypeError(`host namespace ${path} is not callable`);
         }
-        return invokeHost(node.contractName, args);
+        return invokeHost(node, args);
       },
     });
 

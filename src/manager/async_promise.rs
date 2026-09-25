@@ -25,6 +25,7 @@ pub struct AsyncManagedScript {
     manager: ScriptManager,
     script_id: ScriptId,
     worker_id: WorkerId,
+    instance: u64,
     cache_key: String,
     subscriptions: Vec<String>,
     module_ids: Vec<String>,
@@ -78,7 +79,6 @@ impl ScriptManager {
             .async_workers
             .load_script(AsyncWorkerScriptRequest {
                 script_id: script_id.clone(),
-                cache_key: cache_key.clone(),
                 transpiled_js: compiled.transpiled_js,
                 entry_module_id: compiled.entry_path,
                 modules: compiled.modules,
@@ -108,6 +108,7 @@ impl ScriptManager {
             manager: self.clone(),
             script_id,
             worker_id: loaded.worker_id,
+            instance: loaded.instance,
             cache_key,
             subscriptions: loaded.subscriptions,
             module_ids: loaded.module_ids,
@@ -172,7 +173,7 @@ impl AsyncManagedScript {
             .call_function(
                 self.worker_id,
                 self.script_id.clone(),
-                self.cache_key.clone(),
+                self.instance,
                 function_name.clone(),
                 args.to_vec(),
             )
@@ -221,12 +222,11 @@ impl AsyncManagedScript {
 
 impl Drop for AsyncManagedScript {
     fn drop(&mut self) {
-        let _ = self.manager.inner.async_workers.unload_script(
-            self.worker_id,
-            self.script_id.clone(),
-            Some(self.cache_key.clone()),
-        );
-        if self.is_current_registry_entry() {
+        let workers = &self.manager.inner.async_workers;
+        let _ = workers.unload_script(self.worker_id, self.script_id.clone(), self.instance);
+        if workers.release_instance(&self.script_id, self.instance)
+            && self.is_current_registry_entry()
+        {
             let _ = self.manager.inner.script_registry.set_state_if_source_hash(
                 &self.script_id,
                 &self.cache_key,
@@ -248,6 +248,8 @@ impl Drop for AsyncManagedScript {
 }
 
 impl AsyncManagedScript {
+    /// Whether the registry entry still describes this artifact rather than a later
+    /// load of the same script id on the sync lane.
     fn is_current_registry_entry(&self) -> bool {
         self.manager
             .inner

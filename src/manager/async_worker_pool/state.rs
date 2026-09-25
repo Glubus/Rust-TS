@@ -23,7 +23,8 @@ pub(super) struct AsyncWorkerState {
 }
 
 struct LoadedAsyncScript {
-    cache_key: String,
+    /// Load identity: a stale handle of the same script id never reaches a newer load.
+    instance: u64,
     script: AsyncLoadedScript,
 }
 
@@ -77,12 +78,13 @@ impl AsyncWorkerState {
                 self.scripts.insert(
                     script_id,
                     LoadedAsyncScript {
-                        cache_key: command.cache_key,
+                        instance: command.instance,
                         script,
                     },
                 );
                 AsyncWorkerLoad {
                     worker_id: self.worker_id,
+                    instance: command.instance,
                     module_ids,
                     subscriptions,
                 }
@@ -104,7 +106,7 @@ impl AsyncWorkerState {
         &self,
         command: &AsyncCallFunctionCommand,
     ) -> Result<serde_json::Value, VmError> {
-        let loaded = self.script_for_call(&command.script_id, &command.cache_key)?;
+        let loaded = self.script_for_call(&command.script_id, command.instance)?;
         loaded
             .script
             .call_function(&command.script_id, &command.function_name, &command.args)
@@ -117,10 +119,14 @@ impl AsyncWorkerState {
         false
     }
 
+    /// Targets unloaded after routing no longer listen and are skipped.
     async fn emit_event(&self, command: &AsyncEmitEventCommand) -> Result<usize, VmError> {
         let mut delivered_count = 0usize;
-        for script_id in &command.target_script_ids {
-            let loaded = self.script_for_event(script_id)?;
+        for loaded in command
+            .target_script_ids
+            .iter()
+            .filter_map(|script_id| self.scripts.get(script_id))
+        {
             delivered_count += loaded
                 .script
                 .emit_event(&command.event_name, &command.payload)
@@ -132,34 +138,18 @@ impl AsyncWorkerState {
     fn script_for_call(
         &self,
         script_id: &str,
-        cache_key: &str,
+        instance: u64,
     ) -> Result<&LoadedAsyncScript, VmError> {
-        let loaded = self
-            .scripts
-            .get(script_id)
-            .ok_or_else(|| VmError::ScriptNotFound {
-                script_id: script_id.to_owned(),
-            })?;
-
-        if loaded.cache_key == cache_key {
-            Ok(loaded)
-        } else {
-            Err(VmError::ScriptNotFound {
-                script_id: script_id.to_owned(),
-            })
-        }
-    }
-
-    fn script_for_event(&self, script_id: &str) -> Result<&LoadedAsyncScript, VmError> {
         self.scripts
             .get(script_id)
+            .filter(|loaded| loaded.instance == instance)
             .ok_or_else(|| VmError::ScriptNotFound {
                 script_id: script_id.to_owned(),
             })
     }
 
     fn execute_unload(&mut self, command: AsyncUnloadScriptCommand) -> bool {
-        self.unload_script(&command.script_id, command.cache_key.as_deref());
+        self.unload_script(&command.script_id, command.instance);
         false
     }
 
@@ -172,12 +162,12 @@ impl AsyncWorkerState {
         false
     }
 
-    fn unload_script(&mut self, script_id: &str, cache_key: Option<&str>) {
-        let should_remove = self
+    fn unload_script(&mut self, script_id: &str, instance: u64) {
+        if self
             .scripts
             .get(script_id)
-            .is_some_and(|loaded| cache_key.is_none_or(|expected| loaded.cache_key == expected));
-        if should_remove {
+            .is_some_and(|loaded| loaded.instance == instance)
+        {
             self.scripts.remove(script_id);
         }
     }
@@ -191,4 +181,54 @@ impl AsyncWorkerState {
 struct CommandResult<T> {
     reply: super::command::AsyncWorkerReply<T>,
     value: Result<T, VmError>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::super::command::{
+        AsyncEmitEventCommand, AsyncEmitEventReply, AsyncLoadScriptCommand, AsyncWorkerCommand,
+    };
+    use super::AsyncWorkerState;
+    use crate::config::VmOptions;
+
+    #[test]
+    fn emit_skips_targets_unloaded_after_routing() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut state =
+                AsyncWorkerState::new(0, &VmOptions::default(), Arc::default(), Arc::default())
+                    .await
+                    .unwrap();
+            let (reply, loaded) = tokio::sync::oneshot::channel();
+            state
+                .execute(AsyncWorkerCommand::LoadScript(AsyncLoadScriptCommand {
+                    script_id: "listener".into(),
+                    instance: 1,
+                    transpiled_js: "ctx.on(\"tick\", () => {});".into(),
+                    entry_module_id: None,
+                    modules: Vec::new(),
+                    reply,
+                }))
+                .await;
+            loaded.await.unwrap().unwrap();
+            let (reply, delivered) = std::sync::mpsc::channel();
+
+            state
+                .execute(AsyncWorkerCommand::EmitEvent(AsyncEmitEventCommand {
+                    target_script_ids: vec!["unloaded".into(), "listener".into()],
+                    event_name: "tick".into(),
+                    payload: json!(null),
+                    reply: AsyncEmitEventReply::Blocking(reply),
+                }))
+                .await;
+
+            assert_eq!(delivered.recv().unwrap().unwrap(), 1);
+        });
+    }
 }

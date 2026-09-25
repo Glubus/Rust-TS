@@ -2,10 +2,11 @@ mod support;
 
 use std::fs;
 use std::sync::{Arc, Barrier};
+use std::time::Duration;
 
 use rustts::{
-    HostCallback, HostContract, HostContractKind, RustTs, Schema, ScriptRetentionPolicy, TsField,
-    TsType, VmError, VmOptions,
+    HostCallback, HostContract, HostContractKind, RustTs, Schema, ScriptMaterializationState,
+    ScriptRetentionPolicy, TsField, TsType, VmError, VmOptions,
 };
 use serde_json::json;
 
@@ -36,6 +37,15 @@ const CONCURRENT_DEPENDENCY_EDGE_ROUNDS: usize = 10;
 const CONCURRENT_UNLOAD_LISTENER_SCRIPTS: usize = 16;
 const CONCURRENT_UNLOAD_EMITTER_THREADS: usize = 4;
 const CONCURRENT_UNLOAD_EMITS_PER_THREAD: usize = 30;
+const RELOAD_UNLOAD_RACE_ROUNDS: usize = 40;
+const SLOW_LOAD_SCRIPT: &str = r#"
+const loadedUntil = Date.now() + 5;
+while (Date.now() < loadedUntil) {}
+
+export function sum(input: { left: number; right: number }): number {
+  return input.left + input.right;
+}
+"#;
 
 struct ScoreUpdate;
 
@@ -316,6 +326,21 @@ fn concurrent_listener_unloads_and_emits_clear_hot_routes_without_leaks() {
             .iter()
             .all(|script| script.active_worker.is_none())
     );
+}
+
+#[test]
+fn unload_racing_reload_keeps_registry_and_worker_in_agreement() {
+    let cache_dir = TestCacheDir::new("stress-unload-reload-race");
+    let vm = Arc::new(RustTs::new(cache_dir.vm_options()).expect("create vm"));
+
+    for _ in 0..RELOAD_UNLOAD_RACE_ROUNDS {
+        vm.load_script("racer", SLOW_LOAD_SCRIPT)
+            .expect("mount racer before the race");
+        race_reload_against_unload(&vm);
+        assert_racer_registry_matches_worker(&vm);
+    }
+
+    vm.shutdown().expect("shutdown vm");
 }
 
 #[test]
@@ -747,8 +772,7 @@ fn run_concurrent_unload_emit_worker(vm: &RustTs, thread_index: usize) {
 fn assert_valid_unload_race_emit_result(result: Result<usize, VmError>) {
     match result {
         Ok(delivered) => assert!(delivered <= max_concurrent_unload_delivery_count()),
-        Err(VmError::ScriptNotFound { .. }) => {}
-        Err(error) => panic!("unexpected emit error during unload race: {error}"),
+        Err(error) => panic!("emit must skip listeners unloaded mid-flight: {error}"),
     }
 }
 
@@ -758,6 +782,63 @@ fn max_concurrent_unload_delivery_count() -> usize {
 
 fn concurrent_unload_listener_id(listener_index: usize) -> String {
     format!("unload-listener-{listener_index}")
+}
+
+/// Reloads and unloads `racer` at once; the unload starts slightly later so it
+/// usually reaches the worker while the slow reload is still mounting.
+fn race_reload_against_unload(vm: &Arc<RustTs>) {
+    let barrier = Arc::new(Barrier::new(2));
+    let reload = {
+        let vm = Arc::clone(vm);
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+            barrier.wait();
+            vm.load_script("racer", SLOW_LOAD_SCRIPT)
+        })
+    };
+    let unload = {
+        let vm = Arc::clone(vm);
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+            barrier.wait();
+            std::thread::sleep(Duration::from_millis(1));
+            vm.unload_script("racer")
+        })
+    };
+
+    reload
+        .join()
+        .expect("join reload")
+        .expect("reload racer during unload");
+    unload
+        .join()
+        .expect("join unload")
+        .expect("unload racer during reload");
+}
+
+fn assert_racer_registry_matches_worker(vm: &RustTs) {
+    let stats = vm.stats().expect("collect stats after race");
+    let entry = vm
+        .describe_script("racer")
+        .expect("describe racer")
+        .expect("racer stays registered");
+    let call = vm.call_function("racer", "sum", vec![json!({ "left": 1, "right": 1 })]);
+    let registry_mounted = stats.memory.active_scripts == 1;
+
+    assert_eq!(
+        stats.loaded_scripts, stats.memory.active_scripts,
+        "worker and active registry disagree"
+    );
+    assert_eq!(
+        entry.state == ScriptMaterializationState::Mounted,
+        registry_mounted,
+        "script registry disagrees with the active registry"
+    );
+    assert_eq!(
+        call.is_ok(),
+        registry_mounted,
+        "call result {call:?} disagrees with the registry"
+    );
 }
 
 fn run_concurrent_host_operations(vm: Arc<RustTs>) {

@@ -6,8 +6,6 @@ const BOOTSTRAP_MODULE_CONTEXT_TEMPLATE: &str =
 const HOST_LAZY_BINDINGS_TEMPLATE: &str = include_str!("../../assets/host_lazy_bindings.js");
 const CALL_FUNCTION_TEMPLATE: &str = include_str!("../../assets/call_function.js");
 #[cfg(feature = "async-promise")]
-const ASYNC_CALL_FUNCTION_TEMPLATE: &str = include_str!("../../assets/async_call_function.js");
-#[cfg(feature = "async-promise")]
 const ASYNC_EMIT_EVENT_TEMPLATE: &str = include_str!("../../assets/async_emit_event.js");
 const EMIT_EVENT_TEMPLATE: &str = include_str!("../../assets/emit_event.js");
 const LIST_SUBSCRIPTIONS_TEMPLATE: &str = include_str!("../../assets/list_subscriptions.js");
@@ -17,8 +15,6 @@ const FUNCTION_ARGS_PLACEHOLDER: &str = "__FUNCTION_ARGS__";
 const EVENT_NAME_PLACEHOLDER: &str = "__EVENT_NAME__";
 const EVENT_PAYLOAD_PLACEHOLDER: &str = "__EVENT_PAYLOAD__";
 const CONTRACTS_PLACEHOLDER: &str = "__contracts__";
-const BRIDGE_METHOD_PLACEHOLDER: &str = "__bridge_method__";
-const RETURNS_PROMISE_PLACEHOLDER: &str = "__returns_promise__";
 
 pub(crate) fn eval_file_name(script_id: &str) -> String {
     suffixed(script_id, ".js")
@@ -28,60 +24,34 @@ pub(crate) fn worker_thread_name(worker_id: usize) -> String {
     prefixed_number(WORKER_THREAD_PREFIX, worker_id)
 }
 
+/// Options for evaluating runner-owned global (non-module) scripts named `name.js`.
+pub(crate) fn global_eval_options(name: &str) -> rquickjs::context::EvalOptions {
+    let mut options = rquickjs::context::EvalOptions::default();
+    options.global = true;
+    options.strict = true;
+    options.filename = Some(eval_file_name(name));
+    options
+}
+
 pub(crate) fn bootstrap_module_context_source() -> &'static str {
     BOOTSTRAP_MODULE_CONTEXT_TEMPLATE
 }
 
-pub(crate) fn host_lazy_bindings_source(
-    contracts_json: &str,
-    bridge_method_json: &str,
-    returns_promise: bool,
-) -> String {
-    HOST_LAZY_BINDINGS_TEMPLATE
-        .replace(CONTRACTS_PLACEHOLDER, contracts_json)
-        .replace(BRIDGE_METHOD_PLACEHOLDER, bridge_method_json)
-        .replace(
-            RETURNS_PROMISE_PLACEHOLDER,
-            if returns_promise { "true" } else { "false" },
-        )
+/// `contracts_json` is a JSON array of `[contract name, returns a Promise]` pairs.
+pub(crate) fn host_lazy_bindings_source(contracts_json: &str) -> String {
+    HOST_LAZY_BINDINGS_TEMPLATE.replace(CONTRACTS_PLACEHOLDER, contracts_json)
 }
 
+/// Calls one export and settles its result, so async exports resolve before returning.
 pub(crate) fn function_call_source(
     module_id_json: &str,
     function_name_json: &str,
     args_json: &str,
 ) -> String {
-    function_call_source_from_template(
-        CALL_FUNCTION_TEMPLATE,
-        module_id_json,
-        function_name_json,
-        args_json,
-    )
-}
-
-#[cfg(feature = "async-promise")]
-pub(crate) fn async_function_call_source(
-    module_id_json: &str,
-    function_name_json: &str,
-    args_json: &str,
-) -> String {
-    function_call_source_from_template(
-        ASYNC_CALL_FUNCTION_TEMPLATE,
-        module_id_json,
-        function_name_json,
-        args_json,
-    )
-}
-
-fn function_call_source_from_template(
-    template: &str,
-    module_id_json: &str,
-    function_name_json: &str,
-    args_json: &str,
-) -> String {
-    let with_module_id = template.replace(MODULE_ID_PLACEHOLDER, module_id_json);
-    let with_function_name = with_module_id.replace(FUNCTION_NAME_PLACEHOLDER, function_name_json);
-    with_function_name.replace(FUNCTION_ARGS_PLACEHOLDER, args_json)
+    CALL_FUNCTION_TEMPLATE
+        .replace(MODULE_ID_PLACEHOLDER, module_id_json)
+        .replace(FUNCTION_NAME_PLACEHOLDER, function_name_json)
+        .replace(FUNCTION_ARGS_PLACEHOLDER, args_json)
 }
 
 pub(crate) fn emit_event_source(event_name_json: &str, payload_json: &str) -> String {

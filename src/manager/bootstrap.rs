@@ -52,7 +52,7 @@ impl ScriptManager {
                 event_bus: EventBus::new(event_queue_capacity),
                 metrics: RuntimeMetrics::new(latency_histograms),
                 cache,
-                script_load_lock: Mutex::new(()),
+                script_lifecycle_lock: Mutex::new(()),
                 compiler: Mutex::new(CompilerService::default()),
                 script_registry: InMemoryScriptRegistry::new(),
                 host_contract_registry,

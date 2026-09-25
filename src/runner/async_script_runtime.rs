@@ -12,14 +12,18 @@ use crate::registry::InMemoryHostContractRegistry;
 use crate::types::{ScriptId, VmQuickJsMemoryStats};
 
 use super::async_host_bridge::install_async_host_bridge;
-use super::errors::{caught_js_error, caught_js_error_details, js_error};
+use super::errors::{caught_js_error, js_error};
+use super::host_bridge::insert_host_import_modules;
+use super::invocation::{
+    build_function_call_source, deserialize_function_result, map_function_call_error,
+};
 use super::memory::quickjs_memory_stats;
 use super::module_loader::{
     MemoryModuleLoader, MemoryModuleResolver, RuntimeModuleGraph, WorkerModuleStore,
 };
 use super::render::{
-    async_emit_event_source, async_function_call_source, bootstrap_module_context_source,
-    eval_file_name, list_subscriptions_source,
+    async_emit_event_source, bootstrap_module_context_source, global_eval_options,
+    list_subscriptions_source,
 };
 
 /// Experimental async QuickJS runtime for Promise-aware host functions.
@@ -142,6 +146,7 @@ impl AsyncScriptRuntime {
         modules: Vec<CompiledModule>,
     ) -> Result<RuntimeModuleGraph, VmError> {
         let graph_id = self.next_module_graph_id();
+        insert_host_import_modules(&self.module_store, &self.host_registry)?;
         if modules.is_empty() {
             return self
                 .module_store
@@ -185,7 +190,7 @@ impl AsyncLoadedScript {
         function_name: &str,
         args: &[Value],
     ) -> Result<Value, VmError> {
-        let eval_source = build_async_function_call_source(&self.module_id, function_name, args)?;
+        let eval_source = build_function_call_source(&self.module_id, function_name, args)?;
         let result_json = self
             .control
             .run_async(
@@ -255,8 +260,7 @@ async fn bootstrap_module_context(
 
 fn evaluate_bootstrap_script(ctx: Ctx<'_>, script_id: &str) -> Result<(), VmError> {
     let source = bootstrap_module_context_source();
-    let options = build_eval_options(script_id);
-    ctx.eval_with_options::<(), _>(source, options)
+    ctx.eval_with_options::<(), _>(source, global_eval_options(script_id))
         .catch(&ctx)
         .map_err(caught_js_error)
 }
@@ -270,14 +274,6 @@ async fn import_entry_module(ctx: Ctx<'_>, module_id: &str) -> Result<(), VmErro
         .catch(&ctx)
         .map_err(caught_js_error)?;
     Ok(())
-}
-
-fn build_eval_options(script_id: &str) -> rquickjs::context::EvalOptions {
-    let mut options = rquickjs::context::EvalOptions::default();
-    options.global = true;
-    options.strict = true;
-    options.filename = Some(eval_file_name(script_id));
-    options
 }
 
 fn build_loaded_script(
@@ -327,21 +323,6 @@ async fn collect_script_subscriptions(context: &AsyncContext) -> Result<Vec<Stri
     serde_json::from_str(&result_json).map_err(VmError::from)
 }
 
-fn build_async_function_call_source(
-    module_id: &str,
-    function_name: &str,
-    args: &[Value],
-) -> Result<String, VmError> {
-    let module_id_json = serde_json::to_string(module_id)?;
-    let function_name_json = serde_json::to_string(function_name)?;
-    let args_json = serde_json::to_string(args)?;
-    Ok(async_function_call_source(
-        &module_id_json,
-        &function_name_json,
-        &args_json,
-    ))
-}
-
 async fn eval_async_function_call(
     context: &AsyncContext,
     eval_source: String,
@@ -359,26 +340,6 @@ async fn eval_async_function_call(
                 .map_err(|error| map_function_call_error(error, script_id, function_name))
         })
         .await
-}
-
-fn map_function_call_error(
-    error: rquickjs::CaughtError<'_>,
-    script_id: &str,
-    function_name: &str,
-) -> VmError {
-    let details = caught_js_error_details(&error);
-    if details.contains("missing function:") {
-        VmError::FunctionNotFound {
-            script_id: script_id.to_owned(),
-            function_name: function_name.to_owned(),
-        }
-    } else {
-        VmError::Execution { details }
-    }
-}
-
-fn deserialize_function_result(result_json: &str) -> Result<Value, VmError> {
-    serde_json::from_str(result_json).map_err(VmError::from)
 }
 
 #[cfg(test)]

@@ -38,7 +38,9 @@ pub(super) struct Inner {
     pub(super) event_bus: EventBus,
     pub(super) metrics: RuntimeMetrics,
     pub(super) cache: ScriptCache,
-    pub(super) script_load_lock: Mutex<()>,
+    /// Serializes script loads, reloads, unloads and demounts, so the registries and
+    /// the workers change together.
+    pub(super) script_lifecycle_lock: Mutex<()>,
     #[allow(dead_code)]
     pub(super) compiler: Mutex<CompilerService>,
     pub(super) script_registry: InMemoryScriptRegistry,

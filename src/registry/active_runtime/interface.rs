@@ -9,6 +9,13 @@ pub trait ActiveRuntimeRegistry: Send + Sync {
     /// Returns the current runner hosting one script.
     fn get_worker(&self, script_id: &str) -> Result<Option<WorkerId>, VmError>;
 
+    /// Returns the retention policy of one bound script.
+    fn retention_policy(&self, script_id: &str) -> Result<Option<ScriptRetentionPolicy>, VmError>;
+
+    /// Returns whether one bound script is idle under a demount-when-idle policy;
+    /// `false` when the script is not bound.
+    fn should_demount(&self, script_id: &str) -> Result<bool, VmError>;
+
     /// Binds one script to one runner.
     fn bind_script(
         &self,

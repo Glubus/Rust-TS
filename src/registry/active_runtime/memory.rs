@@ -204,6 +204,22 @@ impl ActiveRuntimeRegistry for InMemoryActiveRuntimeRegistry {
             .map(|entry| entry.worker_id))
     }
 
+    fn retention_policy(&self, script_id: &str) -> Result<Option<ScriptRetentionPolicy>, VmError> {
+        let guard = self.state.lock().map_err(|_| VmError::WorkerPanicked)?;
+        Ok(guard
+            .by_script_id
+            .get(script_id)
+            .map(|entry| entry.mount_policy.into()))
+    }
+
+    fn should_demount(&self, script_id: &str) -> Result<bool, VmError> {
+        let guard = self.state.lock().map_err(|_| VmError::WorkerPanicked)?;
+        Ok(guard
+            .by_script_id
+            .get(script_id)
+            .is_some_and(ActiveRuntimeEntry::should_demount))
+    }
+
     fn bind_script(
         &self,
         script_id: ScriptId,

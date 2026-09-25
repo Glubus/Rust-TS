@@ -11,9 +11,6 @@ enum HostModuleBinding {
     Callback {
         event_name: String,
     },
-    Context {
-        contract_name: String,
-    },
 }
 
 #[derive(Debug, Default)]
@@ -54,6 +51,9 @@ pub(crate) fn render_host_import_modules(
         .collect()
 }
 
+/// Runtime binding exported for one contract. Contexts are declarative only: nothing
+/// provides their value at runtime, so importing one fails at load instead of
+/// silently binding `undefined`.
 fn binding_for_descriptor(descriptor: &HostContractDescriptor) -> Option<HostModuleBinding> {
     match &descriptor.abi {
         HostContractAbi::Function { execution, .. } => Some(HostModuleBinding::Function {
@@ -63,10 +63,9 @@ fn binding_for_descriptor(descriptor: &HostContractDescriptor) -> Option<HostMod
         HostContractAbi::Callback { hot, .. } if *hot => Some(HostModuleBinding::Callback {
             event_name: descriptor.name.clone(),
         }),
-        HostContractAbi::Context { .. } => Some(HostModuleBinding::Context {
-            contract_name: descriptor.name.clone(),
-        }),
-        HostContractAbi::Callback { .. } | HostContractAbi::Unknown => None,
+        HostContractAbi::Callback { .. }
+        | HostContractAbi::Context { .. }
+        | HostContractAbi::Unknown => None,
     }
 }
 
@@ -150,9 +149,6 @@ fn render_binding(binding: &HostModuleBinding, style: HostModuleStyle) -> String
         HostModuleBinding::Callback { event_name } => {
             format!("handler => globalThis.__rustts_on({event_name:?}, handler)")
         }
-        HostModuleBinding::Context { contract_name } => {
-            format!("globalThis[{contract_name:?}]")
-        }
     }
 }
 
@@ -172,11 +168,9 @@ fn render_function_binding(
                 "input => __host.callValue ? __host.callValue({contract_name:?}, input === undefined ? null : input) : __hostOutput(__host.call({contract_name:?}, __hostInput(input)))"
             )
         }
-        HostFunctionExecution::AsyncPromise => {
-            format!(
-                "async input => __hostOutput(await __host.callAsync({contract_name:?}, __hostInput(input)))"
-            )
-        }
+        HostFunctionExecution::AsyncPromise => format!(
+            "input => __host.callAsync({contract_name:?}, __hostInput(input)).then(__hostOutput)"
+        ),
     }
 }
 

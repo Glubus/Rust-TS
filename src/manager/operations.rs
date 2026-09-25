@@ -11,13 +11,14 @@ use crate::types::ScriptRetentionPolicy;
 use crate::types::{ScriptId, ScriptSnapshot, ScriptSourceKind, VmEvent};
 
 impl ScriptManager {
-    /// Loads or replaces one TypeScript script.
+    /// Loads or replaces one TypeScript script. A reload keeps the retention policy of
+    /// the script it replaces; a new script stays mounted until unloaded.
     pub fn load_script(
         &self,
         id: impl Into<ScriptId>,
         source: impl Into<String>,
     ) -> Result<ScriptSnapshot, VmError> {
-        self.load_script_with_policy(id, source, ScriptRetentionPolicy::KeepMounted)
+        self.load_inline_script(id.into(), source.into(), None)
     }
 
     /// Loads or replaces one TypeScript script with an explicit retention policy.
@@ -27,24 +28,11 @@ impl ScriptManager {
         source: impl Into<String>,
         policy: ScriptRetentionPolicy,
     ) -> Result<ScriptSnapshot, VmError> {
-        let started_at = Instant::now();
-        let script_id = id.into();
-        let source = source.into();
-        let _load_guard = self
-            .inner
-            .script_load_lock
-            .lock()
-            .map_err(|_| VmError::WorkerPanicked)?;
-        let result = self
-            .prepare_script(&script_id, &source)
-            .and_then(|compiled| {
-                self.mount_compiled_script(script_id, ScriptSourceKind::Inline, compiled, policy)
-            });
-        self.inner.metrics.observe_load(started_at.elapsed());
-        result
+        self.load_inline_script(id.into(), source.into(), Some(policy))
     }
 
-    /// Loads one multi-file TypeScript project from a filesystem entry point.
+    /// Loads one multi-file TypeScript project from a filesystem entry point. A reload
+    /// keeps the retention policy of the script it replaces.
     ///
     /// Version 0 supports static ESM graphs with local imports, tsconfig aliases, and
     /// package imports resolved from project-local `node_modules`.
@@ -53,34 +41,53 @@ impl ScriptManager {
         id: impl Into<ScriptId>,
         entry_path: impl AsRef<Path>,
     ) -> Result<ScriptSnapshot, VmError> {
-        self.load_script_project_with_policy(id, entry_path, ScriptRetentionPolicy::KeepMounted)
+        self.load_script_project_with_policy(id, entry_path, None)
     }
 
     /// Unloads one script from its current worker.
     pub fn unload_script(&self, script_id: impl Into<ScriptId>) -> Result<(), VmError> {
         let script_id = script_id.into();
+        let _lifecycle = self.lock_script_lifecycle()?;
         let worker_id = self.lookup_worker_for_script(&script_id)?;
-        self.demount_script(worker_id, &script_id)
+        self.demount_locked(worker_id, &script_id)
     }
 
+    /// `None` keeps the retention policy of the script being replaced.
     pub(crate) fn load_script_project_with_policy(
         &self,
         id: impl Into<ScriptId>,
         entry_path: impl AsRef<Path>,
-        policy: ScriptRetentionPolicy,
+        policy: Option<ScriptRetentionPolicy>,
+    ) -> Result<ScriptSnapshot, VmError> {
+        self.load_prepared(id.into(), ScriptSourceKind::Project, policy, |_| {
+            self.prepare_project_script(entry_path.as_ref())
+        })
+    }
+
+    fn load_inline_script(
+        &self,
+        script_id: ScriptId,
+        source: String,
+        policy: Option<ScriptRetentionPolicy>,
+    ) -> Result<ScriptSnapshot, VmError> {
+        self.load_prepared(script_id, ScriptSourceKind::Inline, policy, |script_id| {
+            self.prepare_script(script_id, &source)
+        })
+    }
+
+    /// Compiles and mounts one script under the lifecycle lock, recording load latency.
+    fn load_prepared(
+        &self,
+        script_id: ScriptId,
+        source_kind: ScriptSourceKind,
+        policy: Option<ScriptRetentionPolicy>,
+        prepare: impl FnOnce(&str) -> Result<CompiledScript, VmError>,
     ) -> Result<ScriptSnapshot, VmError> {
         let started_at = Instant::now();
-        let script_id = id.into();
-        let _load_guard = self
-            .inner
-            .script_load_lock
-            .lock()
-            .map_err(|_| VmError::WorkerPanicked)?;
-        let result = self
-            .prepare_project_script(entry_path.as_ref())
-            .and_then(|compiled| {
-                self.mount_compiled_script(script_id, ScriptSourceKind::Project, compiled, policy)
-            });
+        let _lifecycle = self.lock_script_lifecycle()?;
+        let result = prepare(&script_id).and_then(|compiled| {
+            self.mount_compiled_script(script_id, source_kind, compiled, policy)
+        });
         self.inner.metrics.observe_load(started_at.elapsed());
         result
     }
@@ -90,8 +97,9 @@ impl ScriptManager {
         script_id: ScriptId,
         source_kind: ScriptSourceKind,
         compiled: CompiledScript,
-        policy: ScriptRetentionPolicy,
+        policy: Option<ScriptRetentionPolicy>,
     ) -> Result<ScriptSnapshot, VmError> {
+        let policy = self.retention_policy_for_load(&script_id, policy)?;
         let cache_key = compiled.cache_key.clone();
         let transpiled_path = compiled.transpiled_path.clone();
         let entry_path = compiled.entry_path.clone();
@@ -127,6 +135,23 @@ impl ScriptManager {
             snapshot: snapshot.clone(),
         });
         Ok(snapshot)
+    }
+
+    /// An explicit policy wins; otherwise a reload keeps the mounted script's policy
+    /// and a new script stays mounted.
+    fn retention_policy_for_load(
+        &self,
+        script_id: &str,
+        requested: Option<ScriptRetentionPolicy>,
+    ) -> Result<ScriptRetentionPolicy, VmError> {
+        if let Some(policy) = requested {
+            return Ok(policy);
+        }
+        Ok(self
+            .inner
+            .active_runtime_registry
+            .retention_policy(script_id)?
+            .unwrap_or(ScriptRetentionPolicy::KeepMounted))
     }
 }
 

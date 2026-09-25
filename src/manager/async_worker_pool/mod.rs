@@ -1,8 +1,9 @@
 //! Manager-owned async QuickJS worker pool.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -32,18 +33,22 @@ mod thread;
 pub(super) struct AsyncWorkerPool {
     workers: Vec<AsyncWorkerHandle>,
     next_worker: AtomicUsize,
-    placements: tokio::sync::Mutex<std::collections::HashMap<ScriptId, usize>>,
+    placements: tokio::sync::Mutex<HashMap<ScriptId, usize>>,
+    next_instance: AtomicU64,
+    /// Load instance currently mounted for each script id.
+    current_instances: Mutex<HashMap<ScriptId, u64>>,
 }
 
 pub(super) struct AsyncWorkerLoad {
     pub(super) worker_id: WorkerId,
+    /// Identity of this load; later loads of the same script id get a new one.
+    pub(super) instance: u64,
     pub(super) module_ids: Vec<String>,
     pub(super) subscriptions: Vec<String>,
 }
 
 pub(super) struct AsyncWorkerScriptRequest {
     pub(super) script_id: ScriptId,
-    pub(super) cache_key: String,
     pub(super) transpiled_js: String,
     pub(super) entry_module_id: Option<String>,
     pub(super) modules: Vec<CompiledModule>,
@@ -83,7 +88,9 @@ impl AsyncWorkerPool {
             Self {
                 workers,
                 next_worker: AtomicUsize::new(0),
-                placements: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+                placements: tokio::sync::Mutex::new(HashMap::new()),
+                next_instance: AtomicU64::new(0),
+                current_instances: Mutex::new(HashMap::new()),
             },
             joins,
         ))
@@ -99,11 +106,12 @@ impl AsyncWorkerPool {
             self.next_worker.fetch_add(1, Ordering::Relaxed) % self.workers.len()
         });
         let worker = self.worker(index)?;
+        let instance = self.next_instance.fetch_add(1, Ordering::Relaxed);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let started_at = Instant::now();
         worker.send(AsyncWorkerCommand::LoadScript(AsyncLoadScriptCommand {
             script_id: request.script_id,
-            cache_key: request.cache_key,
+            instance,
             transpiled_js: request.transpiled_js,
             entry_module_id: request.entry_module_id,
             modules: request.modules,
@@ -112,16 +120,28 @@ impl AsyncWorkerPool {
         let result = receiver.await.map_err(|_| VmError::WorkerOffline)?;
         worker.latency_metrics.observe_load(started_at.elapsed());
         if result.is_ok() {
+            self.lock_current_instances().insert(id.clone(), instance);
             placements.insert(id, index);
         }
         result
+    }
+
+    /// Forgets `instance` if it is still the mounted load of `script_id`; returns
+    /// whether it was.
+    pub(super) fn release_instance(&self, script_id: &str, instance: u64) -> bool {
+        let mut current = self.lock_current_instances();
+        if current.get(script_id) != Some(&instance) {
+            return false;
+        }
+        current.remove(script_id);
+        true
     }
 
     pub(super) async fn call_function(
         &self,
         worker_id: WorkerId,
         script_id: ScriptId,
-        cache_key: String,
+        instance: u64,
         function_name: String,
         args: Vec<Value>,
     ) -> Result<Value, VmError> {
@@ -130,7 +150,7 @@ impl AsyncWorkerPool {
         let started_at = Instant::now();
         worker.send(AsyncWorkerCommand::CallFunction(AsyncCallFunctionCommand {
             script_id,
-            cache_key,
+            instance,
             function_name,
             args,
             reply,
@@ -186,12 +206,12 @@ impl AsyncWorkerPool {
         &self,
         worker_id: WorkerId,
         script_id: ScriptId,
-        cache_key: Option<String>,
+        instance: u64,
     ) -> Result<(), VmError> {
         let worker = self.worker(worker_id)?;
         worker.send(AsyncWorkerCommand::UnloadScript(AsyncUnloadScriptCommand {
             script_id,
-            cache_key,
+            instance,
         }))
     }
 
@@ -235,6 +255,12 @@ impl AsyncWorkerPool {
         self.workers
             .get(worker_id)
             .ok_or(VmError::InvalidWorkerCount)
+    }
+
+    fn lock_current_instances(&self) -> std::sync::MutexGuard<'_, HashMap<ScriptId, u64>> {
+        self.current_instances
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 

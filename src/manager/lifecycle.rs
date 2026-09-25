@@ -1,6 +1,7 @@
 //! Script lifecycle bookkeeping owned by the manager.
 
 use std::path::Path;
+use std::sync::MutexGuard;
 
 use crate::error::VmError;
 use crate::registry::ScriptRegistryEntry;
@@ -84,6 +85,15 @@ impl ScriptManager {
             })
     }
 
+    /// Serializes loads, reloads, unloads and demounts, so the registries and the
+    /// workers change together.
+    pub(crate) fn lock_script_lifecycle(&self) -> Result<MutexGuard<'_, ()>, VmError> {
+        self.inner
+            .script_lifecycle_lock
+            .lock()
+            .map_err(|_| VmError::WorkerPanicked)
+    }
+
     /// Retains one dependency reference for a mounted script.
     pub fn retain_script_dependency(&self, script_id: impl Into<ScriptId>) -> Result<(), VmError> {
         let script_id = script_id.into();
@@ -95,13 +105,13 @@ impl ScriptManager {
     /// Releases one dependency reference and demounts the script if it became idle.
     pub fn release_script_dependency(&self, script_id: impl Into<ScriptId>) -> Result<(), VmError> {
         let script_id = script_id.into();
-        let worker_id = self.lookup_worker_for_script(&script_id)?;
+        let _lifecycle = self.lock_script_lifecycle()?;
         if self
             .inner
             .active_runtime_registry
             .release_dependency(&script_id)?
         {
-            self.demount_script(worker_id, &script_id)?;
+            self.demount_idle_locked(&script_id)?;
         }
         Ok(())
     }
@@ -127,14 +137,23 @@ impl ScriptManager {
     ) -> Result<(), VmError> {
         let dependent_script_id = dependent_script_id.into();
         let dependency_script_id = dependency_script_id.into();
+        let _lifecycle = self.lock_script_lifecycle()?;
         let demount_candidates = self
             .inner
             .active_runtime_registry
             .release_script_dependency(&dependent_script_id, &dependency_script_id)?;
-        self.demount_dependency_candidates(demount_candidates)
+        self.demount_idle_candidates_locked(demount_candidates)
     }
 
-    pub(crate) fn demount_script(
+    /// Demounts one script if it is still idle once no load or unload can race it.
+    pub(crate) fn demount_if_idle(&self, script_id: &str) -> Result<(), VmError> {
+        let _lifecycle = self.lock_script_lifecycle()?;
+        self.demount_idle_locked(script_id)
+    }
+
+    /// Unloads one script from its worker and the registries. The caller holds the
+    /// lifecycle lock.
+    pub(crate) fn demount_locked(
         &self,
         worker_id: WorkerId,
         script_id: &str,
@@ -151,23 +170,25 @@ impl ScriptManager {
             worker_id,
             script_id: script_id.to_owned(),
         });
-        self.demount_dependency_candidates(demount_candidates)?;
-        Ok(())
+        self.demount_idle_candidates_locked(demount_candidates)
     }
 
-    fn demount_dependency_candidates(
+    fn demount_idle_locked(&self, script_id: &str) -> Result<(), VmError> {
+        let registry = &self.inner.active_runtime_registry;
+        match registry.get_worker(script_id)? {
+            Some(worker_id) if registry.should_demount(script_id)? => {
+                self.demount_locked(worker_id, script_id)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn demount_idle_candidates_locked(
         &self,
         candidates: Vec<(ScriptId, WorkerId)>,
     ) -> Result<(), VmError> {
-        for (script_id, worker_id) in candidates {
-            if self
-                .inner
-                .active_runtime_registry
-                .get_worker(&script_id)?
-                .is_some()
-            {
-                self.demount_script(worker_id, &script_id)?;
-            }
+        for (script_id, _) in candidates {
+            self.demount_idle_locked(&script_id)?;
         }
         Ok(())
     }

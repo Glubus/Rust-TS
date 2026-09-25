@@ -9,6 +9,15 @@ use support::TestCacheDir;
 
 const PROJECT_MAIN_V1: &str = include_str!("projects/reloadable_project/main_v1.ts");
 const PROJECT_MAIN_V2: &str = include_str!("projects/reloadable_project/main_v2.ts");
+const ALIAS_ENTRY: &str = r#"
+import { label as first } from "./first";
+import { label as second } from "./second";
+import { label as aliased } from "@target";
+
+export function read() {
+  return { first, second, aliased };
+}
+"#;
 
 struct ScoreUpdate;
 
@@ -91,4 +100,56 @@ fn project_reload_replaces_dependency_graph_and_preserves_hot_route() {
     assert_eq!(second_routed, 1);
     assert_eq!(second_value, json!(12));
     assert_eq!(second_score, json!(17));
+}
+
+#[test]
+fn project_reload_follows_tsconfig_paths_change_between_loaded_modules() {
+    let cache_dir = TestCacheDir::new("project-reload-tsconfig-paths");
+    let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+    let project_root = cache_dir.path().join("project");
+    let entry_path = project_root.join("main.ts");
+
+    fs::create_dir_all(&project_root).expect("create project");
+    fs::write(&entry_path, ALIAS_ENTRY).expect("write entry");
+    fs::write(
+        project_root.join("first.ts"),
+        "export const label = \"first\";\n",
+    )
+    .expect("write first module");
+    fs::write(
+        project_root.join("second.ts"),
+        "export const label = \"second\";\n",
+    )
+    .expect("write second module");
+
+    write_alias_tsconfig(&project_root, "./first.ts");
+    vm.load_script_project("project", &entry_path)
+        .expect("load project");
+    let before = vm.call_function("project", "read", Vec::new());
+
+    write_alias_tsconfig(&project_root, "./second.ts");
+    vm.load_script_project("project", &entry_path)
+        .expect("reload project after tsconfig change");
+    let after = vm.call_function("project", "read", Vec::new());
+
+    vm.shutdown().expect("shutdown vm");
+
+    assert_eq!(
+        before.expect("read first alias target"),
+        json!({ "first": "first", "second": "second", "aliased": "first" })
+    );
+    assert_eq!(
+        after.expect("read second alias target"),
+        json!({ "first": "first", "second": "second", "aliased": "second" })
+    );
+}
+
+fn write_alias_tsconfig(project_root: &std::path::Path, target: &str) {
+    let tsconfig = json!({
+        "compilerOptions": {
+            "baseUrl": ".",
+            "paths": { "@target": [target] },
+        },
+    });
+    fs::write(project_root.join("tsconfig.json"), tsconfig.to_string()).expect("write tsconfig");
 }

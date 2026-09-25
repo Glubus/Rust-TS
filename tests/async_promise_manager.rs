@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rustts::{
-    AsyncHostFunction, HostCallback, HostContract, HostContractKind, RuntimeExecutionLane, RustTs,
-    Schema, ScriptMaterializationState, TsType, VmError, VmEvent,
+    AsyncHostFunction, HostCallback, HostContract, HostContractKind, HostFunction,
+    RuntimeExecutionLane, RustTs, Schema, ScriptMaterializationState, TsType, VmError, VmEvent,
 };
 use serde_json::json;
 
@@ -54,6 +54,23 @@ export async function lookupMany(): Promise<string[]> {
   ]);
 }
 "#;
+const ASYNC_HOST_IMPORT_SCRIPT: &str = r#"
+import { users } from "test";
+
+export async function lookup(id: number): Promise<string> {
+  return await users.lookup(id);
+}
+"#;
+const ASYNC_SYNC_HOST_CALL_SCRIPT: &str = r#"
+import { math } from "test";
+
+export async function double(value: number): Promise<{ imported: number; global: number }> {
+  return {
+    imported: math.double(value),
+    global: globalThis.math.double(value + 1),
+  };
+}
+"#;
 const SYNC_EVENT_SCRIPT: &str = include_str!("projects/event_listener/main.ts");
 const ASYNC_PROJECT_ENTRY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -70,6 +87,8 @@ static MAX_ACTIVE_SLOW_CALLS: AtomicUsize = AtomicUsize::new(0);
 struct AsyncFindUser;
 struct AsyncSlowFindUser;
 struct ScoreUpdate;
+struct AsyncLookupUser;
+struct DoubleNumber;
 
 impl HostContract for ScoreUpdate {
     const NAME: &'static str = "score.update";
@@ -177,6 +196,61 @@ fn record_max_active_slow_calls(active: usize) {
 
 fn max_active_slow_calls() -> usize {
     MAX_ACTIVE_SLOW_CALLS.load(Ordering::SeqCst)
+}
+
+impl HostContract for AsyncLookupUser {
+    const NAME: &'static str = "users.lookup";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["users", "lookup"];
+
+    fn schema() -> Schema {
+        Schema::typed("LookupUserInput", TsType::Number)
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Function
+    }
+}
+
+impl AsyncHostFunction for AsyncLookupUser {
+    type Future = std::future::Ready<Result<Self::Output, VmError>>;
+    type Input = u64;
+    type Output = String;
+
+    fn output_schema() -> Schema {
+        Schema::typed("LookupUserOutput", TsType::String)
+    }
+
+    fn call_async(input: Self::Input) -> Self::Future {
+        std::future::ready(Ok(format!("lookup-{input}")))
+    }
+}
+
+impl HostContract for DoubleNumber {
+    const NAME: &'static str = "math.double";
+    const IMPORT_MODULE: &'static str = "test";
+    const EXPORT_PATH: &'static [&'static str] = &["math", "double"];
+
+    fn schema() -> Schema {
+        Schema::typed("DoubleInput", TsType::Number)
+    }
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Function
+    }
+}
+
+impl HostFunction for DoubleNumber {
+    type Input = i64;
+    type Output = i64;
+
+    fn output_schema() -> Schema {
+        Schema::typed("DoubleOutput", TsType::Number)
+    }
+
+    fn call(input: Self::Input) -> Result<Self::Output, VmError> {
+        Ok(input * 2)
+    }
 }
 
 #[test]
@@ -692,5 +766,112 @@ fn dropping_stale_async_handle_does_not_demount_newer_same_id_entry() {
         assert_eq!(still_mounted.source_hash, second.cache_key());
         assert_eq!(still_active.memory.active_scripts, 1);
         assert_eq!(result, json!({ "name": "async-user-5-v2" }));
+    });
+}
+
+#[test]
+fn dropping_stale_async_handle_after_same_source_reload_keeps_new_instance_mounted() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("build tokio runtime");
+
+    runtime.block_on(async {
+        let cache_dir = TestCacheDir::new("async-promise-same-source-reload");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+        vm.registry()
+            .async_promise_function::<AsyncFindUser>()
+            .expect("register async promise function");
+
+        let first = vm
+            .load_async_script("same-source", ASYNC_TS_SCRIPT)
+            .await
+            .expect("load first async script");
+        let second = vm
+            .load_async_script("same-source", ASYNC_TS_SCRIPT)
+            .await
+            .expect("reload async script with the same source");
+
+        drop(first);
+        let entry = vm
+            .describe_script("same-source")
+            .expect("describe same-source after stale drop")
+            .expect("same-source remains registered");
+        let stats = vm.stats().expect("collect stats after stale drop");
+        let result = second.call_function("lookup", &[json!(3)]).await;
+
+        vm.shutdown().expect("shutdown vm");
+
+        assert_eq!(entry.state, ScriptMaterializationState::Mounted);
+        assert_eq!(stats.memory.active_scripts, 1);
+        assert_eq!(
+            result.expect("call reloaded async script"),
+            json!({ "name": "async-user-3" })
+        );
+    });
+}
+
+#[test]
+fn async_lane_scripts_resolve_host_import_modules() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("build tokio runtime");
+
+    runtime.block_on(async {
+        let cache_dir = TestCacheDir::new("async-promise-host-imports");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+        vm.registry()
+            .async_promise_function::<AsyncLookupUser>()
+            .expect("register async promise function");
+
+        let loaded = vm
+            .load_async_script("async-import", ASYNC_HOST_IMPORT_SCRIPT)
+            .await;
+        let result = match &loaded {
+            Ok(script) => Some(script.call_function("lookup", &[json!(4)]).await),
+            Err(_) => None,
+        };
+
+        vm.shutdown().expect("shutdown vm");
+
+        loaded.expect("load async script importing a host module");
+        assert_eq!(
+            result
+                .expect("script loaded")
+                .expect("call imported host promise"),
+            json!("lookup-4")
+        );
+    });
+}
+
+#[test]
+fn async_lane_scripts_call_sync_host_functions() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("build tokio runtime");
+
+    runtime.block_on(async {
+        let cache_dir = TestCacheDir::new("async-promise-sync-host-calls");
+        let vm = RustTs::new(cache_dir.vm_options()).expect("create vm");
+        vm.registry()
+            .function::<DoubleNumber>()
+            .expect("register sync host function");
+
+        let loaded = vm
+            .load_async_script("async-sync-host", ASYNC_SYNC_HOST_CALL_SCRIPT)
+            .await;
+        let result = match &loaded {
+            Ok(script) => Some(script.call_function("double", &[json!(5)]).await),
+            Err(_) => None,
+        };
+
+        vm.shutdown().expect("shutdown vm");
+
+        loaded.expect("load async script using a sync host function");
+        assert_eq!(
+            result
+                .expect("script loaded")
+                .expect("call sync host function"),
+            json!({ "imported": 10, "global": 12 })
+        );
     });
 }

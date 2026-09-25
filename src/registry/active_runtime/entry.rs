@@ -101,7 +101,7 @@ impl ActiveRuntimeEntry {
         true
     }
 
-    fn should_demount(&self) -> bool {
+    pub(super) fn should_demount(&self) -> bool {
         matches!(self.mount_policy, ScriptMountPolicy::DemountWhenIdle)
             && self.retention.running_count == 0
             && self.retention.subscription_count == 0
