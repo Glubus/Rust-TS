@@ -41,7 +41,6 @@ pub(super) struct Inner {
     /// Serializes script loads, reloads, unloads and demounts, so the registries and
     /// the workers change together.
     pub(super) script_lifecycle_lock: Mutex<()>,
-    #[allow(dead_code)]
     pub(super) compiler: Mutex<CompilerService>,
     pub(super) script_registry: InMemoryScriptRegistry,
     pub(super) host_contract_registry: Arc<InMemoryHostContractRegistry>,
