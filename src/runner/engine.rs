@@ -24,6 +24,7 @@ use crate::types::{MemoryStats, ReloadReport, ScriptId};
 
 use super::errors::{caught_js_error, js_error};
 use super::execution::{ExecutionControl, ExecutionGuard};
+use super::interrupt::InterruptHandle;
 use super::memory::memory_stats;
 use super::module_loader::{
     MemoryModuleLoader, MemoryModuleResolver, RuntimeModuleGraph, WorkerModuleStore,
@@ -48,8 +49,8 @@ const CONTEXT_PRELUDE: &str = include_str!("../../assets/context_prelude.js");
 ///
 /// Every load, call and emit runs under `VmOptions::execution_timeout`: JavaScript
 /// still running when it expires is interrupted and the operation fails with
-/// `VmError::Execution`. The budget is cooperative and cannot preempt a Rust host
-/// function.
+/// `VmError::Execution`. [`Engine::interrupt_handle`] stops it earlier from another
+/// thread. Both are cooperative and cannot preempt a Rust host function.
 ///
 /// Promise jobs an operation queues run before it returns, within the same budget:
 /// an `async` export resolves to its value, and a Promise rejection that no handler
@@ -229,6 +230,11 @@ impl Engine {
         memory_stats(self.runtime.memory_usage())
     }
 
+    /// A handle that stops this engine's running JavaScript from any thread.
+    pub fn interrupt_handle(&self) -> InterruptHandle {
+        InterruptHandle::new(Arc::clone(&self.execution))
+    }
+
     /// Unloads one script and releases its modules.
     pub fn unload_script(&mut self, id: &str) -> Result<(), VmError> {
         let script = self
@@ -264,7 +270,7 @@ impl Engine {
                 .catch(&ctx)
                 .map_err(caught_js_error)
         });
-        self.settle(result)
+        self.attribute_interrupt(self.settle(result))
     }
 
     /// Delivers one event to every handler registered for it, script by script in load
@@ -297,7 +303,7 @@ impl Engine {
             // No JavaScript ran, so there is no Promise job to settle.
             return Ok(0);
         }
-        self.settle(first_error.map_or(Ok(delivered), Err))
+        self.attribute_interrupt(self.settle(first_error.map_or(Ok(delivered), Err)))
     }
 
     /// Awaits a Promise returned by an export by running the job queue. Its rejection
@@ -346,6 +352,15 @@ impl Engine {
         match job_error.or(unhandled) {
             Some(error) => Err(error),
             None => Ok(value),
+        }
+    }
+
+    /// Reports an operation that failed after an [`InterruptHandle`] request as
+    /// [`VmError::Interrupted`] rather than as the QuickJS interrupt exception.
+    fn attribute_interrupt<T>(&self, result: Result<T, VmError>) -> Result<T, VmError> {
+        match result {
+            Err(_) if self.execution.interrupt_requested() => Err(VmError::Interrupted),
+            result => result,
         }
     }
 
@@ -398,7 +413,8 @@ impl Engine {
             evaluate_script(&ctx, CONTEXT_PRELUDE)?;
             import_exports(&ctx, entry_module_id)
         });
-        Ok((context, self.settle(exports)?, events))
+        let exports = self.attribute_interrupt(self.settle(exports))?;
+        Ok((context, exports, events))
     }
 
     /// Installs the host functions and the `__rustts_listen` hook the prelude hands to

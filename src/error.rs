@@ -6,7 +6,11 @@ use thiserror::Error;
 
 /// Error type for all engine operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum VmError {
+    /// An [`InterruptHandle`](crate::InterruptHandle) stopped the running JavaScript.
+    #[error("javascript execution was interrupted by the host")]
+    Interrupted,
     /// A lock was poisoned by a panic while it was held, typically in a host handler.
     #[error("a lock was poisoned by a panic in a host handler")]
     LockPoisoned,

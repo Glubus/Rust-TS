@@ -42,7 +42,7 @@ pub use registry::{
     HostContractRegistry, InMemoryHostContractRegistry,
     render_typescript_declarations_for_descriptors, render_typescript_sdk_for_descriptors,
 };
-pub use runner::Engine;
+pub use runner::{Engine, InterruptHandle};
 #[cfg(feature = "derive")]
 pub use rustts_macros::TsSchema;
 pub use sdk_files::{

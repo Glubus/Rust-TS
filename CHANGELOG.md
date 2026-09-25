@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased (0.4)
+
+### Migration
+
+- `VmError` is `#[non_exhaustive]`: add a wildcard arm to exhaustive matches.
+
+### Added
+
+- `Engine::interrupt_handle` returns an `InterruptHandle` (`Send + Clone`) that stops
+  the running load, call or emit from another thread with `VmError::Interrupted`.
+
 ## 0.3.0 — 2026-09-25
 
 ### Migration

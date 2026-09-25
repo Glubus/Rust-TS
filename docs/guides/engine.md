@@ -135,6 +135,23 @@ it expires is interrupted and the operation fails with `VmError::Execution`; the
 engine stays usable. The budget is cooperative: it cannot stop a Rust host function
 that blocks.
 
+To stop a script earlier, for example from a UI "stop" button or a watchdog thread,
+take an `InterruptHandle` before handing work to the engine's thread. It is `Send`
+and `Clone`:
+
+```rust
+let handle = engine.interrupt_handle();
+std::thread::spawn(move || {
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    handle.interrupt();
+});
+// Fails with VmError::Interrupted if still running after 200 ms.
+let result = engine.call::<()>("rules", "simulate", ());
+```
+
+`interrupt` stops the load, call or emit in progress; the engine stays usable. A
+request made while nothing runs has no effect on the next operation.
+
 ## Transpilation Cache
 
 `VmOptions::cache_dir` is `None` by default: every load transpiles the TypeScript
