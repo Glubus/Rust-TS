@@ -7,6 +7,11 @@ use crate::contract::{
 
 const DEFAULT_ENUM_TAG: &str = "type";
 
+/// `HostHotContext`, the type of `ctx.hot`, shared by the declarations and the SDK.
+pub(super) const HOT_CONTEXT_TYPE: &str = include_str!("../../../assets/hot_context.ts");
+
+const CTX_ON_MEMBER: &str = "  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n";
+
 pub(crate) fn render_typescript_declarations(descriptors: &[HostContractDescriptor]) -> String {
     let mut declarations = DeclarationBuffer::default();
 
@@ -75,10 +80,7 @@ impl DeclarationBuffer {
 
     fn finish(mut self) -> String {
         self.push_host_events();
-        if self.sections.is_empty() {
-            return String::new();
-        }
-
+        self.push_ctx();
         let mut output = self.sections.join("\n\n");
         output.push('\n');
         output
@@ -94,8 +96,18 @@ impl DeclarationBuffer {
             "type HostEvents = {{\n{}\n}};",
             self.host_events.join("\n")
         ));
-        self.sections.push(String::from(
-            "declare const ctx: {\n  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n};",
+    }
+
+    /// The `ctx` global: `ctx.hot` always, `ctx.on` once there are events to type it.
+    fn push_ctx(&mut self) {
+        let on = if self.host_events.is_empty() {
+            ""
+        } else {
+            CTX_ON_MEMBER
+        };
+        self.sections.push(HOT_CONTEXT_TYPE.trim().to_owned());
+        self.sections.push(format!(
+            "declare const ctx: {{\n{on}  readonly hot: HostHotContext;\n}};"
         ));
     }
 }

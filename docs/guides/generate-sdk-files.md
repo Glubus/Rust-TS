@@ -92,7 +92,9 @@ The declaration file contains the public TypeScript API:
 
 - host function input and output types
 - callback payload types
-- global helpers such as `ctx.on(...)`
+- the `ctx` global: `ctx.hot` always (see
+  [Keep State Across Reloads](engine.md#keep-state-across-reloads)), and
+  `ctx.on(...)` once a callback is registered
 - generated namespaces such as `user.find(...)`
 - event maps for typed callback subscriptions
 

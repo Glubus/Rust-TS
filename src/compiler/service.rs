@@ -2,6 +2,7 @@
 
 use std::mem;
 use std::path::Path;
+use std::sync::Arc;
 
 use oxc::CompilerInterface;
 use oxc::codegen::CodegenReturn;
@@ -9,13 +10,23 @@ use oxc::diagnostics::Diagnostics;
 use oxc::span::SourceType;
 use oxc::transformer::{Module, TransformOptions};
 
+use super::diagnostics::transpile_error;
 use super::imports::validate_static_module_graph;
+use super::source_map::SourceMap;
 use crate::error::VmError;
+
+/// JavaScript transpiled from one TypeScript module, with its source map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TranspiledModule {
+    pub(crate) js: String,
+    pub(crate) source_map: Arc<SourceMap>,
+}
 
 /// TypeScript to JavaScript compiler configured for runtime execution.
 #[derive(Debug, Clone)]
 pub(crate) struct CompilerService {
     printed: String,
+    source_map: SourceMap,
     errors: Diagnostics,
     transform_options: TransformOptions,
 }
@@ -27,6 +38,7 @@ impl Default for CompilerService {
 
         Self {
             printed: String::new(),
+            source_map: SourceMap::default(),
             errors: Diagnostics::default(),
             transform_options,
         }
@@ -34,22 +46,25 @@ impl Default for CompilerService {
 }
 
 impl CompilerService {
-    /// Compiles one TypeScript source into executable JavaScript.
+    /// Compiles one TypeScript source into executable JavaScript. `source_path` names
+    /// the file in diagnostics.
     fn execute(
         &mut self,
         source_text: &str,
         source_type: SourceType,
         source_path: &Path,
-    ) -> Result<String, VmError> {
+    ) -> Result<TranspiledModule, VmError> {
         self.compile(source_text, source_type, source_path);
 
         if self.errors.is_empty() {
-            return Ok(mem::take(&mut self.printed));
+            return Ok(TranspiledModule {
+                js: mem::take(&mut self.printed),
+                source_map: Arc::new(mem::take(&mut self.source_map)),
+            });
         }
 
-        Err(VmError::Transpile {
-            details: format!("{:?}", mem::take(&mut self.errors)),
-        })
+        let errors = mem::take(&mut self.errors);
+        Err(transpile_error(&errors, source_text, source_path))
     }
 
     /// Compiles one project module; its source type comes from the file extension.
@@ -57,7 +72,7 @@ impl CompilerService {
         &mut self,
         source_text: &str,
         source_path: &Path,
-    ) -> Result<String, VmError> {
+    ) -> Result<TranspiledModule, VmError> {
         let source_type = SourceType::from_path(source_path).map_err(|error| VmError::Resolve {
             details: error.to_string(),
         })?;
@@ -69,7 +84,7 @@ impl CompilerService {
         &mut self,
         source_text: &str,
         source_path: &Path,
-    ) -> Result<String, VmError> {
+    ) -> Result<TranspiledModule, VmError> {
         validate_static_module_graph(source_text, source_path)?;
         self.execute(source_text, SourceType::ts().with_module(true), source_path)
     }
@@ -80,11 +95,19 @@ impl CompilerInterface for CompilerService {
         self.errors.extend(errors);
     }
 
+    fn enable_sourcemap(&self) -> bool {
+        true
+    }
+
     fn transform_options(&self) -> Option<&TransformOptions> {
         Some(&self.transform_options)
     }
 
     fn after_codegen(&mut self, ret: CodegenReturn<'_>) {
+        self.source_map = ret
+            .map
+            .map(|map| SourceMap::from_codegen(&map, &ret.code))
+            .unwrap_or_default();
         self.printed = ret.code;
     }
 }

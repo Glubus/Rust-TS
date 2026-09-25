@@ -278,7 +278,10 @@ fn registry_supports_fluent_contract_registration() {
     assert_eq!(context.kind, HostContractKind::Context);
     assert_eq!(
         engine.registry().dts().expect("render dts"),
-        "type OverlayContext = { visible: boolean; };\n\ndeclare const overlay: OverlayContext;\n\ntype ScoreUpdatePayload = { combo: number; };\n\ntype FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {\n  export function find(input: FindUserInput): FindUserOutput;\n}\n\ntype HostEvents = {\n  \"score.update\": ScoreUpdatePayload;\n};\n\ndeclare const ctx: {\n  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n};\n"
+        format!(
+            "type OverlayContext = {{ visible: boolean; }};\n\ndeclare const overlay: OverlayContext;\n\ntype ScoreUpdatePayload = {{ combo: number; }};\n\ntype FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {{\n  export function find(input: FindUserInput): FindUserOutput;\n}}\n\ntype HostEvents = {{\n  \"score.update\": ScoreUpdatePayload;\n}};\n\n{}\n\ndeclare const ctx: {{\n  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n  readonly hot: HostHotContext;\n}};\n",
+            include_str!("../assets/hot_context.ts").trim()
+        )
     );
 }
 

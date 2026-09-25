@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::compiler::CompiledModule;
+use crate::compiler::{CompiledModule, ModuleOrigin};
 use crate::error::VmError;
 
 use super::inner::ModuleStoreInner;
@@ -16,10 +16,12 @@ pub(super) fn insert_inline(
     store: &mut ModuleStoreInner,
     script_id: &str,
     source: String,
+    origin: ModuleOrigin,
     graph_id: u64,
 ) -> RuntimeModuleGraph {
     let module_id = runtime_module_id(graph_id, script_id);
     store.sources.insert(module_id.clone(), source);
+    store.origins.insert(module_id.clone(), origin);
     RuntimeModuleGraph {
         entry_module_id: module_id.clone(),
         module_ids: vec![module_id],
@@ -70,6 +72,9 @@ fn insert_project_module(
         module.resolved_requests,
         module_id_map,
     )?;
+    store
+        .origins
+        .insert(runtime_module_id.clone(), module.origin);
     store
         .sources
         .insert(runtime_module_id, module.transpiled_js);

@@ -41,7 +41,8 @@ pub enum VmError {
     /// TypeScript transpilation failed.
     #[error("typescript transpilation failed: {details}")]
     Transpile {
-        /// Diagnostic text emitted by the compiler.
+        /// One `path:line:column: message` line per compiler diagnostic, followed by
+        /// its labels and help, indented.
         details: String,
     },
     /// Project module resolution failed.
@@ -53,7 +54,8 @@ pub enum VmError {
     /// JavaScript execution failed.
     #[error("javascript execution failed: {details}")]
     Execution {
-        /// Runtime error details returned by QuickJS.
+        /// The error message and stack; script frames name their TypeScript file,
+        /// line and column.
         details: String,
     },
     /// JSON serialization or deserialization failed.

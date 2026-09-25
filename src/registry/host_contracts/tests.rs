@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use super::declarations::HOT_CONTEXT_TYPE;
 use super::{HostContractRegistry, InMemoryHostContractRegistry};
 use crate::contract::{
     HostCallback, HostContext, HostContract, HostContractAbi, HostContractKind, HostFunction,
@@ -303,7 +304,10 @@ fn dts_renders_nested_namespaces_and_complex_schema_types() {
 
     assert_eq!(
         declarations,
-        "type CreateInvoiceInput = { status: \"draft\" | \"paid\"; metadata?: Record<string, unknown>; lines: [string, number][]; paymentMethod: \"card\" | \"wire\"; };\n\ntype CreateInvoiceOutput = { id: string | null; state: { kind: \"created\"; } | { kind: \"failed\"; reason: string; }; };\n\ndeclare namespace billing {\n  namespace invoice {\n    export function create(input: CreateInvoiceInput): CreateInvoiceOutput;\n  }\n}\n"
+        format!(
+            "type CreateInvoiceInput = {{ status: \"draft\" | \"paid\"; metadata?: Record<string, unknown>; lines: [string, number][]; paymentMethod: \"card\" | \"wire\"; }};\n\ntype CreateInvoiceOutput = {{ id: string | null; state: {{ kind: \"created\"; }} | {{ kind: \"failed\"; reason: string; }}; }};\n\ndeclare namespace billing {{\n  namespace invoice {{\n    export function create(input: CreateInvoiceInput): CreateInvoiceOutput;\n  }}\n}}\n\n{}",
+            ctx_declaration(false)
+        )
     );
 }
 
@@ -317,7 +321,10 @@ fn dts_is_generated_from_contract_schemas() {
 
     assert_eq!(
         declarations,
-        "type DemoCallbackPayload = { combo: number; };\n\ntype DemoFunctionInput = void;\n\ndeclare namespace demo {\n  export function function(input: DemoFunctionInput): unknown;\n}\n\ntype HostEvents = {\n  \"demo.callback\": DemoCallbackPayload;\n};\n\ndeclare const ctx: {\n  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n};\n"
+        format!(
+            "type DemoCallbackPayload = {{ combo: number; }};\n\ntype DemoFunctionInput = void;\n\ndeclare namespace demo {{\n  export function function(input: DemoFunctionInput): unknown;\n}}\n\ntype HostEvents = {{\n  \"demo.callback\": DemoCallbackPayload;\n}};\n\n{}",
+            ctx_declaration(true)
+        )
     );
 }
 
@@ -330,8 +337,24 @@ fn dts_generates_function_declaration_from_contract_model() {
 
     assert_eq!(
         declarations,
-        "type FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {\n  export function find(input: FindUserInput): FindUserOutput;\n}\n"
+        format!(
+            "type FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {{\n  export function find(input: FindUserInput): FindUserOutput;\n}}\n\n{}",
+            ctx_declaration(false)
+        )
     );
+}
+
+/// The declarations' closing `ctx` section, typing `ctx.on` only when events exist.
+fn ctx_declaration(with_events: bool) -> String {
+    let on = if with_events {
+        "  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n"
+    } else {
+        ""
+    };
+    format!(
+        "{}\n\ndeclare const ctx: {{\n{on}  readonly hot: HostHotContext;\n}};\n",
+        HOT_CONTEXT_TYPE.trim()
+    )
 }
 
 #[test]

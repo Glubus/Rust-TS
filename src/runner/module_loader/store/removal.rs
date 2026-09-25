@@ -10,6 +10,7 @@ pub(super) fn remove_modules(store: &mut ModuleStoreInner, module_ids: &[String]
 
 fn remove_module(store: &mut ModuleStoreInner, module_id: &str) {
     store.sources.remove(module_id);
+    store.origins.remove(module_id);
     store
         .resolutions
         .retain(|(base, _), resolved| base != module_id && resolved != module_id);

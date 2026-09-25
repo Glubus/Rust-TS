@@ -21,6 +21,7 @@ glam = ["dep:glam"]
 [dependencies]
 oxc = { version = "0.137.0", features = ["codegen", "full", "transformer"] }
 oxc_resolver = "11.21.3"
+oxc_sourcemap = "8.1.2"
 rquickjs = { version = "0.14.0", features = ["rust-alloc", "loader"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

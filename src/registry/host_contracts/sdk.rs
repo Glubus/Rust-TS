@@ -8,7 +8,7 @@ use crate::contract::{
     TsRecordKey, TsType,
 };
 
-use super::declarations::{is_unknown_schema, render_ts_type, schema_type_name};
+use super::declarations::{HOT_CONTEXT_TYPE, is_unknown_schema, render_ts_type, schema_type_name};
 use ident::{identifier, indent, property_name};
 use tree::{ObjectNode, ObjectTree};
 
@@ -99,6 +99,7 @@ impl SdkBuilder {
         let host_function_api = self.host_function_api();
         let host_event_types = self.host_event_types();
         let event_helpers = self.event_helpers();
+        let ctx_export = self.ctx_export();
         let (schema_sections, models) = self.schemas.finish();
         let mut sections = schema_sections;
         push_if_some(&mut sections, render_model_runtime_helpers(&models));
@@ -108,17 +109,16 @@ impl SdkBuilder {
         push_if_some(&mut sections, host_function_api);
         push_if_some(&mut sections, host_event_types);
         push_if_some(&mut sections, event_helpers);
+        sections.push(ctx_export);
         sections.extend(render_context_exports(&self.contexts));
         sections.extend(render_domain_exports(&self.functions, &self.events));
         push_if_some(&mut sections, render_events_export(&self.events));
-        push_if_some(
-            &mut sections,
-            render_sdk_aggregate(&self.functions, &self.events, &self.contexts, &models),
-        );
-
-        if sections.is_empty() {
-            return String::new();
-        }
+        sections.push(render_sdk_aggregate(
+            &self.functions,
+            &self.events,
+            &self.contexts,
+            &models,
+        ));
 
         let mut output = sections.join("\n\n");
         output.push('\n');
@@ -154,6 +154,19 @@ impl SdkBuilder {
 
     fn event_helpers(&self) -> Option<String> {
         (!self.host_events.is_empty()).then(|| EVENT_HELPERS.trim().to_owned())
+    }
+
+    /// The `ctx` global: `ctx.hot` always, `ctx.on` once there are events to type it.
+    fn ctx_export(&self) -> String {
+        let events = if self.host_events.is_empty() {
+            ""
+        } else {
+            "HostEventContext & "
+        };
+        format!(
+            "{}\n\ntype HostContext = {events}{{ readonly hot: HostHotContext }};\n\nconst __ctx = (globalThis as unknown as {{ ctx: HostContext }}).ctx;\n\nexport const ctx = __ctx;",
+            HOT_CONTEXT_TYPE.trim()
+        )
     }
 }
 
@@ -356,7 +369,7 @@ fn render_sdk_aggregate(
     events: &ObjectTree<SdkEvent>,
     contexts: &ObjectTree<SdkContext>,
     models: &BTreeMap<String, TsType>,
-) -> Option<String> {
+) -> String {
     let mut entries = Vec::new();
 
     if !models.is_empty() {
@@ -372,8 +385,8 @@ fn render_sdk_aggregate(
     }
     if !events.is_empty() {
         entries.push(format!("{}events,", indent(1)));
-        entries.push(format!("{}ctx,", indent(1)));
     }
+    entries.push(format!("{}ctx,", indent(1)));
     if !contexts.is_empty() {
         entries.push(format!(
             "{}contexts: {},",
@@ -382,14 +395,7 @@ fn render_sdk_aggregate(
         ));
     }
 
-    if entries.is_empty() {
-        return None;
-    }
-
-    Some(format!(
-        "export const rusttsSdk = {{\n{}\n}};",
-        entries.join("\n")
-    ))
+    format!("export const rusttsSdk = {{\n{}\n}};", entries.join("\n"))
 }
 
 fn render_model_helpers(models: &BTreeMap<String, TsType>) -> Option<String> {

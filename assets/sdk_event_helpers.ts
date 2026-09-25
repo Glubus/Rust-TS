@@ -8,7 +8,3 @@ type HostEventContext = {
     handler: HostEventHandler<K>,
   ): void;
 };
-
-const __ctx = (globalThis as unknown as { ctx: HostEventContext }).ctx;
-
-export const ctx = __ctx;

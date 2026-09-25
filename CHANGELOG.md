@@ -5,11 +5,35 @@
 ### Migration
 
 - `VmError` is `#[non_exhaustive]`: add a wildcard arm to exhaustive matches.
+- `ReloadReport` has a new `dispose_failed` field; add it to struct literals and
+  patterns that list every field.
+- The generated declarations and SDK always declare and export `ctx` (typed with
+  `ctx.hot`), even without host events, so their output is no longer empty for a
+  registry without contracts. `rusttsSdk.ctx` is always present.
+- Error text changed: `VmError::Execution` stacks name TypeScript locations
+  (`lib/math.ts:8:15`, `<id>.ts:3:5`) instead of `rustts://graph/{n}/{path}:{line}:{col}`,
+  and `VmError::Transpile` lists `path:line:column: message` diagnostics instead of
+  a debug dump. Update code that parses either. Existing cache artifacts are
+  rebuilt once: they now carry a source map.
 
 ### Added
 
 - `Engine::interrupt_handle` returns an `InterruptHandle` (`Send + Clone`) that stops
   the running load, call or emit from another thread with `VmError::Interrupted`.
+- State-preserving hot reload through `ctx.hot`: a script registers
+  `ctx.hot.save(fn)`, whose result the next version reads as `ctx.hot.data` before
+  its top-level code runs, and `ctx.hot.dispose(fn)` cleanups that run on the old
+  version once the new one has loaded, or on `unload_script`. A throwing `save` fails
+  the reload and keeps the old version; a new version that fails to load leaves the
+  old one undisposed; a throwing `dispose` keeps the new version and fails the load
+  call, or is listed in the new `ReloadReport::dispose_failed` by `reload_changed`.
+  See [Keep State Across Reloads](docs/guides/engine.md#keep-state-across-reloads).
+- Errors point at the TypeScript source: every script frame of a
+  `VmError::Execution` stack (loads, calls, `async` exports, event handlers,
+  Promise jobs, unhandled rejections) shows the file (relative to the project root,
+  or `<id>.ts` for an inline script) and the TypeScript line and column. Source maps
+  are built at transpile time, cached with the JavaScript and only read on errors.
+  See [Error Locations](docs/guides/engine.md#error-locations).
 
 ## 0.3.0 — 2026-09-25
 

@@ -6,10 +6,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::resolver::ModuleResolver;
+use super::source_map::ModuleOrigin;
 use super::stamp::{FileStamp, WatchedFiles};
 use crate::error::VmError;
 
-/// Returns the static import requests of one module source.
+/// Returns the static import requests of one module source. The path is the module's
+/// display path: it names the module in diagnostics and gives its source type.
 pub(crate) type ImportsOf<'a> = dyn FnMut(&str, &Path) -> Result<BTreeSet<String>, VmError> + 'a;
 
 /// One transpiled module, ready for the module store.
@@ -17,6 +19,7 @@ pub(crate) type ImportsOf<'a> = dyn FnMut(&str, &Path) -> Result<BTreeSet<String
 pub(crate) struct CompiledModule {
     pub(crate) module_id: String,
     pub(crate) transpiled_js: String,
+    pub(crate) origin: ModuleOrigin,
     pub(crate) resolved_requests: BTreeMap<String, String>,
 }
 
@@ -29,7 +32,8 @@ pub(crate) struct DiscoveredProject {
 
 pub(crate) struct DiscoveredModule {
     pub(crate) module_id: String,
-    pub(crate) path: PathBuf,
+    /// The path relative to the project root, with `/` separators.
+    pub(crate) display_path: String,
     pub(crate) source: String,
     pub(crate) resolved_requests: BTreeMap<String, String>,
 }
@@ -52,6 +56,7 @@ pub(crate) struct ProjectState {
 
 struct KnownModule {
     stamp: Option<FileStamp>,
+    display_path: String,
     source: String,
     resolved_requests: BTreeMap<String, String>,
     dependencies: Vec<PathBuf>,
@@ -114,7 +119,7 @@ pub(crate) fn discover_project(
         watched.watch_stamped(&path, module.stamp);
         modules.push(DiscoveredModule {
             module_id: module_id(&path),
-            path: path.clone(),
+            display_path: module.display_path.clone(),
             source: module.source.clone(),
             resolved_requests: module.resolved_requests.clone(),
         });
@@ -198,7 +203,8 @@ impl Discovery<'_> {
         stamp: Option<FileStamp>,
         source: String,
     ) -> Result<KnownModule, VmError> {
-        let requests = (self.imports_of)(&source, path)?;
+        let display_path = display_path(self.resolver.project_root(), path);
+        let requests = (self.imports_of)(&source, Path::new(&display_path))?;
         let mut resolved_requests = BTreeMap::new();
         let mut dependencies = BTreeSet::new();
         let mut package_jsons = Vec::new();
@@ -216,6 +222,7 @@ impl Discovery<'_> {
 
         Ok(KnownModule {
             stamp,
+            display_path,
             source,
             resolved_requests,
             dependencies: dependencies.into_iter().collect(),
@@ -236,4 +243,17 @@ fn normalize_entry_path(entry_path: &Path) -> Result<PathBuf, VmError> {
 
 fn module_id(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+/// How diagnostics and stack traces name a module: its path relative to the project
+/// root with `/` separators, else its full path.
+fn display_path(project_root: &Path, path: &Path) -> String {
+    let Ok(relative) = path.strip_prefix(project_root) else {
+        return module_id(path);
+    };
+    relative
+        .iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }

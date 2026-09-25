@@ -22,7 +22,7 @@ use crate::error::VmError;
 use crate::registry::InMemoryHostContractRegistry;
 use crate::types::{MemoryStats, ReloadReport, ScriptId};
 
-use super::errors::{caught_js_error, js_error};
+use super::errors::{caught_js_error, in_typescript, js_error};
 use super::execution::{ExecutionControl, ExecutionGuard};
 use super::interrupt::InterruptHandle;
 use super::memory::memory_stats;
@@ -36,6 +36,13 @@ const NATIVE_FUNCTIONS_GLOBAL: &str = "__rustts_native";
 const HANDLERS_GLOBAL: &str = "__vm_handlers";
 /// Records one event name the context's `ctx.on` registered a handler for.
 const LISTEN_GLOBAL: &str = "__rustts_listen";
+/// Frozen `{ save, dispose }` hooks the prelude installs behind `ctx.hot`.
+const HOT_GLOBAL: &str = "__rustts_hot";
+const HOT_SAVE: &str = "save";
+const HOT_DISPOSE: &str = "dispose";
+/// Carries the previous version's saved state into the prelude, which moves it to
+/// `ctx.hot.data`.
+const HOT_DATA_GLOBAL: &str = "__rustts_hot_data";
 
 /// Installs `ctx.on` and its handler table, `__host` and the namespaced host globals
 /// on top of `__rustts_native`.
@@ -56,6 +63,16 @@ const CONTEXT_PRELUDE: &str = include_str!("../../assets/context_prelude.js");
 /// an `async` export resolves to its value, and a Promise rejection that no handler
 /// caught by then fails the operation. Host functions are synchronous, so a Promise
 /// that only a host could settle fails the call.
+///
+/// Replacing a loaded script, through [`Engine::load_script`], [`Engine::load_project`]
+/// or [`Engine::reload_changed`], hands over the state the script opts to keep with
+/// `ctx.hot`: the loaded version's `ctx.hot.save` callback runs first, and its result
+/// is the new version's `ctx.hot.data` before any of its code runs. Once the new
+/// version is loaded, the old version's `ctx.hot.dispose` callbacks run, in
+/// registration order. A throwing `save` fails the load and keeps the old version; a
+/// throwing `dispose` fails the load call although the new version stays loaded.
+/// [`Engine::unload_script`] runs the `dispose` callbacks too; dropping the engine
+/// does not.
 pub struct Engine {
     /// In load order, which is the order events are delivered in.
     scripts: IndexMap<ScriptId, EngineScript>,
@@ -92,6 +109,13 @@ fn event_key(event: &str) -> u64 {
     event.hash(&mut hasher);
     hasher.finish()
 }
+
+/// The value a replaced version's `ctx.hot.save` returned, on its way to the next
+/// version's `ctx.hot.data`. Contexts share the runtime, so it is the object itself.
+type HotData = Persistent<JsValue<'static>>;
+
+/// Outcome of retiring a replaced or unloaded version: its `ctx.hot.dispose` error.
+type Disposed = Result<(), VmError>;
 
 /// Where a script's code came from, kept for hot reload and the transpile memo.
 struct ScriptOrigin {
@@ -136,18 +160,20 @@ impl Engine {
 
     /// Loads or replaces one TypeScript script. It may import host modules, not other
     /// files; use [`Engine::load_project`] for those. A failed load keeps the previous
-    /// version.
+    /// version; see [`Engine`] for the `ctx.hot` state a replaced version hands over.
     pub fn load_script(&mut self, id: impl Into<ScriptId>, source: &str) -> Result<(), VmError> {
         let id = id.into();
         let script = self.transpiler.inline(&id, source)?;
         self.install_host_modules()?;
         let graph_id = self.next_graph_id();
-        let graph = self.module_store.insert_inline(&id, script.js, graph_id)?;
+        let graph =
+            self.module_store
+                .insert_inline(&id, script.js, script.module_origin, graph_id)?;
         let origin = ScriptOrigin {
             module_keys: vec![script.module_key],
             project: None,
         };
-        self.mount_graph(id, graph, origin)
+        self.mount_graph(id, graph, origin)?
     }
 
     /// Loads or replaces one multi-file TypeScript project from its entry file.
@@ -156,14 +182,19 @@ impl Engine {
     /// `paths` and `baseUrl`, and packages in the project's `node_modules`. Dynamic
     /// `import()` is rejected. Modules are transpiled one by one and remembered by
     /// content, so reloading a project only transpiles the files that changed. A
-    /// failed load keeps the previous version.
+    /// failed load keeps the previous version; see [`Engine`] for the `ctx.hot` state
+    /// a replaced version hands over.
     pub fn load_project(
         &mut self,
         id: impl Into<ScriptId>,
         entry_path: impl AsRef<Path>,
     ) -> Result<(), VmError> {
-        let id = id.into();
-        let entry_path = entry_path.as_ref();
+        self.mount_project(id.into(), entry_path.as_ref())?
+    }
+
+    /// [`Engine::load_project`], keeping a failed load apart from a failed `dispose` of
+    /// the version it replaced.
+    fn mount_project(&mut self, id: ScriptId, entry_path: &Path) -> Result<Disposed, VmError> {
         let external_modules = self.registry.import_module_names()?;
         let project = self.transpiler.project(entry_path, &external_modules)?;
         self.install_host_modules()?;
@@ -184,7 +215,9 @@ impl Engine {
     }
 
     /// Reloads, in load order, every project whose files changed since it was loaded,
-    /// and reports which reloads succeeded and which failed.
+    /// and reports which reloads succeeded and which failed. A reload whose replaced
+    /// version's `ctx.hot.dispose` threw is listed both in `reloaded` and in
+    /// `dispose_failed`.
     ///
     /// A project is checked through the size and modification time of its module
     /// files, their directories, its `tsconfig.json` and the `package.json` files its
@@ -208,21 +241,32 @@ impl Engine {
 
         let mut report = ReloadReport::default();
         for (id, entry_path) in changed {
-            match self.load_project(id.clone(), &entry_path) {
-                Ok(()) => report.reloaded.push(id),
-                Err(error) => {
-                    if let Some(project) = self
-                        .scripts
-                        .get_mut(&id)
-                        .and_then(|script| script.origin.project.as_mut())
-                    {
-                        project.watched.restamp();
+            match self.mount_project(id.clone(), &entry_path) {
+                Ok(disposed) => {
+                    if let Err(error) = disposed {
+                        report.dispose_failed.push((id.clone(), error));
                     }
+                    report.reloaded.push(id);
+                }
+                Err(error) => {
+                    self.restamp(&id);
                     report.failed.push((id, error));
                 }
             }
         }
         report
+    }
+
+    /// Takes a project's files as they are now as seen, so a failed reload is reported
+    /// once.
+    fn restamp(&mut self, id: &str) {
+        if let Some(project) = self
+            .scripts
+            .get_mut(id)
+            .and_then(|script| script.origin.project.as_mut())
+        {
+            project.watched.restamp();
+        }
     }
 
     /// QuickJS memory counters for the whole engine.
@@ -235,15 +279,20 @@ impl Engine {
         InterruptHandle::new(Arc::clone(&self.execution))
     }
 
-    /// Unloads one script and releases its modules.
+    /// Unloads one script and releases its modules. Its `ctx.hot.dispose` callbacks run
+    /// first; when one throws, the script is unloaded all the same and the error is
+    /// returned.
     pub fn unload_script(&mut self, id: &str) -> Result<(), VmError> {
         let script = self
             .scripts
             .shift_remove(id)
             .ok_or_else(|| script_not_found(id))?;
-        self.module_store.remove_modules(&script.module_ids)?;
-        self.forget_unused_modules();
-        Ok(())
+        self.retire(script)?.map_err(|error| {
+            hot_hook_error(
+                error,
+                &format!("`ctx.hot.dispose` of script `{id}` failed; the script is unloaded"),
+            )
+        })
     }
 
     /// Calls one exported function. Arguments encode through [`JsArgs`] (a tuple, a
@@ -331,8 +380,9 @@ impl Engine {
     }
 
     /// Runs every job left in the queue, for all scripts, then reports in order: the
-    /// operation's own error, a job that threw, a Promise rejection nobody handled.
-    /// Runs even when the operation failed, so nothing leaks into the next one.
+    /// operation's own error, a job that threw, a Promise rejection nobody handled,
+    /// with its locations pointing at the TypeScript source. Runs even when the
+    /// operation failed, so nothing leaks into the next one.
     fn settle<T>(&self, result: Result<T, VmError>) -> Result<T, VmError> {
         let mut job_error = None;
         loop {
@@ -348,9 +398,9 @@ impl Engine {
             }
         }
         let unhandled = self.rejections.take();
-        let value = result?;
+        let value = result.map_err(|error| in_typescript(error, &self.module_store))?;
         match job_error.or(unhandled) {
-            Some(error) => Err(error),
+            Some(error) => Err(in_typescript(error, &self.module_store)),
             None => Ok(value),
         }
     }
@@ -375,15 +425,19 @@ impl Engine {
         graph_id
     }
 
-    /// Evaluates a freshly inserted graph and swaps it in; on failure, the graph is
-    /// removed and the previous version of the script stays loaded.
+    /// Evaluates a freshly inserted graph, seeded with the `ctx.hot` state the loaded
+    /// version saves, and swaps it in; on failure, the graph is removed and the
+    /// previous version of the script stays loaded, not disposed.
     fn mount_graph(
         &mut self,
         id: ScriptId,
         graph: RuntimeModuleGraph,
         origin: ScriptOrigin,
-    ) -> Result<(), VmError> {
-        match self.mount(&graph.entry_module_id) {
+    ) -> Result<Disposed, VmError> {
+        let mounted = self
+            .save_hot_data(&id)
+            .and_then(|hot_data| self.mount(&graph.entry_module_id, hot_data));
+        match mounted {
             Ok((context, exports, events)) => self.replace_script(
                 id,
                 EngineScript {
@@ -401,15 +455,39 @@ impl Engine {
         }
     }
 
+    /// Runs the loaded version's `ctx.hot.save` callback, when the script is loaded;
+    /// its result becomes the next version's `ctx.hot.data`.
+    fn save_hot_data(&self, id: &str) -> Result<Option<HotData>, VmError> {
+        let Some(script) = self.scripts.get(id) else {
+            return Ok(None);
+        };
+        let _budget = self.budget();
+        let saved = script
+            .context
+            .with(|ctx| call_hot_hook(&ctx, HOT_SAVE).map(|data| Persistent::save(&ctx, data)));
+        self.attribute_interrupt(self.settle(saved))
+            .map(Some)
+            .map_err(|error| {
+                hot_hook_error(
+                    error,
+                    &format!(
+                        "`ctx.hot.save` of script `{id}` failed; the previous version keeps running"
+                    ),
+                )
+            })
+    }
+
     fn mount(
         &self,
         entry_module_id: &str,
+        hot_data: Option<HotData>,
     ) -> Result<(Context, Persistent<Object<'static>>, ListenedEvents), VmError> {
         let _budget = self.budget();
         let context = Context::full(&self.runtime).map_err(js_error)?;
         let events = ListenedEvents::default();
         let exports = context.with(|ctx| {
             self.install_native_functions(&ctx, &events)?;
+            install_hot_data(&ctx, hot_data)?;
             evaluate_script(&ctx, CONTEXT_PRELUDE)?;
             import_exports(&ctx, entry_module_id)
         });
@@ -447,12 +525,36 @@ impl Engine {
             .map_err(js_error)
     }
 
-    fn replace_script(&mut self, id: ScriptId, script: EngineScript) -> Result<(), VmError> {
-        if let Some(previous) = self.scripts.insert(id, script) {
-            self.module_store.remove_modules(&previous.module_ids)?;
-            self.forget_unused_modules();
-        }
-        Ok(())
+    /// Swaps `script` in, then retires the version it replaces, whose failed `dispose`
+    /// does not undo the swap.
+    fn replace_script(&mut self, id: ScriptId, script: EngineScript) -> Result<Disposed, VmError> {
+        let Some(previous) = self.scripts.insert(id.clone(), script) else {
+            return Ok(Ok(()));
+        };
+        Ok(self.retire(previous)?.map_err(|error| {
+            hot_hook_error(
+                error,
+                &format!("`ctx.hot.dispose` of the previous version of script `{id}` failed; the new version is loaded"),
+            )
+        }))
+    }
+
+    /// Runs the `ctx.hot.dispose` callbacks of a version no longer in `scripts`, then
+    /// releases its modules; the context drops with `script`.
+    fn retire(&mut self, script: EngineScript) -> Result<Disposed, VmError> {
+        let disposed = self.dispose(&script);
+        self.module_store.remove_modules(&script.module_ids)?;
+        self.forget_unused_modules();
+        Ok(disposed)
+    }
+
+    /// Calls a retired version's `ctx.hot.dispose` callbacks, in registration order.
+    fn dispose(&self, script: &EngineScript) -> Disposed {
+        let _budget = self.budget();
+        let disposed = script
+            .context
+            .with(|ctx| call_hot_hook(&ctx, HOT_DISPOSE).map(|_| ()));
+        self.attribute_interrupt(self.settle(disposed))
     }
 
     /// Drops memoized modules and project states no loaded script uses anymore, so
@@ -533,6 +635,42 @@ fn import_exports(
         .catch(ctx)
         .map_err(caught_js_error)?;
     Ok(Persistent::save(ctx, exports))
+}
+
+/// Hands the previous version's saved state to the prelude, which moves it to
+/// `ctx.hot.data`.
+fn install_hot_data(ctx: &Ctx<'_>, hot_data: Option<HotData>) -> Result<(), VmError> {
+    let Some(hot_data) = hot_data else {
+        return Ok(());
+    };
+    let data = hot_data.restore(ctx).map_err(js_error)?;
+    ctx.globals().set(HOT_DATA_GLOBAL, data).map_err(js_error)
+}
+
+/// Calls one of the `ctx.hot` hooks the prelude locked on the context's global object.
+fn call_hot_hook<'js>(ctx: &Ctx<'js>, hook: &str) -> Result<JsValue<'js>, VmError> {
+    let hooks = ctx
+        .globals()
+        .get::<_, Object<'js>>(HOT_GLOBAL)
+        .map_err(js_error)?;
+    hooks
+        .get::<_, Function<'js>>(hook)
+        .map_err(js_error)?
+        .call::<_, JsValue<'js>>(())
+        .catch(ctx)
+        .map_err(caught_js_error)
+}
+
+/// Reports a failed `ctx.hot` callback as [`VmError::Execution`] whose details start
+/// with `outcome`, which says what became of the script.
+fn hot_hook_error(error: VmError, outcome: &str) -> VmError {
+    let details = match error {
+        VmError::Execution { details } => details,
+        error => error.to_string(),
+    };
+    VmError::Execution {
+        details: format!("{outcome}: {details}"),
+    }
 }
 
 /// Runs every handler the script registered for `event`, even after one throws; returns

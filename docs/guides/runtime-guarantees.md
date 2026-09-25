@@ -72,9 +72,9 @@ directories writable only by trusted users. Engines sharing a cache directory do
 not see partially written artifacts. Atomic replacement is not a guarantee of
 durability against every filesystem or power-loss failure.
 
-Each artifact is one transpiled module, keyed by its source, its file extension,
-and the compiler and crate versions. Import resolution is never cached on disk. An
-engine reuses a project's resolutions in memory only while the watched structure
-(directories, `tsconfig.json`, `package.json`, registered host modules) is
-unchanged, so new files and configuration changes take effect on the next load.
-Changing one module transpiles that module only.
+Each artifact is one transpiled module and its source map, keyed by its source, its
+file extension, and the compiler and crate versions. Import resolution is never
+cached on disk. An engine reuses a project's resolutions in memory only while the
+watched structure (directories, `tsconfig.json`, `package.json`, registered host
+modules) is unchanged, so new files and configuration changes take effect on the
+next load. Changing one module transpiles that module only.

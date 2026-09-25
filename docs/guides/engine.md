@@ -36,7 +36,8 @@ engine.emit("user.found", &UserFoundPayload { user_id: 7 })?;
 - Calling a script that is not loaded fails with `VmError::ScriptNotFound`; calling
   an export the script does not have fails with `VmError::FunctionNotFound`. An
   exception thrown by the script is returned as `VmError::Execution` with its
-  message.
+  message and stack, located in the TypeScript source (see
+  [Error Locations](#error-locations)).
 
 ## Scripts And Projects
 
@@ -47,7 +48,8 @@ engine.emit("user.found", &UserFoundPayload { user_id: 7 })?;
   `tsconfig.json` `paths` and `baseUrl`, packages in the project's
   `node_modules`).
 - Dynamic `import()` is rejected at load in both cases.
-- `unload_script(id)` removes a script and releases its modules.
+- `unload_script(id)` removes a script and releases its modules, after running its
+  `ctx.hot.dispose` callbacks (see [Keep State Across Reloads](#keep-state-across-reloads)).
 
 Each script runs in its own QuickJS context: scripts do not share globals. All
 scripts of one `Engine` share its QuickJS runtime, and so its memory limit, stack
@@ -80,6 +82,32 @@ it returns, within the same execution budget.
   with `unhandled promise rejection: …`, as Node does. Attach a `catch` to promises
   you do not await.
 
+## Error Locations
+
+Errors point at the TypeScript you wrote. Each script frame of a
+`VmError::Execution` stack names its file and its TypeScript line and column:
+
+```text
+javascript execution failed: division by zero
+    at divide (lib/math.ts:8:15)
+    at run (main.ts:7:17)
+```
+
+- A project module is named by its path relative to the project root (the
+  `tsconfig.json` directory, else the entry file's), with `/` separators; an inline
+  script is `<id>.ts`.
+- Lines and columns start at 1; columns count UTF-16 code units, as editors and
+  `tsc` do. A frame points where QuickJS places it: the callee or the last argument
+  of a call, the object of a failed property access.
+- Errors from top-level code during a load, calls, `async` exports, event handlers,
+  Promise jobs and unhandled rejections are all located. Frames outside script
+  modules, such as `native` ones, stay as they are.
+- A syntax error fails the load with `VmError::Transpile`, one diagnostic per line
+  as `path:line:column: message`, followed by its labels and help, indented.
+- Each module's source map is built when it is transpiled, kept with it in memory
+  and in the disk cache, and only read when an error is reported: successful calls
+  and emits do no extra work.
+
 ## Reaching Host Functions From Scripts
 
 A script reaches every registered host function in three ways, all ending in the
@@ -97,19 +125,25 @@ same native function:
 Loading a script or project again with the same id replaces it. The new version is
 transpiled, resolved and initialized first; if any of that fails (syntax error,
 resolution error, exception or timeout in top-level code), the previous version
-stays loaded. A successful reload starts from fresh script state.
+stays loaded. A successful reload starts from fresh script state, except for what
+the script hands over through `ctx.hot` (see
+[Keep State Across Reloads](#keep-state-across-reloads)).
 
 ## Hot Reload
 
 `reload_changed()` reloads every project whose files changed since it was loaded,
-in load order, and returns a `ReloadReport` with the reloaded ids and the failed
-ones. Call it from your loop; it starts no thread:
+in load order, and returns a `ReloadReport` with the reloaded ids, the failed ones,
+and the reloaded ones whose previous version's `ctx.hot.dispose` threw. Call it from
+your loop; it starts no thread:
 
 ```rust
 // For example once per second during development.
 let report = engine.reload_changed();
 for (id, error) in &report.failed {
     eprintln!("{id} kept its previous version: {error}");
+}
+for (id, error) in &report.dispose_failed {
+    eprintln!("{id} reloaded, but its previous version failed to clean up: {error}");
 }
 ```
 
@@ -125,6 +159,53 @@ for (id, error) in &report.failed {
 - Inline scripts (`load_script`) have no files and are never reloaded here.
 - Changes outside the watched paths (for example a new file in a `paths` fallback
   directory that holds no loaded module) need an explicit `load_project`.
+
+### Keep State Across Reloads
+
+A reload starts the script from fresh module state. To keep some of it, the script
+hands it over through `ctx.hot`, which the generated declarations and SDK type:
+
+```ts
+type Saved = { score: number };
+
+let score = (ctx.hot.data as Saved | undefined)?.score ?? 0;
+const timer = scheduler.every(1000, "tick");
+
+ctx.hot.save(() => ({ score }));
+ctx.hot.dispose(() => scheduler.cancel(timer));
+
+export function add(points: number): number {
+  return (score += points);
+}
+```
+
+- `ctx.hot.data` is the value the previous version's `save` callback returned. It
+  is set before any of the new version's code runs, so top-level code can read it;
+  it is `undefined` on a first load, after `unload_script` and when the previous
+  version registered no `save`.
+- `ctx.hot.save(fn)` registers the callback run on the old version when a reload
+  replaces it. It runs before the new version loads, so it must only read state:
+  if the new version then fails to load, the old one keeps running as if nothing
+  happened. The last registration wins. A `save` that throws fails the reload, and
+  the old version keeps running.
+- `ctx.hot.dispose(fn)` registers a cleanup run on the old version only once the
+  new version has loaded, and by `unload_script`. Every registered cleanup runs, in
+  registration order, even after one throws. A reload whose new version fails to
+  load does not dispose the old one.
+- A throwing `dispose` does not undo the reload: the new version stays loaded and
+  the load call (`load_script`, `load_project`) returns `VmError::Execution` saying
+  the previous version's `ctx.hot.dispose` failed and the new version is loaded.
+  `reload_changed` lists that script both in `reloaded` and in `dispose_failed`.
+  `unload_script` returns the error too, and the script is unloaded all the same.
+- `save` and `dispose` run under the execution budget, with their Promise jobs,
+  like a call. They are synchronous: a Promise returned by `save` becomes
+  `ctx.hot.data` as is.
+- Scripts share one QuickJS runtime, so `data` is the very object `save` returned,
+  not a copy: nothing is serialized. Prefer plain data (objects, arrays, numbers,
+  strings). A function or class instance from the old version keeps the old
+  version's context in memory while it is referenced, and `instanceof` against the
+  new version's classes is false for it.
+- Dropping the `Engine` runs no `dispose` callback.
 
 ## Execution Budget
 
@@ -155,8 +236,8 @@ request made while nothing runs has no effect on the next operation.
 ## Transpilation Cache
 
 `VmOptions::cache_dir` is `None` by default: every load transpiles the TypeScript
-in memory. Set it to a directory to keep the transpiled JavaScript on disk and
-reuse it across reloads and runs:
+in memory. Set it to a directory to keep the transpiled JavaScript and its source
+map on disk and reuse them across reloads and runs:
 
 ```rust
 use rustts::{Engine, VmOptions};

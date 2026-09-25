@@ -4,6 +4,9 @@ use std::collections::HashMap;
 
 use crate::compiler::CompiledModule;
 
+/// Start of every script module id: `rustts://graph/{graph id}/{module id}`.
+pub(crate) const RUNTIME_MODULE_PREFIX: &str = "rustts://graph/";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeModuleGraph {
     pub(crate) entry_module_id: String,
@@ -26,5 +29,5 @@ pub(super) fn build_runtime_module_id_map(
 }
 
 pub(super) fn runtime_module_id(graph_id: u64, module_id: &str) -> String {
-    format!("rustts://graph/{graph_id}/{module_id}")
+    format!("{RUNTIME_MODULE_PREFIX}{graph_id}/{module_id}")
 }

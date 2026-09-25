@@ -1,10 +1,16 @@
-//! Disk-backed cache store for transpiled JavaScript.
+//! Disk-backed cache store for transpiled JavaScript and its source map.
 
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use crate::compiler::{SourceMap, TranspiledModule};
 use crate::error::VmError;
+
+/// First line of an artifact, before the BLAKE3 hash of the rest. The rest is the
+/// source map `mappings` line, then the JavaScript.
+const ARTIFACT_HEADER: &str = "// rustts-cache-v3 ";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ScriptCache {
@@ -18,24 +24,25 @@ impl ScriptCache {
         Ok(Self { root })
     }
 
-    pub(crate) fn load(&self, cache_key: &str) -> Result<Option<String>, VmError> {
+    pub(crate) fn load(&self, cache_key: &str) -> Result<Option<TranspiledModule>, VmError> {
         let path = self.js_path(cache_key);
         match fs::read_to_string(path) {
-            Ok(source) => Ok(verified_payload(&source).map(str::to_owned)),
+            Ok(artifact) => Ok(verified_payload(&artifact).and_then(transpiled_module)),
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Ok(None),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(VmError::Io(error)),
         }
     }
 
-    pub(crate) fn store(&self, cache_key: &str, js: &str) -> Result<(), VmError> {
+    pub(crate) fn store(&self, cache_key: &str, module: &TranspiledModule) -> Result<(), VmError> {
+        let payload = artifact_payload(module);
         let mut temporary = tempfile::NamedTempFile::new_in(&self.root)?;
         writeln!(
             temporary,
-            "// rustts-cache-v2 {}",
-            blake3::hash(js.as_bytes()).to_hex()
+            "{ARTIFACT_HEADER}{}",
+            blake3::hash(payload.as_bytes()).to_hex()
         )?;
-        temporary.write_all(js.as_bytes())?;
+        temporary.write_all(payload.as_bytes())?;
         temporary.as_file().sync_all()?;
         persist_atomic(temporary, &self.js_path(cache_key))?;
         Ok(())
@@ -46,10 +53,27 @@ impl ScriptCache {
     }
 }
 
-fn verified_payload(source: &str) -> Option<&str> {
-    let (header, payload) = source.split_once('\n')?;
-    let expected = header.strip_prefix("// rustts-cache-v2 ")?;
+fn verified_payload(artifact: &str) -> Option<&str> {
+    let (header, payload) = artifact.split_once('\n')?;
+    let expected = header.strip_prefix(ARTIFACT_HEADER)?;
     (blake3::hash(payload.as_bytes()).to_hex().as_str() == expected).then_some(payload)
+}
+
+/// The source map `mappings` line, then the JavaScript.
+fn artifact_payload(module: &TranspiledModule) -> String {
+    let mut payload = module.source_map.encode();
+    payload.push('\n');
+    payload.push_str(&module.js);
+    payload
+}
+
+/// Splits a verified payload into its source map and JavaScript.
+fn transpiled_module(payload: &str) -> Option<TranspiledModule> {
+    let (mappings, js) = payload.split_once('\n')?;
+    Some(TranspiledModule {
+        js: js.to_owned(),
+        source_map: Arc::new(SourceMap::decode(mappings)?),
+    })
 }
 
 fn persist_atomic(
@@ -86,19 +110,26 @@ fn cache_file_name(cache_key: &str) -> String {
 mod tests {
     use super::*;
 
+    fn module(js: &str) -> TranspiledModule {
+        TranspiledModule {
+            js: js.to_owned(),
+            source_map: Arc::default(),
+        }
+    }
+
     #[test]
     fn concurrent_readers_only_see_complete_artifacts() {
         let root = tempfile::tempdir().unwrap();
         let cache = ScriptCache::new(root.path()).unwrap();
-        let first = "a".repeat(64 * 1024);
-        let second = "b".repeat(64 * 1024);
+        let first = module(&"a".repeat(64 * 1024));
+        let second = module(&"b".repeat(64 * 1024));
         cache.store("shared", &first).unwrap();
         std::thread::scope(|scope| {
-            for source in [&first, &second] {
+            for artifact in [&first, &second] {
                 let cache = &cache;
                 scope.spawn(move || {
                     for _ in 0..30 {
-                        cache.store("shared", source).unwrap();
+                        cache.store("shared", artifact).unwrap();
                     }
                 });
             }
@@ -113,14 +144,20 @@ mod tests {
     fn corrupt_and_legacy_entries_are_cache_misses() {
         let root = tempfile::tempdir().unwrap();
         let cache = ScriptCache::new(root.path()).unwrap();
-        for content in ["legacy", "// rustts-cache-v2 invalid\npartial"] {
+        let legacy_js = "export const answer = 42;";
+        let legacy_v2 = format!(
+            "// rustts-cache-v2 {}\n{legacy_js}",
+            blake3::hash(legacy_js.as_bytes()).to_hex()
+        );
+        for content in [
+            "legacy",
+            "// rustts-cache-v3 invalid\npartial",
+            legacy_v2.as_str(),
+        ] {
             fs::write(cache.js_path("broken"), content).unwrap();
             assert_eq!(cache.load("broken").unwrap(), None);
         }
-        cache.store("broken", "export const answer = 42;").unwrap();
-        assert_eq!(
-            cache.load("broken").unwrap().unwrap(),
-            "export const answer = 42;"
-        );
+        cache.store("broken", &module(legacy_js)).unwrap();
+        assert_eq!(cache.load("broken").unwrap().unwrap(), module(legacy_js));
     }
 }
