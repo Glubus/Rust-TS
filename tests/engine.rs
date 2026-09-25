@@ -415,6 +415,42 @@ fn emit_calls_every_registered_handler() {
 }
 
 #[test]
+fn a_handler_registered_by_a_later_call_receives_events() {
+    let engine = engine_with(
+        r#"
+        let received = 0;
+        export function subscribe(): void { ctx.on("tick", () => { received += 1; }); }
+        export function read(): number { return received; }
+        "#,
+    );
+
+    let before = engine
+        .emit("tick", &json!(null))
+        .expect("emit before subscribing");
+    engine
+        .call::<()>("script", "subscribe", ())
+        .expect("subscribe");
+    let after = engine
+        .emit("tick", &json!(null))
+        .expect("emit after subscribing");
+    let received: f64 = engine.call("script", "read", ()).expect("read count");
+
+    assert_eq!((before, after, received), (0, 1, 1.0));
+}
+
+#[test]
+fn a_reload_without_handlers_stops_receiving_events() {
+    let mut engine = engine_with(r#"ctx.on("tick", () => {}); export {};"#);
+    engine
+        .load_script("script", "export function idle(): void {}")
+        .expect("reload without handlers");
+
+    let delivered = engine.emit("tick", &json!(null)).expect("emit");
+
+    assert_eq!(delivered, 0);
+}
+
+#[test]
 fn promise_reactions_scheduled_by_a_call_run_before_it_returns() {
     let engine = engine_with(
         r#"

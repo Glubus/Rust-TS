@@ -12,7 +12,7 @@ use criterion::{
     BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
 };
 use mlua::{Lua, LuaSerdeExt};
-use rquickjs::{Context, Ctx, Function, Runtime, Value as JsValue, prelude::Func};
+use rquickjs::{Context, Ctx, Function, Object, Runtime, Value as JsValue, prelude::Func};
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsType, VmError,
     VmOptions,
@@ -51,7 +51,7 @@ function process(input) {
   for (const v of input.stats) total += v;
   return { id: input.id, total: total + input.position.x };
 }
-function loop(n) { let s = 0; for (let i = 0; i < n; i++) s = inc(s); return s; }
+function loop(n) { let s = 0; for (let i = 0; i < n; i++) s = math.inc(s); return s; }
 function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }
 let last = 0;
 function onScore(event) { last = event.combo; }
@@ -164,9 +164,11 @@ impl QuickJsBench {
         let runtime = Runtime::new().expect("create quickjs runtime");
         let context = Context::full(&runtime).expect("create quickjs context");
         context.with(|ctx| {
-            ctx.globals()
-                .set("inc", Func::from(|value: f64| value + 1.0))
+            // Same shape as the engine script's `math.inc`, for a fair comparison.
+            let math = Object::new(ctx.clone()).expect("create quickjs math");
+            math.set("inc", Func::from(|value: f64| value + 1.0))
                 .expect("set quickjs inc");
+            ctx.globals().set("math", math).expect("set quickjs math");
             ctx.eval::<(), _>(JS_SOURCE).expect("load quickjs source");
         });
         Self { runtime, context }
@@ -373,9 +375,11 @@ fn bench_reload(c: &mut Criterion, qjs: &QuickJsBench) {
         b.iter(|| {
             let context = Context::full(&qjs.runtime).expect("create context");
             context.with(|ctx| {
-                ctx.globals()
-                    .set("inc", Func::from(|value: f64| value + 1.0))
-                    .expect("set inc");
+                // Same shape as the engine script's `math.inc`, for a fair comparison.
+                let math = Object::new(ctx.clone()).expect("create quickjs math");
+                math.set("inc", Func::from(|value: f64| value + 1.0))
+                    .expect("set quickjs inc");
+                ctx.globals().set("math", math).expect("set quickjs math");
                 ctx.eval::<(), _>(JS_SOURCE).expect("quickjs reload");
             });
             black_box(context)

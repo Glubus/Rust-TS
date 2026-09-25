@@ -1,8 +1,12 @@
 // Installed in every script context, once `globalThis.__rustts_native` holds the
-// native host functions. One script instead of two: each evaluation in a fresh
-// context pays its own parse and compile.
+// native host functions and `__rustts_listen` records the events the context listens
+// to. One script instead of two: each evaluation in a fresh context pays its own
+// parse and compile.
 (() => {
-  // Event handlers: `ctx.on(event, handler)`; the engine reads `__vm_handlers`.
+  // Event handlers: `ctx.on(event, handler)`; the engine reads `__vm_handlers` and
+  // only visits contexts whose events `listen` recorded.
+  const listen = globalThis.__rustts_listen;
+  delete globalThis.__rustts_listen;
   const handlers = Object.create(null);
   globalThis.__rustts_on = (eventName, handler) => {
     if (typeof eventName !== "string") {
@@ -13,6 +17,7 @@
     }
     const list = handlers[eventName] ?? (handlers[eventName] = []);
     list.push(handler);
+    listen(eventName);
   };
   globalThis.ctx = {
     on: globalThis.__rustts_on,

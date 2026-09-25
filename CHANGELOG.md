@@ -108,6 +108,10 @@
   project structure is unchanged, and only transpile the edited files: reloading a
   9-file project after editing one file went from about 1.5 ms to 0.7 ms on the
   development machine.
+- `emit` only enters the scripts that registered a handler for the event: `ctx.on`
+  records it on the Rust side. An event nobody listens to costs about 55 ns instead
+  of about 215 ns per script, and 10 scripts with one listener about 0.5 µs instead
+  of 1.5 µs.
 - `benches/vs_lua.rs`: the same workloads on mlua, raw QuickJS and RustTS.
 - Flattened string-keyed maps (`#[serde(flatten)] rest: BTreeMap<String, V>`,
   `HashMap`, `serde_json::Value`, or an `Option` of one) in derived schemas: rendered

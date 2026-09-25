@@ -210,7 +210,7 @@ rquickjs 0.14:
 | --- | --- | --- | --- |
 | Call `sum(a, b)` | 36 ns | 71 ns | 130 ns |
 | Call with a 20-field object in and out | 2.76 µs | 2.46 µs | 2.65 µs |
-| One call making 1,000 host calls | 24.7 µs | 62.8 µs | 74.9 µs |
+| One call making 1,000 host calls¹ | 24.7 µs | 62.8 µs | 74.9 µs |
 | Pure compute, `fib(20)` | 294 µs | 968 µs | 896 µs |
 | Event to one handler | 181 ns | 135 ns | 250 ns |
 | Reload a small script | 8.7 µs | 72 µs | 156 µs |
@@ -220,3 +220,8 @@ nanoseconds per crossing on top of it. The `Engine` reload runs with the default
 options, without a disk cache, so it transpiles the TypeScript every time.
 Run `cargo run --release --example native_roundtrip` for a quick check of the same
 comparison.
+
+¹ Measured when the direct QuickJS script called a global `inc`, while the `Engine`
+script calls `math.inc` from its host module. The bench now uses `math.inc` on both
+sides; with the same member access, a host call through `Engine` costs the same as
+through QuickJS directly (about 100 ns each on the development machine).

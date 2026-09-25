@@ -1,11 +1,15 @@
 //! Single-thread engine: the owning thread runs QuickJS, and every call crosses the
 //! Rust/JS boundary natively, without generated source or JSON text.
 
+use std::cell::RefCell;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use indexmap::IndexMap;
+use rquickjs::prelude::Func;
 use rquickjs::{
     Array, CatchResultExt, CaughtError, Context, Ctx, Function, Module, Object, Persistent,
     Runtime, Value as JsValue,
@@ -29,6 +33,8 @@ use super::transpile::Transpiler;
 
 const NATIVE_FUNCTIONS_GLOBAL: &str = "__rustts_native";
 const HANDLERS_GLOBAL: &str = "__vm_handlers";
+/// Records one event name the context's `ctx.on` registered a handler for.
+const LISTEN_GLOBAL: &str = "__rustts_listen";
 
 /// Installs `ctx.on` and its handler table, `__host` and the namespaced host globals
 /// on top of `__rustts_native`.
@@ -66,8 +72,24 @@ pub struct Engine {
 struct EngineScript {
     context: Context,
     exports: Persistent<Object<'static>>,
+    /// Events this script's `ctx.on` registered handlers for.
+    events: ListenedEvents,
     module_ids: Vec<String>,
     origin: ScriptOrigin,
+}
+
+/// Filled by the context's `ctx.on`, so `emit` skips scripts without handlers instead
+/// of entering their context. Owned by the script: a reload starts a new list.
+///
+/// Holds [`event_key`]s: `emit` hashes the event name once, then each script costs a
+/// scan of a few integers. A collision only makes `emit` look into a script's handler
+/// table for nothing; it never skips a listener.
+type ListenedEvents = Rc<RefCell<Vec<u64>>>;
+
+fn event_key(event: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    event.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Where a script's code came from, kept for hot reload and the transpile memo.
@@ -249,12 +271,19 @@ impl Engine {
     /// order; returns the number of scripts that had at least one handler. A throwing
     /// handler does not stop the others: every handler runs, then the first error is
     /// returned. The payload is encoded once per script with handlers and shared by all
-    /// of that script's handlers.
+    /// of that script's handlers. Scripts that never registered a handler for `event`
+    /// cost a set lookup.
     pub fn emit<P: JsEncode + ?Sized>(&self, event: &str, payload: &P) -> Result<usize, VmError> {
         let _budget = self.budget();
+        let mut visited = false;
         let mut delivered = 0;
         let mut first_error = None;
+        let key = event_key(event);
         for script in self.scripts.values() {
+            if !script.events.borrow().contains(&key) {
+                continue;
+            }
+            visited = true;
             match script.context.with(|ctx| deliver(&ctx, event, payload)) {
                 Ok(true) => delivered += 1,
                 Ok(false) => {}
@@ -263,6 +292,10 @@ impl Engine {
                     first_error.get_or_insert(error);
                 }
             }
+        }
+        if !visited {
+            // No JavaScript ran, so there is no Promise job to settle.
+            return Ok(0);
         }
         self.settle(first_error.map_or(Ok(delivered), Err))
     }
@@ -336,11 +369,12 @@ impl Engine {
         origin: ScriptOrigin,
     ) -> Result<(), VmError> {
         match self.mount(&graph.entry_module_id) {
-            Ok((context, exports)) => self.replace_script(
+            Ok((context, exports, events)) => self.replace_script(
                 id,
                 EngineScript {
                     context,
                     exports,
+                    events,
                     module_ids: graph.module_ids,
                     origin,
                 },
@@ -355,24 +389,45 @@ impl Engine {
     fn mount(
         &self,
         entry_module_id: &str,
-    ) -> Result<(Context, Persistent<Object<'static>>), VmError> {
+    ) -> Result<(Context, Persistent<Object<'static>>, ListenedEvents), VmError> {
         let _budget = self.budget();
         let context = Context::full(&self.runtime).map_err(js_error)?;
+        let events = ListenedEvents::default();
         let exports = context.with(|ctx| {
-            self.install_native_functions(&ctx)?;
+            self.install_native_functions(&ctx, &events)?;
             evaluate_script(&ctx, CONTEXT_PRELUDE)?;
             import_exports(&ctx, entry_module_id)
         });
-        Ok((context, self.settle(exports)?))
+        Ok((context, self.settle(exports)?, events))
     }
 
-    fn install_native_functions(&self, ctx: &Ctx<'_>) -> Result<(), VmError> {
+    /// Installs the host functions and the `__rustts_listen` hook the prelude hands to
+    /// `ctx.on`.
+    fn install_native_functions(
+        &self,
+        ctx: &Ctx<'_>,
+        events: &ListenedEvents,
+    ) -> Result<(), VmError> {
         let functions = Object::new(ctx.clone()).map_err(js_error)?;
         self.registry
             .install_native_functions(&functions)
             .map_err(js_error)?;
-        ctx.globals()
+        let globals = ctx.globals();
+        globals
             .set(NATIVE_FUNCTIONS_GLOBAL, functions)
+            .map_err(js_error)?;
+        let events = Rc::clone(events);
+        globals
+            .set(
+                LISTEN_GLOBAL,
+                Func::from(move |event: String| {
+                    let key = event_key(&event);
+                    let mut events = events.borrow_mut();
+                    if !events.contains(&key) {
+                        events.push(key);
+                    }
+                }),
+            )
             .map_err(js_error)
     }
 

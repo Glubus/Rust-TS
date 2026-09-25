@@ -12,7 +12,7 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use mlua::{Lua, LuaSerdeExt};
-use rquickjs::{Context, Ctx, Function, Runtime, Value as JsValue, prelude::Func};
+use rquickjs::{Context, Ctx, Function, Object, Runtime, Value as JsValue, prelude::Func};
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsType, VmError,
     VmOptions,
@@ -38,8 +38,8 @@ function on_score(event) last = event.combo end
 
 const JS_SOURCE: &str = r#"
 function sum(a, b) { return a + b; }
-function hostLoop(n) { let s = 0; for (let i = 0; i < n; i++) s = inc(s); return s; }
-function step(x) { return inc(x); }
+function hostLoop(n) { let s = 0; for (let i = 0; i < n; i++) s = math.inc(s); return s; }
+function step(x) { return math.inc(x); }
 function process(input) {
   let total = 0;
   for (const v of input.stats) total += v;
@@ -194,9 +194,11 @@ impl QuickJsBackend {
         let runtime = Runtime::new().expect("create quickjs runtime");
         let context = Context::full(&runtime).expect("create quickjs context");
         context.with(|ctx| {
-            ctx.globals()
-                .set("inc", Func::from(|value: f64| value + 1.0))
+            // Same shape as the engine script's `math.inc`, for a fair comparison.
+            let math = Object::new(ctx.clone()).expect("create quickjs math");
+            math.set("inc", Func::from(|value: f64| value + 1.0))
                 .expect("set quickjs inc");
+            ctx.globals().set("math", math).expect("set quickjs math");
             ctx.eval::<(), _>(JS_SOURCE).expect("load quickjs source");
         });
         Self {
