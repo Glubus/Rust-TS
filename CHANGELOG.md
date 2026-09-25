@@ -51,7 +51,10 @@
 - `Engine` (new, API expected to grow in 0.4): single-thread runtime with native
   calls in both directions (`call`, `emit`), under the same `execution_timeout` as
   the worker pool. Scripts reach host functions by ESM import, by namespaced
-  global (`user.find(...)`) or through the generated SDK. See
+  global (`user.find(...)`) or through the generated SDK. Promise jobs run before
+  each operation returns, `async` exports resolve to their value, and an unhandled
+  Promise rejection fails the operation. Events reach scripts in load order, and a
+  throwing handler does not stop the others. See
   [the Engine guide](docs/guides/engine.md) and `examples/native_roundtrip.rs`.
 - `benches/vs_lua.rs`: the same workloads on mlua, raw QuickJS and RustTS.
 - Flattened string-keyed maps (`#[serde(flatten)] rest: BTreeMap<String, V>`,

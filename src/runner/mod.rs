@@ -17,6 +17,7 @@ mod jobs;
 mod load;
 mod memory;
 mod module_loader;
+mod promise_rejections;
 mod render;
 mod script_store;
 mod state;

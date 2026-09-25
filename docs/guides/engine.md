@@ -44,7 +44,24 @@ engine.emit("user.found", &UserFoundPayload { user_id: 7 })?;
   [`JsEncode`](type-mapping.md), and decodes the result with `JsDecode`.
   `engine.call::<serde_json::Value>(id, name, vec![json])` keeps a JSON-shaped API.
 - `emit` encodes the payload once per script that has handlers for the event and
-  returns how many scripts received it.
+  returns how many scripts received it. Scripts receive events in load order (a
+  reload keeps the script's place). A handler that throws does not stop the others:
+  every handler runs, then `emit` returns the first error.
+
+## Promises
+
+`Engine` has no event loop, so it runs Promise jobs itself: the jobs a load, call or
+emit queues (`then` callbacks, `await` continuations, `queueMicrotask`) run before
+it returns, within the same execution budget.
+
+- `call` on an `async` export returns the resolved value, or fails with the
+  rejection reason.
+- A Promise that no script job can settle, such as one waiting on a timer or on a
+  host, fails the call: `Engine` has no timers and no Promise-returning host
+  functions.
+- A Promise rejection that no handler caught by the end of the operation fails it
+  with `unhandled promise rejection: …`, as Node does. Attach a `catch` to promises
+  you do not await.
 
 ## Reaching Host Functions From Scripts
 

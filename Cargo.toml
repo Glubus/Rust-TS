@@ -29,6 +29,7 @@ serde_json = "1.0.145"
 thiserror = "2.0.17"
 blake3 = "1.8.2"
 arc-swap = "1.7.1"
+indexmap = "2.14.2"
 futures-timer = { version = "3.0.3", optional = true }
 tempfile = "3.23.0"
 tokio = { version = "1.52.3", optional = true, features = ["rt-multi-thread", "sync"] }

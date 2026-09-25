@@ -17,8 +17,19 @@ pub(crate) fn caught_js_error(error: rquickjs::CaughtError<'_>) -> VmError {
 pub(crate) fn caught_js_error_details(error: &rquickjs::CaughtError<'_>) -> String {
     match error {
         rquickjs::CaughtError::Exception(exception) => exception_details(exception),
-        rquickjs::CaughtError::Value(value) => format!("non-error exception: {value:?}"),
+        rquickjs::CaughtError::Value(value) => js_value_details(value),
         rquickjs::CaughtError::Error(error) => error.to_string(),
+    }
+}
+
+/// Describes a thrown or rejected JavaScript value, with its stack when it is an `Error`.
+pub(crate) fn js_value_details(value: &rquickjs::Value<'_>) -> String {
+    match value
+        .as_object()
+        .and_then(|object| rquickjs::Exception::from_object(object.clone()))
+    {
+        Some(exception) => exception_details(&exception),
+        None => format!("non-error exception: {value:?}"),
     }
 }
 
