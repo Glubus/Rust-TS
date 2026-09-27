@@ -1,7 +1,7 @@
 #[cfg(feature = "derive")]
 use rustts::TsSchema;
 use rustts::{
-    Engine, HostCallback, HostContext, HostContract, HostContractKind, HostFunction, HostMetadata,
+    Engine, HostCallback, HostContext, HostContract, HostContractKind, HostFunction, HostFunctionSignature, HostMetadata,
     Schema, TsField, TsType, VmContractValidation, VmError, VmUnknownFieldValidation,
 };
 use serde_json::{Value, json};
@@ -43,14 +43,16 @@ impl HostContract for FindUser {
     }
 }
 
-impl HostFunction for FindUser {
+impl HostFunctionSignature for FindUser {
     type Input = u64;
     type Output = String;
 
     fn output_schema() -> Schema {
         Schema::typed("FindUserOutput", TsType::String)
     }
+}
 
+impl HostFunction for FindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("user-{input}"))
     }
@@ -132,14 +134,17 @@ impl HostContract for RecordAction {
 }
 
 #[cfg(feature = "derive")]
-impl HostFunction for RecordAction {
+impl HostFunctionSignature for RecordAction {
     type Input = RecordActionInput;
     type Output = String;
 
     fn output_schema() -> Schema {
         String::schema()
     }
+}
 
+#[cfg(feature = "derive")]
+impl HostFunction for RecordAction {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("{}:{}", input.action_id, input.actor.actor_id))
     }
@@ -159,14 +164,16 @@ impl HostContract for EchoValidation {
     }
 }
 
-impl HostFunction for EchoValidation {
+impl HostFunctionSignature for EchoValidation {
     type Input = Value;
     type Output = Value;
 
     fn output_schema() -> Schema {
         validation_input_schema()
     }
+}
 
+impl HostFunction for EchoValidation {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(input)
     }
@@ -193,14 +200,16 @@ impl HostContract for EchoTypeRefValidation {
     }
 }
 
-impl HostFunction for EchoTypeRefValidation {
+impl HostFunctionSignature for EchoTypeRefValidation {
     type Input = Value;
     type Output = Value;
 
     fn output_schema() -> Schema {
         Schema::typed("ValidationTypeRefOutput", TsType::Json)
     }
+}
 
+impl HostFunction for EchoTypeRefValidation {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(input)
     }
@@ -220,14 +229,16 @@ impl HostContract for BadOutputValidation {
     }
 }
 
-impl HostFunction for BadOutputValidation {
+impl HostFunctionSignature for BadOutputValidation {
     type Input = Value;
     type Output = Value;
 
     fn output_schema() -> Schema {
         Schema::typed("BadOutputOutput", TsType::Number)
     }
+}
 
+impl HostFunction for BadOutputValidation {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(json!("not-a-number"))
     }

@@ -14,7 +14,8 @@ for large payloads. `NativeBytes` crosses as a `Uint8Array` in both directions:
 ```rust
 use serde::Deserialize;
 use rustts::{
-    HostContract, HostContractKind, HostFunction, NativeBytes, Schema, TsSchema, VmError,
+    HostContract, HostContractKind, HostFunction, HostFunctionSignature, NativeBytes, Schema,
+    TsSchema, VmError,
 };
 
 #[derive(Deserialize, TsSchema)]
@@ -37,14 +38,16 @@ impl HostContract for ReadAsset {
     }
 }
 
-impl HostFunction for ReadAsset {
+impl HostFunctionSignature for ReadAsset {
     type Input = ReadAssetInput;
     type Output = NativeBytes;
 
     fn output_schema() -> Schema {
         NativeBytes::schema()
     }
+}
 
+impl HostFunction for ReadAsset {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let bytes = std::fs::read(input.path).map_err(VmError::from)?;
         Ok(NativeBytes::new(bytes))

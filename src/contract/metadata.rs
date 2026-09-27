@@ -307,6 +307,10 @@ pub struct HostContractDescriptor {
 pub struct HostCallbackDescriptor {
     /// Payload schema metadata.
     pub payload_schema: Schema,
+    /// What each handler returns, for a [`HostRequest`](crate::HostRequest); `None` for a
+    /// plain callback, whose handlers return nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_schema: Option<Schema>,
 }
 
 /// Typing metadata specific to function contracts.
@@ -332,6 +336,9 @@ pub enum HostContractAbi {
     Callback {
         /// Payload schema.
         payload: Schema,
+        /// Handler reply schema of a request; `None` when handlers return nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply: Option<Schema>,
     },
     /// Context ABI.
     Context {

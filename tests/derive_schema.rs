@@ -8,7 +8,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use rustts::{
-    Engine, HostContract, HostContractKind, HostFunction, InMemoryHostContractRegistry, Schema,
+    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature, InMemoryHostContractRegistry, Schema,
     TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema, TsType, VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -202,7 +202,7 @@ impl HostContract for CreateInvoice {
     }
 }
 
-impl HostFunction for CreateInvoice {
+impl HostFunctionSignature for CreateInvoice {
     type Input = CreateInvoiceInput;
     type Output = CreateInvoiceOutput;
 
@@ -213,7 +213,9 @@ impl HostFunction for CreateInvoice {
     fn output_schema() -> Schema {
         CreateInvoiceOutput::schema()
     }
+}
 
+impl HostFunction for CreateInvoice {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(CreateInvoiceOutput {
             invoice_id: format!("invoice:{}", input.account_id),
@@ -234,7 +236,7 @@ impl HostContract for FindSession {
     }
 }
 
-impl HostFunction for FindSession {
+impl HostFunctionSignature for FindSession {
     type Input = FindSessionInput;
     type Output = FindSessionOutput;
 
@@ -245,7 +247,9 @@ impl HostFunction for FindSession {
     fn output_schema() -> Schema {
         FindSessionOutput::schema()
     }
+}
 
+impl HostFunction for FindSession {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(FindSessionOutput {
             token: SessionToken {
@@ -267,10 +271,12 @@ impl HostContract for AutoCreateInvoice {
     }
 }
 
-impl HostFunction for AutoCreateInvoice {
+impl HostFunctionSignature for AutoCreateInvoice {
     type Input = AutoCreateInvoiceInput;
     type Output = AutoCreateInvoiceOutput;
+}
 
+impl HostFunction for AutoCreateInvoice {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(AutoCreateInvoiceOutput {
             invoice_id: format!("invoice:{}", input.account_id),
@@ -632,10 +638,12 @@ impl HostContract for RecordScores {
     }
 }
 
-impl HostFunction for RecordScores {
+impl HostFunctionSignature for RecordScores {
     type Input = OpenScores;
     type Output = OpenEvent;
+}
 
+impl HostFunction for RecordScores {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(OpenEvent::Scores(input))
     }

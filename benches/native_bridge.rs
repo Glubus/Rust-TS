@@ -7,7 +7,7 @@ use rquickjs::{
     prelude::Func,
 };
 use rustts::{
-    Engine, HostContract, HostContractKind, HostContractRegistry, HostFunction, NativeBytes,
+    Engine, HostContract, HostContractKind, HostContractRegistry, HostFunction, HostFunctionSignature, NativeBytes,
     Schema, TsField, TsSchema, TsType, VmContractValidation, VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -427,14 +427,16 @@ impl HostContract for HostSmallCopyJson {
     }
 }
 
-impl HostFunction for HostSmallCopyJson {
+impl HostFunctionSignature for HostSmallCopyJson {
     type Input = Value;
     type Output = Value;
 
     fn output_schema() -> Schema {
         small_payload_schema()
     }
+}
 
+impl HostFunction for HostSmallCopyJson {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         let small = fixtures().small;
         Ok(json!({
@@ -457,14 +459,16 @@ impl HostContract for HostLargeCopyJson {
     }
 }
 
-impl HostFunction for HostLargeCopyJson {
+impl HostFunctionSignature for HostLargeCopyJson {
     type Input = Value;
     type Output = Value;
 
     fn output_schema() -> Schema {
         large_payload_schema()
     }
+}
 
+impl HostFunction for HostLargeCopyJson {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(json!({ "fields": fixtures().large_fields.as_ref() }))
     }
@@ -482,14 +486,16 @@ impl HostContract for HostSmallCopyTyped {
     }
 }
 
-impl HostFunction for HostSmallCopyTyped {
+impl HostFunctionSignature for HostSmallCopyTyped {
     type Input = EmptyInput;
     type Output = SmallPayload;
 
     fn output_schema() -> Schema {
         SmallPayload::schema()
     }
+}
 
+impl HostFunction for HostSmallCopyTyped {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         let small = fixtures().small;
         Ok(SmallPayload {
@@ -512,14 +518,16 @@ impl HostContract for HostLargeCopyTyped {
     }
 }
 
-impl HostFunction for HostLargeCopyTyped {
+impl HostFunctionSignature for HostLargeCopyTyped {
     type Input = EmptyInput;
     type Output = LargePayload;
 
     fn output_schema() -> Schema {
         LargePayload::schema()
     }
+}
 
+impl HostFunction for HostLargeCopyTyped {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(LargePayload {
             fields: fixtures().large_fields.to_vec(),
@@ -539,14 +547,16 @@ impl HostContract for HostGetField {
     }
 }
 
-impl HostFunction for HostGetField {
+impl HostFunctionSignature for HostGetField {
     type Input = Value;
     type Output = u32;
 
     fn output_schema() -> Schema {
         Schema::typed("FieldValue", TsType::Number)
     }
+}
 
+impl HostFunction for HostGetField {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let input: FieldReadInput =
             serde_json::from_value(input).map_err(|error| VmError::Execution {
@@ -568,14 +578,16 @@ impl HostContract for HostReadNativeU32 {
     }
 }
 
-impl HostFunction for HostReadNativeU32 {
+impl HostFunctionSignature for HostReadNativeU32 {
     type Input = Value;
     type Output = u32;
 
     fn output_schema() -> Schema {
         Schema::typed("NativeU32", TsType::Number)
     }
+}
 
+impl HostFunction for HostReadNativeU32 {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let input: FieldReadInput =
             serde_json::from_value(input).map_err(|error| VmError::Execution {
@@ -597,14 +609,16 @@ impl HostContract for HostBytesJsonArray {
     }
 }
 
-impl HostFunction for HostBytesJsonArray {
+impl HostFunctionSignature for HostBytesJsonArray {
     type Input = Value;
     type Output = Value;
 
     fn output_schema() -> Schema {
         Schema::typed("ByteArray", TsType::Array(Box::new(TsType::Number)))
     }
+}
 
+impl HostFunction for HostBytesJsonArray {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let input = parse_byte_input(input)?;
         Ok(json!(fixtures().bytes(input.byte_count).as_ref()))
@@ -623,14 +637,16 @@ impl HostContract for HostBytesNative {
     }
 }
 
-impl HostFunction for HostBytesNative {
+impl HostFunctionSignature for HostBytesNative {
     type Input = Value;
     type Output = NativeBytes;
 
     fn output_schema() -> Schema {
         NativeBytes::schema()
     }
+}
 
+impl HostFunction for HostBytesNative {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let input = parse_byte_input(input)?;
         Ok(NativeBytes::from_shared(fixtures().bytes(input.byte_count)))

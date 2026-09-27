@@ -3,7 +3,7 @@
 mod support;
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsSchema, VmError,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsSchema, VmError,
     VmOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -84,10 +84,12 @@ impl HostContract for DogfoodFindUser {
     }
 }
 
-impl HostFunction for DogfoodFindUser {
+impl HostFunctionSignature for DogfoodFindUser {
     type Input = DogfoodFindUserInput;
     type Output = DogfoodFindUserOutput;
+}
 
+impl HostFunction for DogfoodFindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(DogfoodFindUserOutput {
             user_id: input.user_id,

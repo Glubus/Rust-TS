@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use rustts::{
-    Engine, HostContract, HostContractKind, HostFunction, Schema, TsType, VmContractValidation,
+    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsType, VmContractValidation,
     VmError, VmOptions,
 };
 use serde_json::json;
@@ -40,14 +40,16 @@ impl HostContract for Double {
     }
 }
 
-impl HostFunction for Double {
+impl HostFunctionSignature for Double {
     type Input = f64;
     type Output = f64;
 
     fn output_schema() -> Schema {
         Schema::typed("DoubleOutput", TsType::Number)
     }
+}
 
+impl HostFunction for Double {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(input * 2.0)
     }
@@ -67,14 +69,16 @@ impl HostContract for Failing {
     }
 }
 
-impl HostFunction for Failing {
+impl HostFunctionSignature for Failing {
     type Input = ();
     type Output = f64;
 
     fn output_schema() -> Schema {
         Schema::typed("FailOutput", TsType::Number)
     }
+}
 
+impl HostFunction for Failing {
     fn call((): Self::Input) -> Result<Self::Output, VmError> {
         Err(VmError::Execution {
             details: String::from("boom"),

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, LuaSerdeExt};
 use rquickjs::{Context, Ctx, Function, Object, Runtime, Value as JsValue, prelude::Func};
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsType, VmError,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsType, VmError,
     VmOptions,
 };
 use serde_json::{Value, json};
@@ -82,14 +82,16 @@ impl HostContract for Inc {
     }
 }
 
-impl HostFunction for Inc {
+impl HostFunctionSignature for Inc {
     type Input = f64;
     type Output = f64;
 
     fn output_schema() -> Schema {
         Schema::typed("IncOutput", TsType::Number)
     }
+}
 
+impl HostFunction for Inc {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(input + 1.0)
     }

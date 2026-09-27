@@ -1,14 +1,16 @@
 use crate::contract::{
-    HostCallback, HostContext, HostContractDescriptor, HostFunction, JsDecode, JsEncode, TsSchema,
+    Caller, HostCallback, HostContext, HostContractDescriptor, HostFunction,
+    HostFunctionSignature, HostRequest, JsDecode, JsEncode, TsSchema,
 };
 use crate::error::VmError;
 
 /// Access to the host contract registry.
 pub trait HostContractRegistry: Send + Sync {
-    /// Registers one host function contract.
+    /// Registers one host function contract, implemented by its static
+    /// [`HostFunction::call`].
     fn register_function<T>(&self) -> Result<(), VmError>
     where
-        T: HostFunction + Send + Sync + 'static;
+        T: HostFunction + 'static;
 
     /// Registers one host function contract using `TsSchema` from its input and output types.
     ///
@@ -16,9 +18,49 @@ pub trait HostContractRegistry: Send + Sync {
     /// natively and without JSON text.
     fn register_typed_function<T>(&self) -> Result<(), VmError>
     where
-        T: HostFunction + Send + Sync + 'static,
+        T: HostFunction + 'static,
         T::Input: TsSchema + JsDecode,
         T::Output: TsSchema + JsEncode;
+
+    /// Registers function contract `C` implemented by `handler`, a closure that can
+    /// hold state; see [`Self::register_function`].
+    fn register_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static;
+
+    /// Registers function contract `C` implemented by `handler`, a closure that can
+    /// hold state; see [`Self::register_typed_function`].
+    fn register_typed_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode;
+
+    /// Registers function contract `C` implemented by `handler`, which also receives
+    /// the [`Caller`]; see [`Self::register_function_with`].
+    fn register_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static;
+
+    /// Registers function contract `C` implemented by `handler`, which also receives
+    /// the [`Caller`]; see [`Self::register_typed_function_with`].
+    fn register_typed_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode;
 
     /// Registers one host callback contract.
     fn register_callback<T>(&self) -> Result<(), VmError>
@@ -30,6 +72,14 @@ pub trait HostContractRegistry: Send + Sync {
     where
         T: HostCallback + Send + Sync + 'static,
         T::Payload: TsSchema + JsEncode;
+
+    /// Registers one host request, a callback whose handlers reply, using `TsSchema` from
+    /// its payload and reply types.
+    fn register_typed_request<T>(&self) -> Result<(), VmError>
+    where
+        T: HostRequest + Send + Sync + 'static,
+        T::Payload: TsSchema + JsEncode,
+        T::Reply: TsSchema + JsDecode;
 
     /// Registers one host context contract.
     fn register_context<T>(&self) -> Result<(), VmError>

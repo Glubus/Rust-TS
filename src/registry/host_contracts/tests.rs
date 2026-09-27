@@ -3,8 +3,9 @@ use serde_json::Value;
 use super::declarations::HOT_CONTEXT_TYPE;
 use super::{HostContractRegistry, InMemoryHostContractRegistry};
 use crate::contract::{
-    HostCallback, HostContext, HostContract, HostContractAbi, HostContractKind, HostFunction,
-    HostMetadata, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsType,
+    Caller, HostCallback, HostContext, HostContract, HostContractAbi, HostContractKind,
+    HostFunction, HostFunctionSignature, HostMetadata, Schema, TsEnumVariant, TsField, TsLiteral,
+    TsRecordKey, TsType,
 };
 use crate::error::VmError;
 
@@ -34,10 +35,12 @@ impl HostContract for DemoFunction {
     }
 }
 
-impl HostFunction for DemoFunction {
+impl HostFunctionSignature for DemoFunction {
     type Input = ();
     type Output = ();
+}
 
+impl HostFunction for DemoFunction {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(())
     }
@@ -57,14 +60,16 @@ impl HostContract for GeneratedFunction {
     }
 }
 
-impl HostFunction for GeneratedFunction {
+impl HostFunctionSignature for GeneratedFunction {
     type Input = ();
     type Output = ();
 
     fn output_schema() -> Schema {
         Schema::typed("FindUserOutput", TsType::String)
     }
+}
 
+impl HostFunction for GeneratedFunction {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(())
     }
@@ -144,7 +149,7 @@ fn register_callback_stores_descriptor() {
     assert_eq!(callback.payload_schema.name, "DemoCallbackPayload");
     assert!(matches!(
         descriptor.abi,
-        HostContractAbi::Callback { payload } if payload.name == "DemoCallbackPayload"
+        HostContractAbi::Callback { payload, .. } if payload.name == "DemoCallbackPayload"
     ));
 }
 
@@ -184,7 +189,7 @@ fn invoke_function_executes_registered_binding() {
     registry.register_function::<DemoFunction>().unwrap();
 
     let result = registry
-        .invoke_function(DemoFunction::NAME, Value::Null)
+        .invoke_function(DemoFunction::NAME, &Caller::new("script"), Value::Null)
         .unwrap();
 
     assert_eq!(result, Some(Value::Null));
@@ -262,7 +267,7 @@ impl HostContract for ComplexGeneratedFunction {
     }
 }
 
-impl HostFunction for ComplexGeneratedFunction {
+impl HostFunctionSignature for ComplexGeneratedFunction {
     type Input = ();
     type Output = ();
 
@@ -287,7 +292,9 @@ impl HostFunction for ComplexGeneratedFunction {
             ]),
         )
     }
+}
 
+impl HostFunction for ComplexGeneratedFunction {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(())
     }

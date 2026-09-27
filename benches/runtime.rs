@@ -13,7 +13,7 @@ use criterion::{
     measurement::WallTime,
 };
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, MemoryStats, Schema,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, MemoryStats, Schema,
     TsField, TsType, VmError, VmOptions,
 };
 use serde_json::json;
@@ -389,14 +389,16 @@ impl HostContract for BenchFindUser {
     }
 }
 
-impl HostFunction for BenchFindUser {
+impl HostFunctionSignature for BenchFindUser {
     type Input = u64;
     type Output = String;
 
     fn output_schema() -> Schema {
         Schema::typed("FindUserOutput", TsType::String)
     }
+}
 
+impl HostFunction for BenchFindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("user-{input}"))
     }
@@ -420,7 +422,7 @@ impl HostContract for BenchCreateInvoice {
     }
 }
 
-impl HostFunction for BenchCreateInvoice {
+impl HostFunctionSignature for BenchCreateInvoice {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
@@ -433,7 +435,9 @@ impl HostFunction for BenchCreateInvoice {
             ]),
         )
     }
+}
 
+impl HostFunction for BenchCreateInvoice {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(json!({ "id": "invoice_1", "accepted": true }))
     }

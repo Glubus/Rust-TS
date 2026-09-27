@@ -32,8 +32,8 @@ Replace `src/main.rs` with:
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use rustts::{
-    Engine, HostContract, HostContractKind, HostFunction, Schema, SdkFileNames, TsSchema,
-    VmError, VmOptions,
+    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema,
+    SdkFileNames, TsSchema, VmError, VmOptions,
 };
 
 #[derive(Deserialize, TsSchema)]
@@ -63,10 +63,12 @@ impl HostContract for Add {
     }
 }
 
-impl HostFunction for Add {
+impl HostFunctionSignature for Add {
     type Input = AddInput;
     type Output = AddOutput;
+}
 
+impl HostFunction for Add {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(AddOutput {
             value: input.left + input.right,

@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, JsDecode, Schema, TsField,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, JsDecode, Schema, TsField,
     TsType, VmError, VmOptions,
 };
 
@@ -43,14 +43,16 @@ impl HostContract for Record {
     }
 }
 
-impl HostFunction for Record {
+impl HostFunctionSignature for Record {
     type Input = String;
     type Output = bool;
 
     fn output_schema() -> Schema {
         Schema::typed("RecordOutput", TsType::Boolean)
     }
+}
 
+impl HostFunction for Record {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         RECORDS.with_borrow_mut(|records| records.push(input));
         Ok(true)

@@ -1,12 +1,17 @@
-//! Host function contract trait.
+//! Host function contract traits.
 
 use super::{HostContract, HostFunctionDescriptor, Schema};
 use crate::error::VmError;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// Host function contract.
-pub trait HostFunction: HostContract {
+/// Input and output of a host function: what scripts see, whatever implements it.
+///
+/// A contract implementing only this trait is registered together with a handler
+/// value, such as a closure holding state
+/// ([`InMemoryHostContractRegistry::typed_function_with`](crate::InMemoryHostContractRegistry::typed_function_with));
+/// a contract implementing [`HostFunction`] as well is registered on its own.
+pub trait HostFunctionSignature: HostContract {
     /// Function input type.
     type Input: DeserializeOwned;
     /// Function output type.
@@ -22,9 +27,6 @@ pub trait HostFunction: HostContract {
         Schema::named("unknown")
     }
 
-    /// Executes the host function from Rust.
-    fn call(input: Self::Input) -> Result<Self::Output, VmError>;
-
     /// Builds function-specific descriptor metadata.
     fn function_descriptor() -> HostFunctionDescriptor {
         HostFunctionDescriptor {
@@ -32,4 +34,10 @@ pub trait HostFunction: HostContract {
             output_schema: Self::output_schema(),
         }
     }
+}
+
+/// Host function implemented by a static Rust function.
+pub trait HostFunction: HostFunctionSignature {
+    /// Executes the host function from Rust.
+    fn call(input: Self::Input) -> Result<Self::Output, VmError>;
 }

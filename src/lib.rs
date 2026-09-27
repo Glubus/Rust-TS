@@ -31,7 +31,7 @@ pub use contract::{
     NativeBytes, ObjectSchema, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema,
     TsType, push_schema_dependency, schema_type_ref,
 };
-pub use contract::{JsArgs, JsDecode, JsEncode};
+pub use contract::{Caller, HostFunctionSignature, JsArgs, JsDecode, JsEncode};
 #[doc(hidden)]
 pub use contract::{
     at_path as __codec_at_path, codec_error as __codec_error, derive as __derive,

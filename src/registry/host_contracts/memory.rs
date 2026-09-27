@@ -1,11 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::Mutex;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-use rquickjs::{Ctx, Result as JsResult, Value as JsValue};
+use rquickjs::function::Opt;
+use rquickjs::prelude::Func;
+use rquickjs::{Ctx, Exception, Object, Result as JsResult, Value as JsValue};
 use serde_json::Value;
 
-use super::bindings::FunctionBindingStore;
+use super::bindings::{FunctionBindingStore, JsonCodec, TypedCodec, input_or_null};
 use super::declarations::render_typescript_declarations;
 use super::import_modules::render_host_import_modules;
 use super::interface::HostContractRegistry;
@@ -13,8 +16,9 @@ use super::sdk::render_typescript_sdk;
 use crate::config::{VmContractValidation, VmUnknownFieldValidation};
 use crate::contract::validation::{SchemaValidationOptions, validate_schema_with_options};
 use crate::contract::{
-    HostCallback, HostContext, HostContractAbi, HostContractDescriptor, HostFunction,
-    HostFunctionDescriptor, JsDecode, JsEncode, TsSchema, js_value_to_json, json_to_js_value,
+    Caller, HostCallback, HostCallbackDescriptor, HostContext, HostContractAbi,
+    HostContractDescriptor, HostFunction, HostFunctionDescriptor, HostFunctionSignature,
+    HostRequest, JsDecode, JsEncode, Schema, TsSchema, js_value_to_json, json_to_js_value,
 };
 use crate::error::VmError;
 use crate::sdk_files::{
@@ -56,10 +60,11 @@ impl InMemoryHostContractRegistry {
         }
     }
 
-    /// Registers one host function contract and returns the registry for chaining.
+    /// Registers one host function contract, implemented by its static
+    /// [`HostFunction::call`], and returns the registry for chaining.
     pub fn function<T>(&self) -> Result<&Self, VmError>
     where
-        T: HostFunction + Send + Sync + 'static,
+        T: HostFunction + 'static,
     {
         self.register_function::<T>()?;
         Ok(self)
@@ -71,11 +76,77 @@ impl InMemoryHostContractRegistry {
     /// [`JsEncode`] when contract validation is off.
     pub fn typed_function<T>(&self) -> Result<&Self, VmError>
     where
-        T: HostFunction + Send + Sync + 'static,
+        T: HostFunction + 'static,
         T::Input: TsSchema + JsDecode,
         T::Output: TsSchema + JsEncode,
     {
         self.register_typed_function::<T>()?;
+        Ok(self)
+    }
+
+    /// Registers contract `C` implemented by `handler`, a closure that can hold state,
+    /// and returns the registry for chaining.
+    ///
+    /// Like [`Self::function`], values cross as JSON and the schemas are the ones `C`
+    /// declares.
+    pub fn function_with<C>(
+        &self,
+        handler: impl Fn(C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<&Self, VmError>
+    where
+        C: HostFunctionSignature + 'static,
+    {
+        self.register_function_with::<C>(handler)?;
+        Ok(self)
+    }
+
+    /// Registers contract `C` implemented by `handler`, a closure that can hold state,
+    /// and returns the registry for chaining.
+    ///
+    /// Like [`Self::typed_function`], the schemas come from `TsSchema` of the input and
+    /// output types, and values cross natively.
+    pub fn typed_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<&Self, VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode,
+    {
+        self.register_typed_function_with::<C>(handler)?;
+        Ok(self)
+    }
+
+    /// Registers contract `C` implemented by `handler`, which also receives the
+    /// [`Caller`], and returns the registry for chaining.
+    ///
+    /// Like [`Self::function_with`] otherwise.
+    pub fn function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<&Self, VmError>
+    where
+        C: HostFunctionSignature + 'static,
+    {
+        self.register_function_with_caller::<C>(handler)?;
+        Ok(self)
+    }
+
+    /// Registers contract `C` implemented by `handler`, which also receives the
+    /// [`Caller`], and returns the registry for chaining.
+    ///
+    /// Like [`Self::typed_function_with`] otherwise.
+    pub fn typed_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<&Self, VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode,
+    {
+        self.register_typed_function_with_caller::<C>(handler)?;
         Ok(self)
     }
 
@@ -95,6 +166,18 @@ impl InMemoryHostContractRegistry {
         T::Payload: TsSchema + JsEncode,
     {
         self.register_typed_callback::<T>()?;
+        Ok(self)
+    }
+
+    /// Registers one host request, a callback whose handlers reply, using `TsSchema` from
+    /// its payload and reply types, and returns the registry for chaining.
+    pub fn typed_request<T>(&self) -> Result<&Self, VmError>
+    where
+        T: HostRequest + Send + Sync + 'static,
+        T::Payload: TsSchema + JsEncode,
+        T::Reply: TsSchema + JsDecode,
+    {
+        self.register_typed_request::<T>()?;
         Ok(self)
     }
 
@@ -130,16 +213,17 @@ impl InMemoryHostContractRegistry {
         Ok(render_host_import_modules(&self.descriptors()?))
     }
 
-    /// Installs every sync host function on `target` as a native QuickJS function keyed
-    /// by contract name.
+    /// Installs every sync host function of script `script_id` on `target` as a native
+    /// QuickJS function keyed by contract name.
     pub(crate) fn install_native_functions<'js>(
-        self: &std::sync::Arc<Self>,
-        target: &rquickjs::Object<'js>,
+        self: &Arc<Self>,
+        target: &Object<'js>,
+        script_id: &str,
     ) -> JsResult<()> {
         if self.validates_any() {
-            return self.install_validated_functions(target);
+            return self.install_validated_functions(target, script_id);
         }
-        self.function_bindings.install_native(target)
+        self.function_bindings.install_native(target, script_id)
     }
 
     fn validates_any(&self) -> bool {
@@ -148,19 +232,21 @@ impl InMemoryHostContractRegistry {
 
     /// Validation needs the descriptor, so each function goes through the registry.
     fn install_validated_functions<'js>(
-        self: &std::sync::Arc<Self>,
-        target: &rquickjs::Object<'js>,
+        self: &Arc<Self>,
+        target: &Object<'js>,
+        script_id: &str,
     ) -> JsResult<()> {
+        let script_id = Rc::<str>::from(script_id);
         for name in self.function_bindings.names().map_err(js_host_error)? {
             let registry = self.clone();
+            let script_id = Rc::clone(&script_id);
             let contract_name = name.clone();
             target.set(
                 name,
-                rquickjs::prelude::Func::from(
-                    move |ctx: Ctx<'js>, input: rquickjs::function::Opt<JsValue<'js>>| {
-                        registry.invoke_validated_native(&ctx, &contract_name, input)
-                    },
-                ),
+                Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                    let caller = Caller::new(&script_id);
+                    registry.invoke_validated_native(&ctx, &contract_name, &caller, input)
+                }),
             )?;
         }
         Ok(())
@@ -170,16 +256,17 @@ impl InMemoryHostContractRegistry {
         &self,
         ctx: &Ctx<'js>,
         contract_name: &str,
-        input: rquickjs::function::Opt<JsValue<'js>>,
+        caller: &Caller<'_>,
+        input: Opt<JsValue<'js>>,
     ) -> JsResult<JsValue<'js>> {
-        let input = super::bindings::input_or_null(ctx, input);
-        self.invoke_function_js(ctx, contract_name, input)?
+        let input = js_value_to_json(ctx, input_or_null(ctx, input))?;
+        let output = self
+            .invoke_function(contract_name, caller, input)
+            .map_err(js_host_error)?
             .ok_or_else(|| {
-                rquickjs::Exception::throw_message(
-                    ctx,
-                    &format!("missing host function: {contract_name}"),
-                )
-            })
+                Exception::throw_message(ctx, &format!("missing host function: {contract_name}"))
+            })?;
+        json_to_js_value(ctx, &output)
     }
 
     /// Renders TypeScript declarations from registered host contracts.
@@ -214,38 +301,23 @@ impl InMemoryHostContractRegistry {
         write_host_sdk_files_with_names(directory, &self.descriptors()?, names)
     }
 
+    /// Calls the function `name` with a JSON input, validating the input and output as
+    /// the registry's policy asks.
     pub(crate) fn invoke_function(
         &self,
         name: &str,
+        caller: &Caller<'_>,
         input: Value,
     ) -> Result<Option<Value>, VmError> {
         let Some(descriptor) = self.descriptor(name)? else {
             return Ok(None);
         };
         self.validate_function_input(&descriptor, &input)?;
-        let Some(output) = self.function_bindings.invoke(name, input)? else {
+        let Some(output) = self.function_bindings.invoke(name, caller, input)? else {
             return Ok(None);
         };
         self.validate_function_output(&descriptor, &output)?;
         Ok(Some(output))
-    }
-
-    pub(crate) fn invoke_function_js<'js>(
-        &self,
-        ctx: &Ctx<'js>,
-        name: &str,
-        input: JsValue<'js>,
-    ) -> JsResult<Option<JsValue<'js>>> {
-        if self.validation.validates_inputs() || self.validation.validates_outputs() {
-            let input = js_value_to_json(ctx, input)?;
-            return self
-                .invoke_function(name, input)
-                .map_err(js_host_error)?
-                .map(|output| json_to_js_value(ctx, &output))
-                .transpose();
-        }
-
-        self.function_bindings.invoke_js(ctx, name, input)
     }
 
     fn insert_descriptor(&self, descriptor: HostContractDescriptor) -> Result<(), VmError> {
@@ -309,63 +381,142 @@ fn validation_options(
     }
 }
 
-fn typed_function_descriptor<T>() -> HostFunctionDescriptor
+/// Descriptor of function contract `C` with the schemas its [`HostFunctionSignature`]
+/// declares.
+fn declared_function_descriptor<C: HostFunctionSignature>() -> HostContractDescriptor {
+    with_function(C::descriptor(), C::function_descriptor())
+}
+
+/// Descriptor of function contract `C` with the schemas `TsSchema` gives its input and
+/// output types.
+fn typed_function_descriptor<C>() -> HostContractDescriptor
 where
-    T: HostFunction,
-    T::Input: TsSchema,
-    T::Output: TsSchema,
+    C: HostFunctionSignature,
+    C::Input: TsSchema,
+    C::Output: TsSchema,
 {
-    HostFunctionDescriptor {
-        input_schema: T::Input::schema(),
-        output_schema: T::Output::schema(),
-    }
+    let function = HostFunctionDescriptor {
+        input_schema: C::Input::schema(),
+        output_schema: C::Output::schema(),
+    };
+    let mut descriptor = C::descriptor();
+    descriptor.schema = function.input_schema.clone();
+    with_function(descriptor, function)
+}
+
+/// Adds the function ABI and metadata of `function` to `descriptor`.
+fn with_function(
+    mut descriptor: HostContractDescriptor,
+    function: HostFunctionDescriptor,
+) -> HostContractDescriptor {
+    descriptor.abi = HostContractAbi::Function {
+        input: function.input_schema.clone(),
+        output: function.output_schema.clone(),
+    };
+    descriptor.function = Some(function);
+    descriptor
+}
+
+/// Descriptor of callback contract `T` with the payload schema `TsSchema` gives its
+/// payload type and, for a request, the schema of its handlers' `reply`.
+fn typed_callback_descriptor<T>(reply: Option<Schema>) -> HostContractDescriptor
+where
+    T: HostCallback,
+    T::Payload: TsSchema,
+{
+    let mut callback = T::callback_descriptor();
+    callback.payload_schema = T::Payload::schema();
+    callback.reply_schema = reply;
+    let mut descriptor = T::descriptor();
+    descriptor.schema = callback.payload_schema.clone();
+    with_callback(descriptor, callback)
+}
+
+/// Adds the callback ABI and metadata of `callback` to `descriptor`.
+fn with_callback(
+    mut descriptor: HostContractDescriptor,
+    callback: HostCallbackDescriptor,
+) -> HostContractDescriptor {
+    descriptor.abi = HostContractAbi::Callback {
+        payload: callback.payload_schema.clone(),
+        reply: callback.reply_schema.clone(),
+    };
+    descriptor.callback = Some(callback);
+    descriptor
 }
 
 impl HostContractRegistry for InMemoryHostContractRegistry {
     fn register_function<T>(&self) -> Result<(), VmError>
     where
-        T: HostFunction + Send + Sync + 'static,
+        T: HostFunction + 'static,
     {
-        let mut descriptor = T::descriptor();
-        let function = T::function_descriptor();
-        descriptor.abi = HostContractAbi::Function {
-            input: function.input_schema.clone(),
-            output: function.output_schema.clone(),
-        };
-        descriptor.function = Some(function);
-        self.insert_descriptor(descriptor)?;
-        self.function_bindings.insert_static::<T>()
+        self.register_function_with::<T>(T::call)
     }
 
     fn register_typed_function<T>(&self) -> Result<(), VmError>
     where
-        T: HostFunction + Send + Sync + 'static,
+        T: HostFunction + 'static,
         T::Input: TsSchema + JsDecode,
         T::Output: TsSchema + JsEncode,
     {
-        let mut descriptor = T::descriptor();
-        let function = typed_function_descriptor::<T>();
-        descriptor.schema = function.input_schema.clone();
-        descriptor.abi = HostContractAbi::Function {
-            input: function.input_schema.clone(),
-            output: function.output_schema.clone(),
-        };
-        descriptor.function = Some(function);
-        self.insert_descriptor(descriptor)?;
-        self.function_bindings.insert_typed_static::<T>()
+        self.register_typed_function_with::<T>(T::call)
+    }
+
+    fn register_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+    {
+        self.insert_descriptor(declared_function_descriptor::<C>())?;
+        self.function_bindings.insert_plain::<C, JsonCodec>(handler)
+    }
+
+    fn register_typed_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode,
+    {
+        self.insert_descriptor(typed_function_descriptor::<C>())?;
+        self.function_bindings.insert_plain::<C, TypedCodec>(handler)
+    }
+
+    fn register_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+    {
+        self.insert_descriptor(declared_function_descriptor::<C>())?;
+        self.function_bindings
+            .insert_with_caller::<C, JsonCodec>(handler)
+    }
+
+    fn register_typed_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode,
+    {
+        self.insert_descriptor(typed_function_descriptor::<C>())?;
+        self.function_bindings
+            .insert_with_caller::<C, TypedCodec>(handler)
     }
 
     fn register_callback<T>(&self) -> Result<(), VmError>
     where
         T: HostCallback + Send + Sync + 'static,
     {
-        let mut descriptor = T::descriptor();
-        let callback = T::callback_descriptor();
-        descriptor.abi = HostContractAbi::Callback {
-            payload: callback.payload_schema.clone(),
-        };
-        descriptor.callback = Some(callback);
-        self.insert_descriptor(descriptor)
+        self.insert_descriptor(with_callback(T::descriptor(), T::callback_descriptor()))
     }
 
     fn register_typed_callback<T>(&self) -> Result<(), VmError>
@@ -373,15 +524,16 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         T: HostCallback + Send + Sync + 'static,
         T::Payload: TsSchema + JsEncode,
     {
-        let mut descriptor = T::descriptor();
-        let mut callback = T::callback_descriptor();
-        callback.payload_schema = T::Payload::schema();
-        descriptor.schema = callback.payload_schema.clone();
-        descriptor.abi = HostContractAbi::Callback {
-            payload: callback.payload_schema.clone(),
-        };
-        descriptor.callback = Some(callback);
-        self.insert_descriptor(descriptor)
+        self.insert_descriptor(typed_callback_descriptor::<T>(None))
+    }
+
+    fn register_typed_request<T>(&self) -> Result<(), VmError>
+    where
+        T: HostRequest + Send + Sync + 'static,
+        T::Payload: TsSchema + JsEncode,
+        T::Reply: TsSchema + JsDecode,
+    {
+        self.insert_descriptor(typed_callback_descriptor::<T>(Some(T::Reply::schema())))
     }
 
     fn register_context<T>(&self) -> Result<(), VmError>

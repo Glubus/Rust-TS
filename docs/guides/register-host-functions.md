@@ -43,7 +43,7 @@ the generated TypeScript namespace. For example, `user.find` becomes
 ```rust
 use serde::{Deserialize, Serialize};
 use rustts::{
-    HostContract, HostContractKind, HostFunction, Schema, TsSchema, VmError,
+    HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsSchema, VmError,
 };
 
 #[derive(Deserialize, TsSchema)]
@@ -76,10 +76,12 @@ impl HostContract for FindUser {
     }
 }
 
-impl HostFunction for FindUser {
+impl HostFunctionSignature for FindUser {
     type Input = FindUserInput;
     type Output = FindUserOutput;
+}
 
+impl HostFunction for FindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(FindUserOutput {
             user_id: input.user_id,

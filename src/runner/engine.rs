@@ -436,7 +436,7 @@ impl Engine {
     ) -> Result<Disposed, VmError> {
         let mounted = self
             .save_hot_data(&id)
-            .and_then(|hot_data| self.mount(&graph.entry_module_id, hot_data));
+            .and_then(|hot_data| self.mount(&id, &graph.entry_module_id, hot_data));
         match mounted {
             Ok((context, exports, events)) => self.replace_script(
                 id,
@@ -479,6 +479,7 @@ impl Engine {
 
     fn mount(
         &self,
+        script_id: &str,
         entry_module_id: &str,
         hot_data: Option<HotData>,
     ) -> Result<(Context, Persistent<Object<'static>>, ListenedEvents), VmError> {
@@ -486,7 +487,7 @@ impl Engine {
         let context = Context::full(&self.runtime).map_err(js_error)?;
         let events = ListenedEvents::default();
         let exports = context.with(|ctx| {
-            self.install_native_functions(&ctx, &events)?;
+            self.install_native_functions(&ctx, &events, script_id)?;
             install_hot_data(&ctx, hot_data)?;
             evaluate_script(&ctx, CONTEXT_PRELUDE)?;
             import_exports(&ctx, entry_module_id)
@@ -495,16 +496,17 @@ impl Engine {
         Ok((context, exports, events))
     }
 
-    /// Installs the host functions and the `__rustts_listen` hook the prelude hands to
-    /// `ctx.on`.
+    /// Installs the host functions, bound to `script_id`, and the `__rustts_listen` hook
+    /// the prelude hands to `ctx.on`.
     fn install_native_functions(
         &self,
         ctx: &Ctx<'_>,
         events: &ListenedEvents,
+        script_id: &str,
     ) -> Result<(), VmError> {
         let functions = Object::new(ctx.clone()).map_err(js_error)?;
         self.registry
-            .install_native_functions(&functions)
+            .install_native_functions(&functions, script_id)
             .map_err(js_error)?;
         let globals = ctx.globals();
         globals

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, NativeBytes, Schema,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, NativeBytes, Schema,
     TsField, TsSchema, TsType, VmError, VmOptions,
 };
 use serde_json::{Value, json};
@@ -46,14 +46,16 @@ impl HostContract for FindUser {
     }
 }
 
-impl HostFunction for FindUser {
+impl HostFunctionSignature for FindUser {
     type Input = u64;
     type Output = String;
 
     fn output_schema() -> Schema {
         Schema::typed("FindUserOutput", TsType::String)
     }
+}
 
+impl HostFunction for FindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("user-{input}"))
     }
@@ -73,14 +75,16 @@ impl HostContract for FindInvoice {
     }
 }
 
-impl HostFunction for FindInvoice {
+impl HostFunctionSignature for FindInvoice {
     type Input = u64;
     type Output = String;
 
     fn output_schema() -> Schema {
         Schema::typed("FindInvoiceOutput", TsType::String)
     }
+}
 
+impl HostFunction for FindInvoice {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("invoice-{input}"))
     }
@@ -98,14 +102,16 @@ impl HostContract for ReadNativeBytes {
     }
 }
 
-impl HostFunction for ReadNativeBytes {
+impl HostFunctionSignature for ReadNativeBytes {
     type Input = Value;
     type Output = NativeBytes;
 
     fn output_schema() -> Schema {
         NativeBytes::schema()
     }
+}
 
+impl HostFunction for ReadNativeBytes {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let byte_count = input.get("byteCount").and_then(Value::as_u64).unwrap_or(0) as usize;
         Ok(NativeBytes::new(

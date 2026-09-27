@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rustts::{
-    HostContract, HostContractKind, HostFunction, InMemoryHostContractRegistry, Schema, TsField,
+    HostContract, HostContractKind, HostFunction, HostFunctionSignature, InMemoryHostContractRegistry, Schema, TsField,
     TsSchema, TsType, VmError,
 };
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,7 @@ impl HostContract for FindUsers {
     }
 }
 
-impl HostFunction for FindUsers {
+impl HostFunctionSignature for FindUsers {
     type Input = FindUsersInput;
     type Output = FindUsersOutput;
 
@@ -66,7 +66,9 @@ impl HostFunction for FindUsers {
     fn output_schema() -> Schema {
         FindUsersOutput::schema()
     }
+}
 
+impl HostFunction for FindUsers {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let users = input
             .ids
