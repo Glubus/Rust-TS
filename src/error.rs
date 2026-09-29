@@ -11,6 +11,9 @@ pub enum VmError {
     /// An [`InterruptHandle`](crate::InterruptHandle) stopped the running JavaScript.
     #[error("javascript execution was interrupted by the host")]
     Interrupted,
+    /// The script generation owning a deferred operation was replaced or unloaded.
+    #[error("deferred operation cancelled because its script was replaced or unloaded")]
+    Cancelled,
     /// A lock was poisoned by a panic while it was held, typically in a host handler.
     #[error("a lock was poisoned by a panic in a host handler")]
     LockPoisoned,

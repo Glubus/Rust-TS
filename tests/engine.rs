@@ -14,6 +14,31 @@ fn engine_with_timeout(timeout: Duration) -> Engine {
     .expect("create engine")
 }
 
+#[test]
+fn budget_includes_synchronous_host_handler_time() {
+    let mut engine = engine_with_timeout(Duration::from_millis(10));
+    engine
+        .registry()
+        .typed_function_with::<Double>(|n| {
+            std::thread::sleep(Duration::from_millis(30));
+            Ok(n * 2.0)
+        })
+        .expect("register");
+    engine
+        .load_script(
+            "slow",
+            "export function invoke() { return math.double(2); }",
+        )
+        .expect("load");
+    assert!(
+        matches!(
+            engine.call::<f64>("slow", "invoke", ()),
+            Err(VmError::Execution { .. })
+        ),
+        "the host handler must consume the operation budget"
+    );
+}
+
 fn engine() -> Engine {
     Engine::new(&VmOptions::default()).expect("create engine")
 }

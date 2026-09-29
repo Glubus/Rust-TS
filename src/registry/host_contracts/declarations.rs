@@ -34,8 +34,12 @@ struct DeclarationBuffer {
 impl DeclarationBuffer {
     fn push_descriptor(&mut self, descriptor: &HostContractDescriptor) {
         match &descriptor.abi {
-            HostContractAbi::Function { input, output } => {
-                self.push_function(&descriptor.name, input, output);
+            HostContractAbi::Function {
+                input,
+                output,
+                returns_promise,
+            } => {
+                self.push_function(&descriptor.name, input, output, *returns_promise);
             }
             HostContractAbi::Callback { payload, reply } => {
                 self.push_callback(&descriptor.name, payload, reply.as_ref());
@@ -61,11 +65,20 @@ impl DeclarationBuffer {
         ));
     }
 
-    fn push_function(&mut self, name: &str, input: &Schema, output: &Schema) {
+    fn push_function(
+        &mut self,
+        name: &str,
+        input: &Schema,
+        output: &Schema,
+        returns_promise: bool,
+    ) {
         self.push_schema(input);
         self.push_schema(output);
-        self.sections
-            .push(render_function_declaration(name, input, output));
+        self.sections.push(render_function_declaration(
+            name,
+            input,
+            &function_output_type(output, returns_promise),
+        ));
     }
 
     fn push_callback(&mut self, name: &str, payload: &Schema, reply: Option<&Schema>) {
@@ -132,13 +145,12 @@ pub(super) fn render_event_map(name: &str, entries: &[String]) -> String {
     format!("type {name} = {{\n{}\n}};", entries.join("\n"))
 }
 
-fn render_function_declaration(name: &str, input: &Schema, output: &Schema) -> String {
+fn render_function_declaration(name: &str, input: &Schema, output_type: &str) -> String {
     let name_parts = split_contract_name(name);
     let signature = format!(
-        "function {}(input: {}): {};",
+        "function {}(input: {}): {output_type};",
         name_parts.function_name,
         schema_type_name(input),
-        schema_type_name(output)
     );
 
     if name_parts.namespaces.is_empty() {
@@ -200,6 +212,16 @@ pub(super) fn schema_type_name(schema: &Schema) -> String {
         render_ts_type(&schema.ts_type)
     } else {
         schema.name.clone()
+    }
+}
+
+/// What a host function returns to scripts: its output, or a `Promise` of it.
+pub(super) fn function_output_type(output: &Schema, returns_promise: bool) -> String {
+    let output = schema_type_name(output);
+    if returns_promise {
+        format!("Promise<{output}>")
+    } else {
+        output
     }
 }
 

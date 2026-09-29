@@ -5,13 +5,16 @@ mod engine;
 mod errors;
 mod events;
 mod execution;
+pub(crate) mod host_promises;
 mod interrupt;
 mod memory;
 mod module_loader;
 mod promise_rejections;
+mod tasks;
 mod timers;
 mod transpile;
 
 pub use console::ConsoleLevel;
 pub use engine::Engine;
 pub use interrupt::InterruptHandle;
+pub use tasks::PendingCall;

@@ -8,7 +8,9 @@ use rquickjs::prelude::Func;
 use rquickjs::{Ctx, Exception, Object, Result as JsResult, Value as JsValue};
 use serde_json::Value;
 
-use super::bindings::{FunctionBindingStore, JsonCodec, TypedCodec, input_or_null};
+use super::bindings::{
+    ContractValidator, FunctionBindingStore, JsonCodec, TypedCodec, input_or_null,
+};
 use super::declarations::render_typescript_declarations;
 use super::import_modules::render_host_import_modules;
 use super::interface::HostContractRegistry;
@@ -18,9 +20,11 @@ use crate::contract::validation::{SchemaValidationOptions, validate_schema_with_
 use crate::contract::{
     Caller, HostCallback, HostCallbackDescriptor, HostContext, HostContractAbi,
     HostContractDescriptor, HostFunction, HostFunctionDescriptor, HostFunctionSignature,
-    HostRequest, JsDecode, JsEncode, Schema, TsSchema, js_value_to_json, json_to_js_value,
+    HostRequest, HostResolver, JsDecode, JsEncode, Schema, TsSchema, js_value_to_json,
+    json_to_js_value,
 };
 use crate::error::VmError;
+use crate::runner::host_promises::{HostPromises, WeakHostPromises};
 use crate::sdk_files::{
     GeneratedSdkFiles, SdkFileNames, write_host_sdk_files, write_host_sdk_files_with_names,
 };
@@ -150,6 +154,88 @@ impl InMemoryHostContractRegistry {
         Ok(self)
     }
 
+    /// Registers async contract `C` implemented by `handler`, and returns the registry
+    /// for chaining.
+    ///
+    /// Scripts receive a `Promise` of the output. `handler` gets each call's input and
+    /// the [`HostResolver`] that settles the Promise, now or later, from any thread;
+    /// the script observes the result at the next [`Engine::pump`](crate::Engine::pump).
+    /// An `Err` from `handler` rejects the Promise at once. Like [`Self::function_with`],
+    /// values cross as JSON and the schemas are the ones `C` declares.
+    pub fn async_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<&Self, VmError>
+    where
+        C: HostFunctionSignature + 'static,
+    {
+        self.register_async_function_with::<C>(handler)?;
+        Ok(self)
+    }
+
+    /// Registers async contract `C` implemented by `handler`, and returns the registry
+    /// for chaining.
+    ///
+    /// Like [`Self::async_function_with`], with the schemas `TsSchema` gives the input
+    /// and output types and values crossing natively, like [`Self::typed_function_with`].
+    /// The output is converted to JavaScript on the engine thread, so it must be `Send`.
+    pub fn typed_async_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<&Self, VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode + Send,
+    {
+        self.register_typed_async_function_with::<C>(handler)?;
+        Ok(self)
+    }
+
+    /// Registers async contract `C` implemented by `handler`, which also receives the
+    /// [`Caller`], and returns the registry for chaining.
+    ///
+    /// Like [`Self::async_function_with`] otherwise.
+    pub fn async_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<&Self, VmError>
+    where
+        C: HostFunctionSignature + 'static,
+    {
+        self.register_async_function_with_caller::<C>(handler)?;
+        Ok(self)
+    }
+
+    /// Registers async contract `C` implemented by `handler`, which also receives the
+    /// [`Caller`], and returns the registry for chaining.
+    ///
+    /// Like [`Self::typed_async_function_with`] otherwise.
+    pub fn typed_async_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<&Self, VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode + Send,
+    {
+        self.register_typed_async_function_with_caller::<C>(handler)?;
+        Ok(self)
+    }
+
     /// Registers one host callback contract and returns the registry for chaining.
     pub fn callback<T>(&self) -> Result<&Self, VmError>
     where
@@ -213,17 +299,21 @@ impl InMemoryHostContractRegistry {
         Ok(render_host_import_modules(&self.descriptors()?))
     }
 
-    /// Installs every sync host function of script `script_id` on `target` as a native
-    /// QuickJS function keyed by contract name.
+    /// Installs every host function of script `script_id` on `target` as a native
+    /// QuickJS function keyed by contract name. Async functions start their calls in
+    /// `promises`, which they hold weakly.
     pub(crate) fn install_native_functions<'js>(
         self: &Arc<Self>,
         target: &Object<'js>,
         script_id: &str,
+        promises: &HostPromises,
     ) -> JsResult<()> {
+        let promises = promises.downgrade();
         if self.validates_any() {
-            return self.install_validated_functions(target, script_id);
+            return self.install_validated_functions(target, script_id, &promises);
         }
-        self.function_bindings.install_native(target, script_id)
+        self.function_bindings
+            .install_native(target, script_id, &promises)
     }
 
     fn validates_any(&self) -> bool {
@@ -235,9 +325,10 @@ impl InMemoryHostContractRegistry {
         self: &Arc<Self>,
         target: &Object<'js>,
         script_id: &str,
+        promises: &WeakHostPromises,
     ) -> JsResult<()> {
         let script_id = Rc::<str>::from(script_id);
-        for name in self.function_bindings.names().map_err(js_host_error)? {
+        for name in self.function_bindings.sync_names().map_err(js_host_error)? {
             let registry = self.clone();
             let script_id = Rc::clone(&script_id);
             let contract_name = name.clone();
@@ -249,7 +340,18 @@ impl InMemoryHostContractRegistry {
                 }),
             )?;
         }
-        Ok(())
+        self.function_bindings
+            .install_validated_async(target, &script_id, promises, |name| {
+                self.contract_validator(name)
+            })
+    }
+
+    /// Validates the values of contract `name` against its registered descriptor.
+    fn contract_validator(self: &Arc<Self>, name: &str) -> Arc<dyn ContractValidator> {
+        Arc::new(RegisteredContract {
+            registry: Arc::clone(self),
+            name: name.to_owned(),
+        })
     }
 
     fn invoke_validated_native<'js>(
@@ -381,15 +483,48 @@ fn validation_options(
     }
 }
 
+/// Validates one contract's values against the descriptor registered under its name
+/// each time a value crosses, as the sync validated route does.
+struct RegisteredContract {
+    registry: Arc<InMemoryHostContractRegistry>,
+    name: String,
+}
+
+impl ContractValidator for RegisteredContract {
+    fn validate_input(&self, input: &Value) -> Result<(), VmError> {
+        if !self.registry.validation.validates_inputs() {
+            return Ok(());
+        }
+        match self.registry.descriptor(&self.name)? {
+            Some(descriptor) => self.registry.validate_function_input(&descriptor, input),
+            None => Ok(()),
+        }
+    }
+
+    fn validate_output(&self, output: &Value) -> Result<(), VmError> {
+        if !self.registry.validation.validates_outputs() {
+            return Ok(());
+        }
+        match self.registry.descriptor(&self.name)? {
+            Some(descriptor) => self.registry.validate_function_output(&descriptor, output),
+            None => Ok(()),
+        }
+    }
+}
+
 /// Descriptor of function contract `C` with the schemas its [`HostFunctionSignature`]
-/// declares.
-fn declared_function_descriptor<C: HostFunctionSignature>() -> HostContractDescriptor {
-    with_function(C::descriptor(), C::function_descriptor())
+/// declares, returning a `Promise` of its output when `returns_promise` is set.
+fn declared_function_descriptor<C: HostFunctionSignature>(
+    returns_promise: bool,
+) -> HostContractDescriptor {
+    let mut function = C::function_descriptor();
+    function.returns_promise = returns_promise;
+    with_function(C::descriptor(), function)
 }
 
 /// Descriptor of function contract `C` with the schemas `TsSchema` gives its input and
-/// output types.
-fn typed_function_descriptor<C>() -> HostContractDescriptor
+/// output types, returning a `Promise` of its output when `returns_promise` is set.
+fn typed_function_descriptor<C>(returns_promise: bool) -> HostContractDescriptor
 where
     C: HostFunctionSignature,
     C::Input: TsSchema,
@@ -398,6 +533,7 @@ where
     let function = HostFunctionDescriptor {
         input_schema: C::Input::schema(),
         output_schema: C::Output::schema(),
+        returns_promise,
     };
     let mut descriptor = C::descriptor();
     descriptor.schema = function.input_schema.clone();
@@ -412,6 +548,7 @@ fn with_function(
     descriptor.abi = HostContractAbi::Function {
         input: function.input_schema.clone(),
         output: function.output_schema.clone(),
+        returns_promise: function.returns_promise,
     };
     descriptor.function = Some(function);
     descriptor
@@ -469,7 +606,7 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
     where
         C: HostFunctionSignature + 'static,
     {
-        self.insert_descriptor(declared_function_descriptor::<C>())?;
+        self.insert_descriptor(declared_function_descriptor::<C>(false))?;
         self.function_bindings.insert_plain::<C, JsonCodec>(handler)
     }
 
@@ -482,7 +619,7 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         C::Input: TsSchema + JsDecode,
         C::Output: TsSchema + JsEncode,
     {
-        self.insert_descriptor(typed_function_descriptor::<C>())?;
+        self.insert_descriptor(typed_function_descriptor::<C>(false))?;
         self.function_bindings
             .insert_plain::<C, TypedCodec>(handler)
     }
@@ -494,7 +631,7 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
     where
         C: HostFunctionSignature + 'static,
     {
-        self.insert_descriptor(declared_function_descriptor::<C>())?;
+        self.insert_descriptor(declared_function_descriptor::<C>(false))?;
         self.function_bindings
             .insert_with_caller::<C, JsonCodec>(handler)
     }
@@ -508,9 +645,73 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         C::Input: TsSchema + JsDecode,
         C::Output: TsSchema + JsEncode,
     {
-        self.insert_descriptor(typed_function_descriptor::<C>())?;
+        self.insert_descriptor(typed_function_descriptor::<C>(false))?;
         self.function_bindings
             .insert_with_caller::<C, TypedCodec>(handler)
+    }
+
+    fn register_async_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+    {
+        self.insert_descriptor(declared_function_descriptor::<C>(true))?;
+        self.function_bindings
+            .insert_async::<C, JsonCodec, _>(move |_, input, resolver| handler(input, resolver))
+    }
+
+    fn register_typed_async_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode + Send,
+    {
+        self.insert_descriptor(typed_function_descriptor::<C>(true))?;
+        self.function_bindings
+            .insert_async::<C, TypedCodec, _>(move |_, input, resolver| handler(input, resolver))
+    }
+
+    fn register_async_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+    {
+        self.insert_descriptor(declared_function_descriptor::<C>(true))?;
+        self.function_bindings
+            .insert_async::<C, JsonCodec, _>(handler)
+    }
+
+    fn register_typed_async_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode + Send,
+    {
+        self.insert_descriptor(typed_function_descriptor::<C>(true))?;
+        self.function_bindings
+            .insert_async::<C, TypedCodec, _>(handler)
     }
 
     fn register_callback<T>(&self) -> Result<(), VmError>

@@ -25,7 +25,9 @@ mod types;
 pub use serde as __serde;
 
 pub use config::{VmContractValidation, VmOptions, VmUnknownFieldValidation};
-pub use contract::{Caller, HostFunctionSignature, HostRequest, JsArgs, JsDecode, JsEncode};
+pub use contract::{
+    Caller, HostFunctionSignature, HostRequest, HostResolver, JsArgs, JsDecode, JsEncode,
+};
 pub use contract::{
     HostCallback, HostCallbackDescriptor, HostContext, HostContract, HostContractAbi,
     HostContractDescriptor, HostContractKind, HostFunction, HostFunctionDescriptor, HostMetadata,
@@ -42,7 +44,7 @@ pub use registry::{
     HostContractRegistry, InMemoryHostContractRegistry,
     render_typescript_declarations_for_descriptors, render_typescript_sdk_for_descriptors,
 };
-pub use runner::{ConsoleLevel, Engine, InterruptHandle};
+pub use runner::{ConsoleLevel, Engine, InterruptHandle, PendingCall};
 #[cfg(feature = "derive")]
 pub use rustts_macros::TsSchema;
 pub use sdk_files::{

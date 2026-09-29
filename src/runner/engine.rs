@@ -1,6 +1,7 @@
 //! Single-thread engine: the owning thread runs QuickJS, and every call crosses the
 //! Rust/JS boundary natively, without generated source or JSON text.
 
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,12 +24,14 @@ use super::console::{ConsoleLevel, ConsoleSink};
 use super::errors::{caught_js_error, in_typescript, js_error};
 use super::events::{ListenedEvents, deliver};
 use super::execution::{ExecutionControl, ExecutionGuard};
+use super::host_promises::HostPromises;
 use super::interrupt::InterruptHandle;
 use super::memory::memory_stats;
 use super::module_loader::{
     MemoryModuleLoader, MemoryModuleResolver, RuntimeModuleGraph, WorkerModuleStore,
 };
 use super::promise_rejections::UnhandledRejections;
+use super::tasks::{PendingCall, RequestGuard, RequestResults, ScriptTask};
 use super::timers::{NextTimer, TimerClock, install_timer_hooks, run_due_timers};
 use super::transpile::Transpiler;
 
@@ -57,10 +60,12 @@ const CONTEXT_PRELUDE: &str = include_str!("../../assets/context_prelude.js");
 /// [`Engine::interrupt_handle`] stops it earlier from another thread. Both are
 /// cooperative and cannot preempt a Rust host function.
 ///
-/// Promise jobs an operation queues run before it returns, within the same budget:
-/// an `async` export resolves to its value, and a Promise rejection that no handler
-/// caught by then fails the operation. Host functions are synchronous, so a Promise
-/// that only a host could settle fails the call.
+/// Promise jobs an operation queues run before it returns, within the same budget.
+/// A synchronous [`Engine::call`] or [`Engine::request`] waits for an `async` export
+/// only while script jobs can settle it. For host or timer-driven work, use
+/// [`Engine::call_deferred`] or [`Engine::request_deferred`] and drive continuations
+/// with [`Engine::pump`] or [`Engine::advance_timers`]. Unhandled rejections fail
+/// the operation; observed deferred rejections belong to their pending handle.
 ///
 /// Scripts get `setTimeout`, `setInterval`, `clearTimeout` and `clearInterval` on an
 /// engine clock that only [`Engine::advance_timers`] moves, and a `console` whose
@@ -78,6 +83,7 @@ const CONTEXT_PRELUDE: &str = include_str!("../../assets/context_prelude.js");
 pub struct Engine {
     /// In load order, which is the order events are delivered in.
     scripts: IndexMap<ScriptId, EngineScript, FxBuildHasher>,
+    active_tasks: Cell<usize>,
     registry: Arc<InMemoryHostContractRegistry>,
     transpiler: Transpiler,
     module_store: WorkerModuleStore,
@@ -94,6 +100,9 @@ pub struct Engine {
 struct EngineScript {
     context: Context,
     exports: Persistent<Object<'static>>,
+    host_promises: HostPromises,
+    tasks: RefCell<Vec<ScriptTask>>,
+    request_guards: RefCell<Vec<RequestGuard>>,
     signals: ScriptSignals,
     module_ids: Vec<String>,
     origin: ScriptOrigin,
@@ -138,6 +147,7 @@ impl Engine {
         let runtime = new_runtime(options, &module_store, &execution)?;
         Ok(Self {
             scripts: IndexMap::default(),
+            active_tasks: Cell::new(0),
             registry: Arc::new(InMemoryHostContractRegistry::with_validation_options(
                 options.contract_validation,
                 options.unknown_field_validation,
@@ -363,6 +373,57 @@ impl Engine {
         })
     }
 
+    /// Starts an exported function without requiring its Promise to settle in this
+    /// operation. The returned handle completes when the engine next drains jobs;
+    /// `pump` delivers host replies without advancing the timer clock.
+    pub fn call_deferred<R: JsDecode + 'static>(
+        &self,
+        script_id: &str,
+        function: &str,
+        args: impl JsArgs,
+    ) -> Result<PendingCall<R>, VmError> {
+        let script = self.script(script_id)?;
+        let _budget = self.budget();
+        let result = script.context.with(|ctx| {
+            let export = script.export(&ctx, script_id, function)?;
+            let args = args.encode_args(&ctx).map_err(js_error)?;
+            let returned = export
+                .call_arg::<JsValue<'_>>(args)
+                .catch(&ctx)
+                .map_err(caught_js_error)?;
+            let handle = PendingCall::new();
+            if let Some(task) = ScriptTask::observe(&ctx, returned, &handle)? {
+                script.tasks.borrow_mut().push(task);
+                self.active_tasks.set(self.active_tasks.get() + 1);
+            }
+            Ok(handle)
+        });
+        self.attribute_interrupt(self.settle(result))
+    }
+
+    /// Delivers queued host replies on the engine thread and drains their Promise
+    /// jobs under one execution budget. The host clock is not advanced.
+    pub fn pump(&self) -> Result<(), VmError> {
+        let _budget = self.budget();
+        let mut first_error = None;
+        for script in self.scripts.values() {
+            if self.execution.interrupted() {
+                break;
+            }
+            let result = script.context.with(|ctx| {
+                script
+                    .host_promises
+                    .poll(&ctx)
+                    .catch(&ctx)
+                    .map_err(caught_js_error)
+            });
+            if let Err(error) = result {
+                first_error.get_or_insert(error);
+            }
+        }
+        self.attribute_interrupt(self.settle(first_error.map_or(Ok(()), Err)))
+    }
+
     /// Calls one exported function. Arguments encode through [`JsArgs`] (a tuple, a
     /// `Vec` or a slice) and the result decodes through [`JsDecode`], natively on both
     /// sides; `call::<serde_json::Value>(id, name, vec![json])` keeps a JSON-shaped API.
@@ -427,6 +488,41 @@ impl Engine {
             Ok(())
         })?;
         Ok(replies)
+    }
+
+    /// Starts a request whose handlers may reply in later host-driven operations.
+    /// Completed replies retain script and registration order, not resolution order.
+    /// A handler error is returned through the handle after all replies finish.
+    pub fn request_deferred<P: JsEncode + ?Sized, R: JsDecode + 'static>(
+        &self,
+        event: &str,
+        payload: &P,
+    ) -> Result<PendingCall<Vec<(ScriptId, R)>>, VmError> {
+        let handle = PendingCall::new();
+        let replies = RequestResults::new(handle.clone());
+        let delivery = self.dispatch(event, payload, |script_id, ctx, value| {
+            let script = self.script(script_id)?;
+            script
+                .request_guards
+                .borrow_mut()
+                .push(RequestGuard::new(&replies));
+            if let Some(task) = RequestResults::observe(&replies, ctx, script_id, value)? {
+                script.tasks.borrow_mut().push(task);
+                self.active_tasks.set(self.active_tasks.get() + 1);
+            }
+            Ok(())
+        });
+        if let Err(error) = delivery {
+            replies.borrow_mut().fail(error);
+        }
+        replies.borrow_mut().activate();
+        for script in self.scripts.values() {
+            script
+                .request_guards
+                .borrow_mut()
+                .retain(RequestGuard::is_pending);
+        }
+        Ok(handle)
     }
 
     /// Runs every handler of `event` in load order, handing each returned value to
@@ -506,11 +602,38 @@ impl Engine {
                 }
             }
         }
+        self.harvest_tasks();
         let unhandled = self.rejections.take();
+        if self.execution.budget_expired() {
+            job_error.get_or_insert_with(|| VmError::Execution {
+                details: "execution budget exceeded".to_owned(),
+            });
+        }
         let value = result.map_err(|error| in_typescript(error, &self.module_store))?;
         match job_error.or(unhandled) {
             Some(error) => Err(in_typescript(error, &self.module_store)),
             None => Ok(value),
+        }
+    }
+
+    fn harvest_tasks(&self) {
+        if self.active_tasks.get() == 0 {
+            return;
+        }
+        for script in self.scripts.values() {
+            let mut tasks = script.tasks.borrow_mut();
+            if !tasks.is_empty() {
+                let before = tasks.len();
+                script.context.with(|ctx| {
+                    tasks.retain_mut(|task| !task.poll(&ctx, &self.rejections, &self.module_store));
+                });
+                self.active_tasks
+                    .set(self.active_tasks.get() - (before - tasks.len()));
+            }
+            script
+                .request_guards
+                .borrow_mut()
+                .retain(RequestGuard::is_pending);
         }
     }
 
@@ -547,12 +670,15 @@ impl Engine {
             .save_hot_data(&id)
             .and_then(|hot_data| self.mount(&id, &graph.entry_module_id, hot_data));
         match mounted {
-            Ok((context, exports, signals)) => self.replace_script(
+            Ok((context, exports, signals, host_promises)) => self.replace_script(
                 id,
                 EngineScript {
                     context,
+                    tasks: RefCell::new(Vec::new()),
+                    request_guards: RefCell::new(Vec::new()),
                     exports,
                     signals,
+                    host_promises,
                     module_ids: graph.module_ids,
                     origin,
                 },
@@ -591,18 +717,27 @@ impl Engine {
         script_id: &str,
         entry_module_id: &str,
         hot_data: Option<HotData>,
-    ) -> Result<(Context, Persistent<Object<'static>>, ScriptSignals), VmError> {
+    ) -> Result<
+        (
+            Context,
+            Persistent<Object<'static>>,
+            ScriptSignals,
+            HostPromises,
+        ),
+        VmError,
+    > {
         let _budget = self.budget();
         let context = Context::full(&self.runtime).map_err(js_error)?;
         let signals = ScriptSignals::default();
+        let host_promises = HostPromises::default();
         let exports = context.with(|ctx| {
-            self.install_native_functions(&ctx, &signals, script_id)?;
+            self.install_native_functions(&ctx, &signals, script_id, &host_promises)?;
             install_hot_data(&ctx, hot_data)?;
             evaluate_script(&ctx, CONTEXT_PRELUDE)?;
             import_exports(&ctx, entry_module_id)
         });
         let exports = self.attribute_interrupt(self.settle(exports))?;
-        Ok((context, exports, signals))
+        Ok((context, exports, signals, host_promises))
     }
 
     /// Installs the host functions and the `console` hook, bound to `script_id`, and the
@@ -612,10 +747,11 @@ impl Engine {
         ctx: &Ctx<'_>,
         signals: &ScriptSignals,
         script_id: &str,
+        host_promises: &HostPromises,
     ) -> Result<(), VmError> {
         let functions = Object::new(ctx.clone()).map_err(js_error)?;
         self.registry
-            .install_native_functions(&functions, script_id)
+            .install_native_functions(&functions, script_id, host_promises)
             .map_err(js_error)?;
         let globals = ctx.globals();
         globals
@@ -643,7 +779,14 @@ impl Engine {
     /// Runs the `ctx.hot.dispose` callbacks of a version no longer in `scripts`, then
     /// releases its modules; the context drops with `script`.
     fn retire(&mut self, script: EngineScript) -> Result<Disposed, VmError> {
+        for guard in script.request_guards.borrow_mut().drain(..) {
+            guard.cancel();
+        }
+        self.active_tasks
+            .set(self.active_tasks.get() - script.tasks.borrow().len());
+        script.tasks.borrow_mut().clear();
         let disposed = self.dispose(&script);
+        script.host_promises.cancel();
         self.module_store.remove_modules(&script.module_ids)?;
         self.forget_unused_modules();
         Ok(disposed)

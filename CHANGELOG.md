@@ -20,8 +20,10 @@
   keeps `call`. Move everything but `call` into an `impl HostFunctionSignature`
   block. The contract type no longer needs `Send + Sync` to be registered.
 - `HostContractRegistry` has new required methods (`register_function_with`,
-  `register_typed_function_with`, their `_with_caller` variants and
-  `register_typed_request`); implement them in your own registries.
+  `register_typed_function_with`, their `_with_caller` variants,
+  `register_async_function_with`, `register_typed_async_function_with` and
+  their `_with_caller` variants, and `register_typed_request`); implement
+  them in custom registries.
 - `HostCallbackDescriptor` has a new `reply_schema` field and
   `HostContractAbi::Callback` a new `reply` field; add them to struct literals and
   patterns that list every field. Serialized descriptors omit them when `None`.
@@ -35,9 +37,10 @@
   and `clearInterval`, installed before their code runs.
 - The `__vm_handlers` global is gone: handler lists live in the prelude and the
   engine only, and change only through `ctx.on` and `ctx.off`.
-- The execution budget starts at QuickJS's first interrupt check, after about ten
-  thousand interpreter steps, instead of when the operation starts; time spent in
-  host functions before that check is no longer counted.
+- `HostFunctionDescriptor` and `HostContractAbi::Function` add a
+  `returns_promise: bool` field; add it to literals and exhaustive patterns.
+  It is omitted from serialized synchronous descriptors, but async host
+  functions render `Promise<Output>` in generated declarations and SDK.
 - Derived encoders (`#[derive(TsSchema)]`) define each field as an own data
   property, as `JSON.parse` does, instead of assigning it: a setter a script put on
   `Object.prototype` no longer runs, and a field named `__proto__` becomes an own
@@ -84,8 +87,8 @@
 - `emit` and `request` cost about a third of what they did per script (from about
   300 to about 100 ns for one handler on the development machine, 15 ns above a
   raw QuickJS call): the engine keeps a snapshot of each script's handler functions,
-  so a delivery reads no global, no property by name and no array, and a short
-  operation no longer reads the clock to start its budget.
+  so delivery reads no global, no property by name and no array. The budget
+  clock starts at operation entry, including time in host functions.
 - Derived encoders look each field name's atom up once per runtime instead of on
   every field of every value: about 15 % less time to encode a small struct.
   [Per-Frame Data](docs/guides/engine.md#per-frame-data) shows how to shape payloads
@@ -94,6 +97,13 @@
   sets or, with `None`, turns off automatic collection, so a game can keep cycle
   collection pauses (tens of milliseconds on a large heap) out of time-critical
   stretches. See [Garbage Collection](docs/guides/engine.md#garbage-collection).
+- Host-driven async functions: register typed or JSON contracts with
+  `typed_async_function_with` / `async_function_with` (and `_with_caller`), answer
+  via the one-shot `HostResolver<T>` from any thread, then call `Engine::pump`
+  on the engine thread to resume scripts. `call_deferred` and `request_deferred`
+  yield `PendingCall` handles across frames; pending work cancels on successful
+  reload or unload but survives failed reload. See
+  [Deferred Script Results](docs/guides/engine.md#deferred-script-results).
 
 ## 0.3.0 — 2026-09-25
 

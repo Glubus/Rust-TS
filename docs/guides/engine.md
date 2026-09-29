@@ -113,13 +113,44 @@ emit, request or timer run queues (`then` callbacks, `await` continuations,
 
 - `call` on an `async` export returns the resolved value, or fails with the
   rejection reason; so does a `request` handler.
-- A Promise the host is waiting on that no script job can settle, such as one
-  waiting on a timer, fails the call or request: host functions are synchronous
-  and the timer clock only moves in `advance_timers`. An event handler or a timer
-  callback can wait: its continuation runs when the timer fires.
+- A Promise that no script job can settle, such as one waiting on a timer or
+  host resolver, fails a synchronous `call` or `request`. Use the explicit
+  deferred variants to wait across frames. An event handler or timer callback
+  can wait: its continuation runs when the timer fires or `pump` delivers the
+  host response.
 - A Promise rejection that no handler caught by the end of the operation fails it
   with `unhandled promise rejection: …`, as Node does. Attach a `catch` to promises
   you do not await.
+
+## Deferred Script Results
+
+`call` and `request` still wait for their returned Promises using the jobs available
+in that operation. If the script awaits a timer or a host reply that will arrive in
+a later frame, use `call_deferred` or `request_deferred` instead. Their `PendingCall`
+returns `None` from `take()` while the script waits, then yields its result once.
+Neither `take()` nor `is_finished()` executes JavaScript. For example:
+
+```rust
+let beat = engine.call_deferred::<f64>("chart", "nextBeat", ())?;
+engine.advance_timers(std::time::Duration::from_millis(16))?;
+engine.pump()?; // deliver queued host replies; does not move the timer clock
+if let Some(result) = beat.take() {
+    println!("beat: {}", result?);
+}
+```
+
+`request_deferred` returns owned `(ScriptId, reply)` pairs in script load and handler
+registration order even when answers arrive in another order. A handler error is
+returned through the handle once all replies finish; other handlers still run.
+If a participating script is replaced or unloaded while the request is pending,
+the request yields `VmError::Cancelled` instead of mixing versions. A failed
+reload leaves old tasks running; a successful reload cancels them, including late
+host replies. `ctx.hot` transfers opted-in data, not suspended async stacks.
+
+`pump()` delivers host replies and drains queued Promise jobs under one budget.
+The host chooses when to call it; resolving a `HostResolver` from another thread
+only enqueues a value and never runs JavaScript there. `advance_timers` is still
+the only thing that advances script timers.
 
 ## Timers
 
@@ -294,15 +325,15 @@ export function add(points: number): number {
 
 ## Execution Budget
 
-Every load, call, emit, request and `advance_timers` runs under
-`VmOptions::execution_timeout` (5 seconds by default), including the Promise jobs
-it queues. The budget starts at QuickJS's first interrupt check, after about ten
-thousand interpreter steps: an operation shorter than that never reads the clock,
-and a longer one gets its full budget from there. JavaScript still running when it
-expires is interrupted and the operation fails with `VmError::Execution`; the
-engine stays usable. The budget is cooperative: it cannot stop a Rust host function
-that blocks, and time spent in host functions before the first check is not
-counted.
+Every load, call, emit, request, deferred call or request, `pump`, and
+`advance_timers` runs under `VmOptions::execution_timeout` (5 seconds by
+default). The budget starts when the operation does, so time spent in Rust host
+functions counts against it; suspended time between host calls does not. QuickJS
+checks about every ten thousand interpreter steps: JavaScript still running at
+the first check after expiry is interrupted with `VmError::Execution`. The
+budget is cooperative: it cannot preempt a blocked Rust function, and JavaScript
+that finishes before the next check is not stopped. A synchronous loop cannot
+be paused and resumed: interruption aborts it.
 
 To stop a script earlier, for example from a UI "stop" button or a watchdog thread,
 take an `InterruptHandle` before handing work to the engine's thread. It is `Send`
@@ -367,8 +398,9 @@ of the engine, so its pause grows with the whole heap, not with the garbage: on 
 development machine, 50 scripts holding 2,000 objects each (18 MiB) paused one
 `emit` for about 50 ms. At a high frame rate that is dozens of frames.
 
-The engine's own calls, emits, requests and timers leave no cycles behind: only
-cycles your scripts create need collecting. For time-critical stretches:
+The engine's own calls, emits, requests, deferred completions and timers leave no
+cycles behind: only cycles your scripts create need collecting. For time-critical
+stretches:
 
 ```rust
 engine.set_gc_threshold(None); // song starts: no automatic collection

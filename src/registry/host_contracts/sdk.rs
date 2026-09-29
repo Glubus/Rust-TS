@@ -9,8 +9,8 @@ use crate::contract::{
 };
 
 use super::declarations::{
-    EVENT_CONTEXT_TYPE, HOT_CONTEXT_TYPE, is_unknown_schema, render_event_map, render_ts_type,
-    schema_type_name,
+    EVENT_CONTEXT_TYPE, HOT_CONTEXT_TYPE, function_output_type, is_unknown_schema,
+    render_event_map, render_ts_type, schema_type_name,
 };
 use ident::{identifier, indent, property_name};
 use tree::{ObjectNode, ObjectTree};
@@ -42,8 +42,12 @@ struct SdkBuilder {
 impl SdkBuilder {
     fn push_descriptor(&mut self, descriptor: &HostContractDescriptor) {
         match &descriptor.abi {
-            HostContractAbi::Function { input, output } => {
-                self.push_function(&descriptor.name, input, output);
+            HostContractAbi::Function {
+                input,
+                output,
+                returns_promise,
+            } => {
+                self.push_function(&descriptor.name, input, output, *returns_promise);
             }
             HostContractAbi::Callback { payload, reply } => {
                 self.push_callback(&descriptor.name, payload, reply.as_ref());
@@ -53,15 +57,22 @@ impl SdkBuilder {
         }
     }
 
-    fn push_function(&mut self, name: &str, input: &Schema, output: &Schema) {
+    fn push_function(
+        &mut self,
+        name: &str,
+        input: &Schema,
+        output: &Schema,
+        returns_promise: bool,
+    ) {
         self.schemas.push(input);
         self.schemas.push(output);
         self.has_host_functions = true;
+        let output_type = function_output_type(output, returns_promise);
         self.host_functions.insert(
             name.to_owned(),
             SdkFunctionType {
                 input_type: schema_type_name(input),
-                output_type: schema_type_name(output),
+                output_type: output_type.clone(),
             },
         );
         self.functions.insert(
@@ -69,7 +80,7 @@ impl SdkBuilder {
             SdkFunction {
                 contract_name: name.to_owned(),
                 input_type: schema_type_name(input),
-                output_type: schema_type_name(output),
+                output_type,
                 takes_input: !matches!(input.ts_type, TsType::Void),
             },
         );

@@ -32,6 +32,7 @@ pub trait HostFunctionSignature: HostContract {
         HostFunctionDescriptor {
             input_schema: Self::input_schema(),
             output_schema: Self::output_schema(),
+            returns_promise: false,
         }
     }
 }

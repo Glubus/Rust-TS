@@ -1,6 +1,6 @@
 use crate::contract::{
     Caller, HostCallback, HostContext, HostContractDescriptor, HostFunction, HostFunctionSignature,
-    HostRequest, JsDecode, JsEncode, TsSchema,
+    HostRequest, HostResolver, JsDecode, JsEncode, TsSchema,
 };
 use crate::error::VmError;
 
@@ -61,6 +61,61 @@ pub trait HostContractRegistry: Send + Sync {
         C: HostFunctionSignature + 'static,
         C::Input: TsSchema + JsDecode,
         C::Output: TsSchema + JsEncode;
+
+    /// Registers async function contract `C` implemented by `handler`: scripts receive a
+    /// `Promise` of the output, which the [`HostResolver`] passed to `handler` with each
+    /// call's input settles. An `Err` from `handler` rejects the Promise at once. Values
+    /// cross as JSON; see [`Self::register_function_with`].
+    fn register_async_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static;
+
+    /// Registers async function contract `C` implemented by `handler`, with values
+    /// crossing natively; see [`Self::register_async_function_with`] and
+    /// [`Self::register_typed_function_with`].
+    fn register_typed_async_function_with<C>(
+        &self,
+        handler: impl Fn(C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode + Send;
+
+    /// Registers async function contract `C` implemented by `handler`, which also
+    /// receives the [`Caller`]; see [`Self::register_async_function_with`].
+    fn register_async_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static;
+
+    /// Registers async function contract `C` implemented by `handler`, which also
+    /// receives the [`Caller`]; see [`Self::register_typed_async_function_with`].
+    fn register_typed_async_function_with_caller<C>(
+        &self,
+        handler: impl Fn(&Caller<'_>, C::Input, HostResolver<C::Output>) -> Result<(), VmError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<(), VmError>
+    where
+        C: HostFunctionSignature + 'static,
+        C::Input: TsSchema + JsDecode,
+        C::Output: TsSchema + JsEncode + Send;
 
     /// Registers one host callback contract.
     fn register_callback<T>(&self) -> Result<(), VmError>

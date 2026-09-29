@@ -8,6 +8,7 @@ mod caller;
 mod codec;
 mod context;
 mod function;
+mod host_resolver;
 mod metadata;
 mod native_bytes;
 mod schema;
@@ -22,6 +23,8 @@ pub use codec::{
 };
 pub use context::HostContext;
 pub use function::{HostFunction, HostFunctionSignature};
+pub use host_resolver::HostResolver;
+pub(crate) use host_resolver::{EncodeReply, ReplyInbox, ReplyValue, Settlement};
 pub use metadata::{
     HostCallbackDescriptor, HostContractAbi, HostContractDescriptor, HostContractKind,
     HostFunctionDescriptor, HostImportBinding, HostMetadata, Schema, TsEnumVariant, TsField,

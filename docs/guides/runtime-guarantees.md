@@ -25,12 +25,12 @@ engine.
 
 ## Execution budget
 
-`VmOptions::execution_timeout` defaults to 5 seconds. It limits the wall time of
-each load, call, emit, request and `advance_timers`, starting at QuickJS's first
-interrupt check once JavaScript runs (after about ten thousand interpreter steps):
-it excludes transpilation and module resolution, and includes every Promise job
-the operation queues. One `emit`, `request` or `advance_timers` has one budget for
-all the scripts it reaches.
+`VmOptions::execution_timeout` defaults to 5 seconds. It limits each load,
+call, emit, request, deferred start, `pump`, and `advance_timers`, starting
+when that operation starts, after transpilation and module resolution: host
+function time and Promise jobs count. One `emit`, `request`, `pump` or
+`advance_timers` has one budget for all scripts it reaches. Suspended time
+between host operations does not consume a budget.
 
 QuickJS's interrupt handler stops JavaScript still running when the budget
 expires; the operation fails with `VmError::Execution` and the engine stays
@@ -40,15 +40,23 @@ unbounded blocking. For hostile native extensions, use a separate process.
 JavaScript state mutations and host side effects made before the interruption
 remain.
 
+Deferred results are observed through `PendingCall`; only engine operations
+execute JavaScript. `HostResolver::resolve` and `reject` enqueue responses from
+any thread, but JavaScript resumes on the engine thread at `pump`. Timer
+advancement is separate. A successful reload or unload cancels pending work
+from the retired script generation; failed reloads leave it running. Neither
+`ctx.hot` nor a host reply migrates an awaiting stack to the new generation.
+
 ## Promises
 
 Promise jobs queued by an operation run before it returns, for every script.
-An `async` export resolves before `call` returns its value, and an `async` request
-handler before `request` returns its reply. A Promise the host waits on that no
-script job can settle fails the operation instead of waiting; one waiting on a
-timer settles in a later `advance_timers`. A Promise rejection that no handler
-caught by the end of the operation fails it, even when the operation's own work
-succeeded.
+An `async` export resolves before synchronous `call` returns its value, and an
+`async` request handler before synchronous `request` returns its reply. If their
+Promise waits on a timer or host answer that requires a later operation, the
+synchronous operation fails instead of waiting. Use `call_deferred` or
+`request_deferred`: the Promise stays pending until `advance_timers` or `pump`
+settles it. A rejection without a handler fails the operation that observes it;
+a deferred result's rejection goes only to its `PendingCall` handle.
 
 ## Reload
 

@@ -121,6 +121,45 @@ The generated TypeScript is the same as for a static function. The closure must 
 `Send + Sync + 'static` because the registry is; `function_with` is the untyped
 counterpart of `function`.
 
+### Return A Promise Resolved By The Game
+
+Use `typed_async_function_with` when a host answer arrives in a later frame.
+The contract only implements `HostFunctionSignature`; its `Output` is the
+**resolved value**, and the generated TypeScript signature returns
+`Promise<Output>`. Keep the resolver in game state and settle it when the data
+arrives:
+
+```rust
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use rustts::HostResolver;
+
+let pending: Arc<Mutex<VecDeque<HostResolver<u32>>>> = Arc::new(Mutex::new(VecDeque::new()));
+let next = Arc::clone(&pending);
+engine.registry().typed_async_function_with::<LookupScore>(
+    move |_player, resolver| {
+        next.lock().expect("score queue").push_back(resolver);
+        Ok(())
+    },
+)?;
+
+// Later, on the host's schedule (another thread may enqueue this):
+if let Some(resolver) = pending.lock().expect("score queue").pop_front() {
+    resolver.resolve(42)?;
+}
+engine.pump()?; // only now do awaiting script continuations run
+```
+
+`LookupScore` declares `Input` and `Output = u32` like `FindUser` above.
+`async_function_with` uses the declared schemas; the `_with_caller` variants
+also receive `Caller`. Dropping a resolver rejects the Promise; `reject(error)`
+does so explicitly. An old resolver becomes cancelled when its script reloads
+successfully or unloads, and `resolve`/`reject` then return
+`VmError::Cancelled`. No host reply automatically drives JavaScript.
+
+If an exported function awaits this reply, start it with `call_deferred`:
+the synchronous `call` cannot wait for a host reply from a later frame.
+
 ### Know The Calling Script
 
 `typed_function_with_caller` (or `function_with_caller`) hands the handler a
@@ -216,9 +255,10 @@ That registry is the source of truth for:
 - generated TypeScript SDK helpers
 - the cache key of transpiled scripts
 
-Host functions are synchronous: a script's call to `user.find(...)` runs the Rust
-`call` on the engine's thread and returns its value directly. An `Err` returned by
-the handler is thrown in the script as an exception the script can catch.
+The synchronous host functions above run on the engine's thread and return
+their value directly. An `Err` returned by the handler is thrown in the script
+as an exception the script can catch. To return a Promise instead, use
+[`typed_async_function_with`](#return-a-promise-resolved-by-the-game).
 
 ## Generate The SDK Files
 

@@ -130,7 +130,7 @@ fn register_function_stores_descriptor() {
     assert_eq!(function.output_schema.name, "unknown");
     assert!(matches!(
         descriptor.abi,
-        HostContractAbi::Function { input, output }
+        HostContractAbi::Function { input, output, returns_promise: false }
             if input.name == "DemoFunctionInput" && output.name == "unknown"
     ));
 }
