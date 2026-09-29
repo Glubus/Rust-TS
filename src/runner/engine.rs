@@ -10,6 +10,7 @@ use rquickjs::{
     CatchResultExt, CaughtError, Context, Ctx, Function, Module, Object, Persistent, Runtime,
     Value as JsValue,
 };
+use rustc_hash::FxBuildHasher;
 
 use crate::compiler::WatchedFiles;
 use crate::config::VmOptions;
@@ -76,7 +77,7 @@ const CONTEXT_PRELUDE: &str = include_str!("../../assets/context_prelude.js");
 /// does not.
 pub struct Engine {
     /// In load order, which is the order events are delivered in.
-    scripts: IndexMap<ScriptId, EngineScript>,
+    scripts: IndexMap<ScriptId, EngineScript, FxBuildHasher>,
     registry: Arc<InMemoryHostContractRegistry>,
     transpiler: Transpiler,
     module_store: WorkerModuleStore,
@@ -136,7 +137,7 @@ impl Engine {
         let execution = Arc::new(ExecutionControl::default());
         let runtime = new_runtime(options, &module_store, &execution)?;
         Ok(Self {
-            scripts: IndexMap::new(),
+            scripts: IndexMap::default(),
             registry: Arc::new(InMemoryHostContractRegistry::with_validation_options(
                 options.contract_validation,
                 options.unknown_field_validation,
@@ -314,6 +315,31 @@ impl Engine {
     /// QuickJS memory counters for the whole engine.
     pub fn memory_stats(&self) -> MemoryStats {
         memory_stats(self.runtime.memory_usage())
+    }
+
+    /// Collects now the garbage that reference counting cannot free: objects that only
+    /// reference each other in a cycle. Everything else is freed as soon as it is no
+    /// longer referenced. Call it where a pause does not matter, such as a loading or
+    /// results screen, typically with automatic collection off
+    /// ([`Engine::set_gc_threshold`]).
+    pub fn run_gc(&self) {
+        self.runtime.run_gc();
+    }
+
+    /// Sets the allocated memory, in bytes, past which QuickJS collects cycles on its own
+    /// when a script next creates an object; `None` turns automatic collection off. The
+    /// default is 256 KiB, and after each automatic collection QuickJS moves the
+    /// threshold to 1.5 times the memory still in use.
+    ///
+    /// A collection pauses the script that triggered it for a time that grows with
+    /// the number of live objects in the whole engine. To keep it out of time-critical
+    /// stretches, such as a song, turn it off for their duration and call
+    /// [`Engine::run_gc`] afterwards. Cyclic garbage then accumulates meanwhile: watch
+    /// [`Engine::memory_stats`], since reaching `VmOptions::memory_limit_bytes` fails
+    /// the operation that allocates.
+    pub fn set_gc_threshold(&self, threshold: Option<usize>) {
+        self.runtime
+            .set_gc_threshold(threshold.unwrap_or(usize::MAX));
     }
 
     /// A handle that stops this engine's running JavaScript from any thread.

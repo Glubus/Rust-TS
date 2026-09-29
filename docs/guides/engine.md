@@ -357,6 +357,33 @@ unchanged module.
 values (`memory_used_bytes`), and allocation, atom, string, object and function
 counts. A call that exceeds the memory limit fails, and the engine stays usable.
 
+### Garbage Collection
+
+QuickJS frees a value as soon as nothing references it. Only objects that reference
+each other in a cycle (`a.b = b; b.a = a`, or a closure stored on the object it
+captures) wait for the cycle collector, which QuickJS runs on its own when a script
+creates an object past a memory threshold. A collection visits every live object
+of the engine, so its pause grows with the whole heap, not with the garbage: on the
+development machine, 50 scripts holding 2,000 objects each (18 MiB) paused one
+`emit` for about 50 ms. At a high frame rate that is dozens of frames.
+
+The engine's own calls, emits, requests and timers leave no cycles behind: only
+cycles your scripts create need collecting. For time-critical stretches:
+
+```rust
+engine.set_gc_threshold(None); // song starts: no automatic collection
+// ... frames ...
+engine.run_gc();               // results screen: collect now
+engine.set_gc_threshold(Some(256 * 1024));
+```
+
+- `set_gc_threshold(None)` turns automatic collection off; `Some(bytes)` sets the
+  threshold (256 KiB by default). After each automatic collection QuickJS moves it
+  to 1.5 times the memory still in use.
+- While it is off, cycles accumulate: watch `memory_stats()`. Reaching
+  `VmOptions::memory_limit_bytes` fails the operation that allocates.
+- Scripts that avoid creating cycles every frame never need collecting mid-song.
+
 ## Threading
 
 `Engine` cannot be sent to another thread: it lives on the thread that created it,

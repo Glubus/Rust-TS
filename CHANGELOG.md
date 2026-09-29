@@ -90,6 +90,10 @@
   every field of every value: about 15 % less time to encode a small struct.
   [Per-Frame Data](docs/guides/engine.md#per-frame-data) shows how to shape payloads
   sent every frame.
+- `Engine::run_gc` collects reference cycles now and `Engine::set_gc_threshold`
+  sets or, with `None`, turns off automatic collection, so a game can keep cycle
+  collection pauses (tens of milliseconds on a large heap) out of time-critical
+  stretches. See [Garbage Collection](docs/guides/engine.md#garbage-collection).
 
 ## 0.3.0 — 2026-09-25
 

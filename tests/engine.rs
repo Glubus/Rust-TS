@@ -376,6 +376,62 @@ fn runaway_top_level_code_fails_the_load_and_keeps_the_previous_version() {
 }
 
 #[test]
+fn call_sees_an_export_the_module_reassigned() {
+    let engine = engine_with(
+        r#"export let pick = (): number => 1;
+           export function swap(): void { pick = () => 2; }"#,
+    );
+
+    let before: f64 = engine.call("script", "pick", ()).expect("first pick");
+    engine.call::<()>("script", "swap", ()).expect("swap");
+    let after: f64 = engine.call("script", "pick", ()).expect("second pick");
+
+    assert_eq!((before, after), (1.0, 2.0));
+}
+
+/// Makes `count` two-object cycles that reference counting alone cannot free.
+const CYCLES: &str = r#"
+export function makeCycles(count: number): void {
+  for (let i = 0; i < count; i++) {
+    const a: { b?: unknown } = {};
+    a.b = { a };
+  }
+}
+"#;
+
+#[test]
+fn cycles_stay_until_run_gc_when_automatic_collection_is_off() {
+    let engine = engine_with(CYCLES);
+    engine.set_gc_threshold(None);
+    let before = engine.memory_stats().object_count;
+
+    engine
+        .call::<()>("script", "makeCycles", (20_000,))
+        .expect("make cycles");
+    let kept = engine.memory_stats().object_count;
+    engine.run_gc();
+    let collected = engine.memory_stats().object_count;
+
+    assert!(kept >= before + 40_000, "{before} -> {kept}");
+    assert!(collected <= before + 100, "{before} -> {collected}");
+}
+
+#[test]
+fn automatic_collection_resumes_once_a_threshold_is_set_again() {
+    let engine = engine_with(CYCLES);
+    engine.set_gc_threshold(None);
+    engine.set_gc_threshold(Some(64 * 1024));
+    let before = engine.memory_stats().object_count;
+
+    engine
+        .call::<()>("script", "makeCycles", (20_000,))
+        .expect("make cycles");
+    let after = engine.memory_stats().object_count;
+
+    assert!(after < before + 20_000, "{before} -> {after}");
+}
+
+#[test]
 fn emit_calls_every_registered_handler() {
     let mut engine = Engine::new(&VmOptions::default()).expect("create engine");
     engine
