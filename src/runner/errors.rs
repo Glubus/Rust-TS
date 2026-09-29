@@ -47,21 +47,38 @@ fn exception_details(exception: &rquickjs::Exception<'_>) -> String {
     }
 }
 
-/// Points the JavaScript locations of an execution error at the TypeScript source.
-///
-/// Each `rustts://graph/...:line:column` location, in the message or a stack frame,
-/// that falls in a loaded script module becomes `path:line:column` in its TypeScript
-/// file. Other locations stay as they are.
+/// Points the JavaScript locations of an execution error at the TypeScript source;
+/// see [`locations_in_typescript`].
 pub(crate) fn in_typescript(error: VmError, modules: &WorkerModuleStore) -> VmError {
     match error {
-        VmError::Execution { details } => VmError::Execution {
-            details: details
-                .split_inclusive('\n')
-                .map(|line| typescript_line(line, modules))
-                .collect(),
-        },
+        VmError::Execution { details } => {
+            let mapped = match locations_in_typescript(&details, modules) {
+                Cow::Owned(mapped) => Some(mapped),
+                Cow::Borrowed(_) => None,
+            };
+            VmError::Execution {
+                details: mapped.unwrap_or(details),
+            }
+        }
         error => error,
     }
+}
+
+/// `text` with each `rustts://graph/...:line:column` location, in a message or a stack
+/// frame, that falls in a loaded script module replaced by `path:line:column` in its
+/// TypeScript file. Other locations stay as they are; text without any is borrowed.
+pub(crate) fn locations_in_typescript<'a>(
+    text: &'a str,
+    modules: &WorkerModuleStore,
+) -> Cow<'a, str> {
+    if !text.contains(RUNTIME_MODULE_PREFIX) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(
+        text.split_inclusive('\n')
+            .map(|line| typescript_line(line, modules))
+            .collect(),
+    )
 }
 
 /// One line of error details, with its runtime module location mapped when it has one.

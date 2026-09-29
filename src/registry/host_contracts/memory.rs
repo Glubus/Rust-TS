@@ -483,7 +483,8 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         C::Output: TsSchema + JsEncode,
     {
         self.insert_descriptor(typed_function_descriptor::<C>())?;
-        self.function_bindings.insert_plain::<C, TypedCodec>(handler)
+        self.function_bindings
+            .insert_plain::<C, TypedCodec>(handler)
     }
 
     fn register_function_with_caller<C>(

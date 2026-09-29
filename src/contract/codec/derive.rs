@@ -8,6 +8,7 @@ use rquickjs::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 
+use super::field_atoms::define_field;
 pub use super::js_text::JsText;
 use super::{JsDecode, JsEncode, at_path, codec_error};
 
@@ -115,6 +116,7 @@ fn missing_field(name: &'static str, rust: &'static str) -> JsError {
 }
 
 /// Encodes `value` through `encode` into `object[name]`, prefixing errors with `name`.
+/// `object` is the plain object the derived encoder just created.
 pub fn encode_field<'js, T: ?Sized>(
     ctx: &Ctx<'js>,
     object: &Object<'js>,
@@ -123,7 +125,7 @@ pub fn encode_field<'js, T: ?Sized>(
     encode: impl FnOnce(&T, &Ctx<'js>) -> JsResult<JsValue<'js>>,
 ) -> JsResult<()> {
     let value = encode(value, ctx).map_err(|error| at_path(error, name))?;
-    object.set(name, value)
+    define_field(ctx, object, name, value)
 }
 
 /// Encodes `value` through `encode` into `array[index]`, prefixing errors with `[index]`.

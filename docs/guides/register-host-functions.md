@@ -101,6 +101,40 @@ impl HostFunction for FindUser {
 `FindUserOutput::schema()` automatically, so you do not need to hand-write the
 TypeScript shape.
 
+`HostFunctionSignature` is what scripts see: the input and output types.
+`HostFunction` adds the static `call` that implements it.
+
+## Implement A Host Function With A Closure
+
+A contract that only implements `HostFunctionSignature` is registered together
+with its handler, a closure that can hold state. Here `SpawnEnemy` is declared like
+`FindUser` above, without the `HostFunction` impl, and `world` is a
+`Send + Sync` handle to game state:
+
+```rust
+engine
+    .registry()
+    .typed_function_with::<SpawnEnemy>(move |input| world.spawn(input.kind, input.position))?;
+```
+
+The generated TypeScript is the same as for a static function. The closure must be
+`Send + Sync + 'static` because the registry is; `function_with` is the untyped
+counterpart of `function`.
+
+### Know The Calling Script
+
+`typed_function_with_caller` (or `function_with_caller`) hands the handler a
+`Caller` too: `caller.script_id()` is the id the calling script was loaded under,
+kept across reloads. Use it to scope a mod's permissions, storage or logs:
+
+```rust
+engine
+    .registry()
+    .typed_function_with_caller::<SaveSetting>(move |caller, input| {
+        settings.save(caller.script_id(), &input.key, input.value)
+    })?;
+```
+
 ## Declare A Callback
 
 Callbacks are events the host emits to scripts. The contract name is the event
@@ -137,6 +171,29 @@ impl HostCallback for UserFound {
     type Payload = UserFoundPayload;
 }
 ```
+
+## Declare A Request
+
+A request is a callback whose handlers answer: `Engine::request` returns what each
+handler returned. Declare the callback like `UserFound`, here `MenuLabel` named
+`menu.label` with a `String` payload, implement `HostRequest` on top of
+`HostCallback`, and register it with `typed_request` so the generated TypeScript
+types the handlers' return value:
+
+```rust
+use rustts::HostRequest;
+
+impl HostRequest for MenuLabel {
+    type Reply = String;
+}
+
+engine.registry().typed_request::<MenuLabel>()?;
+
+let labels: Vec<(&str, String)> = engine.request("menu.label", "save")?;
+```
+
+Each reply comes with the id of the script that gave it. An `async` handler's
+Promise is awaited; see [Requests](engine.md#requests).
 
 ## Register Contracts In The Registry
 
@@ -287,7 +344,8 @@ messages matter more than accepting loose payloads.
 
 - Register contracts before loading scripts.
 - Prefer `typed_function` and `typed_callback` when payload types implement
-  `TsSchema`.
+  `TsSchema`; use the `_with` variants when the handler needs state, and the
+  `_with_caller` ones when it needs to know which script called.
 - Keep event names stable; they become part of the generated TypeScript API.
 - Use `user.onFound(...)`-style aliases for friendly game SDKs, and keep
-  `ctx.on("user.found", ...)` available for low-level dynamic cases.
+  `ctx.on("user.found", ...)` / `ctx.off(...)` available for low-level dynamic cases.

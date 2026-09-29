@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use rustts::{
-    HostContract, HostContractKind, HostFunction, HostFunctionSignature, InMemoryHostContractRegistry, Schema, TsField,
-    TsSchema, TsType, VmError,
+    HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    InMemoryHostContractRegistry, Schema, TsField, TsSchema, TsType, VmError,
 };
 use serde::{Deserialize, Serialize};
 

@@ -1,28 +1,26 @@
 //! Single-thread engine: the owning thread runs QuickJS, and every call crosses the
 //! Rust/JS boundary natively, without generated source or JSON text.
 
-use std::cell::RefCell;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use indexmap::IndexMap;
-use rquickjs::prelude::Func;
 use rquickjs::{
-    Array, CatchResultExt, CaughtError, Context, Ctx, Function, Module, Object, Persistent,
-    Runtime, Value as JsValue,
+    CatchResultExt, CaughtError, Context, Ctx, Function, Module, Object, Persistent, Runtime,
+    Value as JsValue,
 };
 
 use crate::compiler::WatchedFiles;
 use crate::config::VmOptions;
-use crate::contract::{JsArgs, JsDecode, JsEncode, array_length};
+use crate::contract::{JsArgs, JsDecode, JsEncode};
 use crate::error::VmError;
 use crate::registry::InMemoryHostContractRegistry;
 use crate::types::{MemoryStats, ReloadReport, ScriptId};
 
+use super::console::{ConsoleLevel, ConsoleSink};
 use super::errors::{caught_js_error, in_typescript, js_error};
+use super::events::{ListenedEvents, deliver};
 use super::execution::{ExecutionControl, ExecutionGuard};
 use super::interrupt::InterruptHandle;
 use super::memory::memory_stats;
@@ -30,12 +28,10 @@ use super::module_loader::{
     MemoryModuleLoader, MemoryModuleResolver, RuntimeModuleGraph, WorkerModuleStore,
 };
 use super::promise_rejections::UnhandledRejections;
+use super::timers::{NextTimer, TimerClock, install_timer_hooks, run_due_timers};
 use super::transpile::Transpiler;
 
 const NATIVE_FUNCTIONS_GLOBAL: &str = "__rustts_native";
-const HANDLERS_GLOBAL: &str = "__vm_handlers";
-/// Records one event name the context's `ctx.on` registered a handler for.
-const LISTEN_GLOBAL: &str = "__rustts_listen";
 /// Frozen `{ save, dispose }` hooks the prelude installs behind `ctx.hot`.
 const HOT_GLOBAL: &str = "__rustts_hot";
 const HOT_SAVE: &str = "save";
@@ -44,8 +40,8 @@ const HOT_DISPOSE: &str = "dispose";
 /// `ctx.hot.data`.
 const HOT_DATA_GLOBAL: &str = "__rustts_hot_data";
 
-/// Installs `ctx.on` and its handler table, `__host` and the namespaced host globals
-/// on top of `__rustts_native`.
+/// Installs `ctx.on` / `ctx.off` and their handler lists, `ctx.hot`, `console`, the
+/// timer functions, `__host` and the namespaced host globals on top of the native hooks.
 const CONTEXT_PRELUDE: &str = include_str!("../../assets/context_prelude.js");
 
 /// Single-thread RustTS engine.
@@ -54,15 +50,20 @@ const CONTEXT_PRELUDE: &str = include_str!("../../assets/context_prelude.js");
 /// Script exports are called directly, host functions are native QuickJS functions,
 /// and values convert without JSON text.
 ///
-/// Every load, call and emit runs under `VmOptions::execution_timeout`: JavaScript
-/// still running when it expires is interrupted and the operation fails with
-/// `VmError::Execution`. [`Engine::interrupt_handle`] stops it earlier from another
-/// thread. Both are cooperative and cannot preempt a Rust host function.
+/// Every load, call, emit, request and timer advance runs under
+/// `VmOptions::execution_timeout`: JavaScript still running when it expires is
+/// interrupted and the operation fails with `VmError::Execution`.
+/// [`Engine::interrupt_handle`] stops it earlier from another thread. Both are
+/// cooperative and cannot preempt a Rust host function.
 ///
 /// Promise jobs an operation queues run before it returns, within the same budget:
 /// an `async` export resolves to its value, and a Promise rejection that no handler
 /// caught by then fails the operation. Host functions are synchronous, so a Promise
 /// that only a host could settle fails the call.
+///
+/// Scripts get `setTimeout`, `setInterval`, `clearTimeout` and `clearInterval` on an
+/// engine clock that only [`Engine::advance_timers`] moves, and a `console` whose
+/// output goes to stderr unless [`Engine::set_console`] routes it elsewhere.
 ///
 /// Replacing a loaded script, through [`Engine::load_script`], [`Engine::load_project`]
 /// or [`Engine::reload_changed`], hands over the state the script opts to keep with
@@ -82,6 +83,8 @@ pub struct Engine {
     next_graph_id: u64,
     execution: Arc<ExecutionControl>,
     execution_timeout: Duration,
+    console: ConsoleSink,
+    timer_clock: TimerClock,
     // Declared last: contexts and persistent values must drop before their runtime.
     rejections: UnhandledRejections,
     runtime: Runtime,
@@ -90,24 +93,19 @@ pub struct Engine {
 struct EngineScript {
     context: Context,
     exports: Persistent<Object<'static>>,
-    /// Events this script's `ctx.on` registered handlers for.
-    events: ListenedEvents,
+    signals: ScriptSignals,
     module_ids: Vec<String>,
     origin: ScriptOrigin,
 }
 
-/// Filled by the context's `ctx.on`, so `emit` skips scripts without handlers instead
-/// of entering their context. Owned by the script: a reload starts a new list.
-///
-/// Holds [`event_key`]s: `emit` hashes the event name once, then each script costs a
-/// scan of a few integers. A collision only makes `emit` look into a script's handler
-/// table for nothing; it never skips a listener.
-type ListenedEvents = Rc<RefCell<Vec<u64>>>;
-
-fn event_key(event: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    event.hash(&mut hasher);
-    hasher.finish()
+/// What a script's context reports to the engine as it registers handlers and timers,
+/// so `emit` and `advance_timers` skip scripts with nothing to run instead of entering
+/// their context, and find the handlers to run without a lookup by name. Owned by the
+/// script: a reload starts anew.
+#[derive(Default)]
+struct ScriptSignals {
+    events: ListenedEvents,
+    next_timer: NextTimer,
 }
 
 /// The value a replaced version's `ctx.hot.save` returned, on its way to the next
@@ -148,6 +146,8 @@ impl Engine {
             next_graph_id: 0,
             execution,
             execution_timeout: options.execution_timeout,
+            console: ConsoleSink::default(),
+            timer_clock: TimerClock::default(),
             rejections: UnhandledRejections::install(&runtime),
             runtime,
         })
@@ -156,6 +156,48 @@ impl Engine {
     /// Host contract registry. Register contracts before loading the scripts that use them.
     pub fn registry(&self) -> &InMemoryHostContractRegistry {
         &self.registry
+    }
+
+    /// Routes the `console` output of every script, loaded or to come, to `sink`, which
+    /// receives the level, the id of the calling script and the message: the
+    /// arguments of the call joined by spaces, strings as they are, other values as
+    /// JSON when they have one. Stack locations point at the TypeScript source.
+    /// Without a sink, output goes to stderr as `[level] script: message`.
+    pub fn set_console(&mut self, sink: impl Fn(ConsoleLevel, &str, &str) + 'static) {
+        self.console.replace(sink);
+    }
+
+    /// Moves the engine clock forward by `elapsed` and fires the timers now due, script
+    /// by script in load order, each script's in due order; returns the number of
+    /// scripts that had timers to fire. Call it from the host loop, typically once per
+    /// frame with the frame time; nothing else moves the clock, so timers are
+    /// deterministic.
+    ///
+    /// A timer fires at most once per call: one a callback schedules waits for the
+    /// next call even with a zero delay, and an interval late by several periods fires
+    /// once, its next due time staying its previous one plus its delay. A throwing
+    /// callback does not stop the others; the first error is returned. Timers belong
+    /// to the script version that set them: a reload or unload drops them.
+    pub fn advance_timers(&self, elapsed: Duration) -> Result<usize, VmError> {
+        let now = self.timer_clock.advance(elapsed);
+        let due = self
+            .scripts
+            .values()
+            .filter(|script| script.signals.next_timer.is_due(now));
+        let _budget = self.budget();
+        let mut fired = 0;
+        let mut first_error = None;
+        for script in due {
+            fired += 1;
+            if let Err(error) = script.context.with(|ctx| run_due_timers(&ctx, now)) {
+                first_error.get_or_insert(error);
+            }
+        }
+        if fired == 0 {
+            // No JavaScript ran, so there is no Promise job to settle.
+            return Ok(0);
+        }
+        self.attribute_interrupt(self.settle(first_error.map_or(Ok(fired), Err)))
     }
 
     /// Loads or replaces one TypeScript script. It may import host modules, not other
@@ -314,7 +356,9 @@ impl Engine {
                 .call_arg::<JsValue<'_>>(args)
                 .catch(&ctx)
                 .map_err(caught_js_error)?;
-            let value = self.resolve_returned(&ctx, returned, script_id, function)?;
+            let value = self.await_returned(&ctx, returned, || {
+                format!("function `{function}` of script `{script_id}`")
+            })?;
             R::decode_js(&ctx, value)
                 .catch(&ctx)
                 .map_err(caught_js_error)
@@ -329,40 +373,78 @@ impl Engine {
     /// of that script's handlers. Scripts that never registered a handler for `event`
     /// cost a set lookup.
     pub fn emit<P: JsEncode + ?Sized>(&self, event: &str, payload: &P) -> Result<usize, VmError> {
+        self.dispatch(event, payload, |_, _, _| Ok(()))
+    }
+
+    /// Delivers one event like [`Engine::emit`] and returns what every handler returned,
+    /// with the id of its script, in delivery order: scripts in load order, handlers in
+    /// registration order. An `async` handler's Promise is awaited first, running
+    /// script Promise jobs only. Every handler runs even after one fails, a throw, a
+    /// rejection or a reply that does not decode as `R`; the first error is returned.
+    /// Register the event with
+    /// [`typed_request`](crate::InMemoryHostContractRegistry::typed_request) so the
+    /// generated TypeScript types the handlers' reply.
+    pub fn request<P: JsEncode + ?Sized, R: JsDecode>(
+        &self,
+        event: &str,
+        payload: &P,
+    ) -> Result<Vec<(&str, R)>, VmError> {
+        let mut replies = Vec::new();
+        self.dispatch(event, payload, |script_id, ctx, returned| {
+            let value = self.await_returned(ctx, returned, || {
+                format!("a `{event}` handler of script `{script_id}`")
+            })?;
+            let reply = R::decode_js(ctx, value)
+                .catch(ctx)
+                .map_err(caught_js_error)?;
+            replies.push((script_id, reply));
+            Ok(())
+        })?;
+        Ok(replies)
+    }
+
+    /// Runs every handler of `event` in load order, handing each returned value to
+    /// `on_return`; see [`Engine::emit`].
+    fn dispatch<'a, P: JsEncode + ?Sized>(
+        &'a self,
+        event: &str,
+        payload: &P,
+        mut on_return: impl for<'js> FnMut(&'a str, &Ctx<'js>, JsValue<'js>) -> Result<(), VmError>,
+    ) -> Result<usize, VmError> {
         let _budget = self.budget();
-        let mut visited = false;
+        // Every script visited has at least one handler for the event.
         let mut delivered = 0;
         let mut first_error = None;
-        let key = event_key(event);
-        for script in self.scripts.values() {
-            if !script.events.borrow().contains(&key) {
+        for (script_id, script) in &self.scripts {
+            let Some(handlers) = script.signals.events.handlers(event) else {
                 continue;
-            }
-            visited = true;
-            match script.context.with(|ctx| deliver(&ctx, event, payload)) {
-                Ok(true) => delivered += 1,
-                Ok(false) => {}
-                Err(error) => {
-                    delivered += 1;
-                    first_error.get_or_insert(error);
-                }
+            };
+            delivered += 1;
+            let outcome = script.context.with(|ctx| {
+                deliver(&ctx, &handlers, payload, |returned| {
+                    on_return(script_id, &ctx, returned)
+                })
+            });
+            if let Err(error) = outcome {
+                first_error.get_or_insert(error);
             }
         }
-        if !visited {
+        if delivered == 0 {
             // No JavaScript ran, so there is no Promise job to settle.
             return Ok(0);
         }
         self.attribute_interrupt(self.settle(first_error.map_or(Ok(delivered), Err)))
     }
 
-    /// Awaits a Promise returned by an export by running the job queue. Its rejection
-    /// is the call's error, so it is not also reported as unhandled.
-    fn resolve_returned<'js>(
+    /// Awaits a Promise a script returned to the host, from an export or a request
+    /// handler, by running the job queue; `what` names the function in the error of a
+    /// Promise that cannot settle. Its rejection is the error, so it is not also
+    /// reported as unhandled.
+    fn await_returned<'js>(
         &self,
         ctx: &Ctx<'js>,
         returned: JsValue<'js>,
-        script_id: &str,
-        function: &str,
+        what: impl FnOnce() -> String,
     ) -> Result<JsValue<'js>, VmError> {
         let Some(promise) = returned.as_promise() else {
             return Ok(returned);
@@ -372,7 +454,8 @@ impl Engine {
         settled.map_err(|error| match error {
             CaughtError::Error(rquickjs::Error::WouldBlock) => VmError::Execution {
                 details: format!(
-                    "function `{function}` of script `{script_id}` returned a Promise that never settles: only script Promise jobs run on an Engine"
+                    "{} returned a Promise that never settles: only script Promise jobs run on an Engine",
+                    what()
                 ),
             },
             error => caught_js_error(error),
@@ -438,12 +521,12 @@ impl Engine {
             .save_hot_data(&id)
             .and_then(|hot_data| self.mount(&id, &graph.entry_module_id, hot_data));
         match mounted {
-            Ok((context, exports, events)) => self.replace_script(
+            Ok((context, exports, signals)) => self.replace_script(
                 id,
                 EngineScript {
                     context,
                     exports,
-                    events,
+                    signals,
                     module_ids: graph.module_ids,
                     origin,
                 },
@@ -482,26 +565,26 @@ impl Engine {
         script_id: &str,
         entry_module_id: &str,
         hot_data: Option<HotData>,
-    ) -> Result<(Context, Persistent<Object<'static>>, ListenedEvents), VmError> {
+    ) -> Result<(Context, Persistent<Object<'static>>, ScriptSignals), VmError> {
         let _budget = self.budget();
         let context = Context::full(&self.runtime).map_err(js_error)?;
-        let events = ListenedEvents::default();
+        let signals = ScriptSignals::default();
         let exports = context.with(|ctx| {
-            self.install_native_functions(&ctx, &events, script_id)?;
+            self.install_native_functions(&ctx, &signals, script_id)?;
             install_hot_data(&ctx, hot_data)?;
             evaluate_script(&ctx, CONTEXT_PRELUDE)?;
             import_exports(&ctx, entry_module_id)
         });
         let exports = self.attribute_interrupt(self.settle(exports))?;
-        Ok((context, exports, events))
+        Ok((context, exports, signals))
     }
 
-    /// Installs the host functions, bound to `script_id`, and the `__rustts_listen` hook
-    /// the prelude hands to `ctx.on`.
+    /// Installs the host functions and the `console` hook, bound to `script_id`, and the
+    /// hooks through which the prelude reports handlers and timers to `signals`.
     fn install_native_functions(
         &self,
         ctx: &Ctx<'_>,
-        events: &ListenedEvents,
+        signals: &ScriptSignals,
         script_id: &str,
     ) -> Result<(), VmError> {
         let functions = Object::new(ctx.clone()).map_err(js_error)?;
@@ -512,19 +595,9 @@ impl Engine {
         globals
             .set(NATIVE_FUNCTIONS_GLOBAL, functions)
             .map_err(js_error)?;
-        let events = Rc::clone(events);
-        globals
-            .set(
-                LISTEN_GLOBAL,
-                Func::from(move |event: String| {
-                    let key = event_key(&event);
-                    let mut events = events.borrow_mut();
-                    if !events.contains(&key) {
-                        events.push(key);
-                    }
-                }),
-            )
-            .map_err(js_error)
+        signals.events.install_hook(ctx)?;
+        self.console.install(ctx, script_id, &self.module_store)?;
+        install_timer_hooks(ctx, &self.timer_clock, &signals.next_timer)
     }
 
     /// Swaps `script` in, then retires the version it replaces, whose failed `dispose`
@@ -673,37 +746,6 @@ fn hot_hook_error(error: VmError, outcome: &str) -> VmError {
     VmError::Execution {
         details: format!("{outcome}: {details}"),
     }
-}
-
-/// Runs every handler the script registered for `event`, even after one throws; returns
-/// whether there were any, or the first handler error. An entry that is not a function
-/// means the script corrupted its handler list, and stops delivery to it at once.
-fn deliver<P: JsEncode + ?Sized>(ctx: &Ctx<'_>, event: &str, payload: &P) -> Result<bool, VmError> {
-    let Some(handlers) = event_handlers(ctx, event)? else {
-        return Ok(false);
-    };
-    let payload = payload.encode_js(ctx).map_err(js_error)?;
-    // The handler list is script-visible; read its length without trusting it fits i32.
-    let count = array_length(&handlers, "event handlers").map_err(js_error)?;
-    let mut first_error = None;
-    for index in 0..count {
-        let handler = handlers.get::<Function<'_>>(index).map_err(js_error)?;
-        if let Err(error) = handler
-            .call::<_, ()>((payload.clone(),))
-            .catch(ctx)
-            .map_err(caught_js_error)
-        {
-            first_error.get_or_insert(error);
-        }
-    }
-    first_error.map_or(Ok(true), Err)
-}
-
-fn event_handlers<'js>(ctx: &Ctx<'js>, event: &str) -> Result<Option<Array<'js>>, VmError> {
-    ctx.globals()
-        .get::<_, Object<'js>>(HANDLERS_GLOBAL)
-        .and_then(|handlers| handlers.get::<_, Option<Array<'js>>>(event))
-        .map_err(js_error)
 }
 
 fn script_not_found(id: &str) -> VmError {

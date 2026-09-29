@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use rustts::{
-    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsType, VmContractValidation,
-    VmError, VmOptions,
+    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsType,
+    VmContractValidation, VmError, VmOptions,
 };
 use serde_json::json;
 
@@ -373,27 +373,6 @@ fn runaway_top_level_code_fails_the_load_and_keeps_the_previous_version() {
         .call("script", "version", ())
         .expect("previous version");
     assert_eq!(version, 1.0);
-}
-
-/// A script controls its handler list; an absurd length must fail the emit, not
-/// panic the host (rquickjs `Array::len` panics above `i32::MAX`).
-#[test]
-fn emit_rejects_handler_list_with_oversized_length() {
-    let mut engine = Engine::new(&VmOptions::default()).expect("create engine");
-    engine
-        .load_script(
-            "tampered",
-            r#"
-            ctx.on("tick", () => {});
-            globalThis.__vm_handlers.tick.length = 2 ** 32 - 1;
-            export {};
-            "#,
-        )
-        .expect("load script");
-
-    let result = engine.emit("tick", &json!({ "n": 1 }));
-
-    assert!(result.is_err(), "{result:?}");
 }
 
 #[test]

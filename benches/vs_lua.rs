@@ -14,8 +14,8 @@ use criterion::{
 use mlua::{Lua, LuaSerdeExt};
 use rquickjs::{Context, Ctx, Function, Object, Runtime, Value as JsValue, prelude::Func};
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsType, VmError,
-    VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    Schema, TsType, VmError, VmOptions,
 };
 use serde_json::{Value, json};
 

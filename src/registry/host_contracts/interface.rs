@@ -1,6 +1,6 @@
 use crate::contract::{
-    Caller, HostCallback, HostContext, HostContractDescriptor, HostFunction,
-    HostFunctionSignature, HostRequest, JsDecode, JsEncode, TsSchema,
+    Caller, HostCallback, HostContext, HostContractDescriptor, HostFunction, HostFunctionSignature,
+    HostRequest, JsDecode, JsEncode, TsSchema,
 };
 use crate::error::VmError;
 

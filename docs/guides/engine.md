@@ -67,20 +67,105 @@ scripts had at least one handler.
 - A reload keeps the script's place in the delivery order.
 - A handler that throws does not stop the others: every handler runs, then `emit`
   returns the first error.
+- `ctx.off(event, handler)` removes the first registration of `handler`. A delivery
+  already in progress still runs it. A script whose last handler for an event is
+  removed is no longer entered for that event.
+
+### Per-Frame Data
+
+Delivering an event costs about 100 ns per script on top of the handler itself,
+but building its payload costs more: every Rust struct becomes a new JavaScript
+object, a few hundred nanoseconds for a small one. For data sent every frame:
+
+- Send one event per frame carrying everything (`{ notes, inputs, judgments }`)
+  rather than one event per item, when handlers can take it that way.
+- Send bulk numeric data as columns of [`NativeBytes`](native-bytes.md) instead of
+  a list of structs: one copy per column instead of one object per item. Scripts
+  read them through typed arrays (`new Float64Array(bytes.buffer, bytes.byteOffset,
+  count)`).
+
+## Requests
+
+`request(event, &payload)` delivers an event like `emit` and returns what each
+handler returned, as `Vec<(&str, R)>` pairs of script id and reply, in delivery
+order:
+
+```rust
+let labels: Vec<(&str, String)> = engine.request("menu.label", "save")?;
+```
+
+```ts
+ctx.on("menu.label", item => `Save ${item}`);
+```
+
+- An `async` handler's Promise is awaited: its reply is what it resolves to.
+- Every handler runs even after one fails (a throw, a rejection, a reply that does
+  not decode as `R`); `request` then returns the first error.
+- Register the event with `typed_request::<T>()`, where `T` implements
+  [`HostRequest`](register-host-functions.md#declare-a-request), so the generated
+  TypeScript requires handlers to return the reply type.
 
 ## Promises
 
-`Engine` has no event loop, so it runs Promise jobs itself: the jobs a load, call or
-emit queues (`then` callbacks, `await` continuations, `queueMicrotask`) run before
-it returns, within the same execution budget.
+`Engine` has no event loop, so it runs Promise jobs itself: the jobs a load, call,
+emit, request or timer run queues (`then` callbacks, `await` continuations,
+`queueMicrotask`) run before it returns, within the same execution budget.
 
 - `call` on an `async` export returns the resolved value, or fails with the
-  rejection reason.
-- A Promise that no script job can settle, such as one waiting on a timer or on a
-  host, fails the call: `Engine` has no timers and host functions are synchronous.
+  rejection reason; so does a `request` handler.
+- A Promise the host is waiting on that no script job can settle, such as one
+  waiting on a timer, fails the call or request: host functions are synchronous
+  and the timer clock only moves in `advance_timers`. An event handler or a timer
+  callback can wait: its continuation runs when the timer fires.
 - A Promise rejection that no handler caught by the end of the operation fails it
   with `unhandled promise rejection: …`, as Node does. Attach a `catch` to promises
   you do not await.
+
+## Timers
+
+Scripts get `setTimeout`, `setInterval`, `clearTimeout` and `clearInterval`. Their
+clock is the engine's own, starting at 0, and only `advance_timers(elapsed)` moves
+it, so timers are deterministic: call it from your loop, typically once per frame.
+
+```rust
+engine.advance_timers(frame_time)?;
+```
+
+```ts
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+ctx.on("round.start", async () => {
+  await sleep(3000);
+  hud.show("Go!");
+});
+```
+
+- Due timers fire script by script in load order, each script's in due order, then
+  in creation order; `advance_timers` returns how many scripts had timers to fire
+  and enters no other script.
+- A timer fires at most once per call: one set from a callback waits for the next
+  call even with a zero delay, and an interval several periods late fires once,
+  its next due time staying its previous one plus its delay.
+- A throwing callback does not stop the others; the first error is returned.
+- Timers belong to the script version that set them: a reload or unload drops
+  them. Restart them from the new version, with `ctx.hot` for their state.
+- The callback must be a function; a string of code is rejected.
+
+## Console
+
+`console.debug`, `log`, `info`, `warn` and `error` join their arguments with
+spaces (strings as they are, other values as JSON when they have one, errors with
+their stack) and hand the message to the engine's console sink. By default it
+writes `[level] script: message` lines to stderr; `set_console` routes it, for
+every script, to your own logger:
+
+```rust
+engine.set_console(|level, script_id, message| {
+    game_log.write(level, script_id, message);
+});
+```
+
+Stack locations in logged errors point at the TypeScript source, as in
+[Error Locations](#error-locations).
 
 ## Error Locations
 
@@ -99,9 +184,9 @@ javascript execution failed: division by zero
 - Lines and columns start at 1; columns count UTF-16 code units, as editors and
   `tsc` do. A frame points where QuickJS places it: the callee or the last argument
   of a call, the object of a failed property access.
-- Errors from top-level code during a load, calls, `async` exports, event handlers,
-  Promise jobs and unhandled rejections are all located. Frames outside script
-  modules, such as `native` ones, stay as they are.
+- Errors from top-level code during a load, calls, `async` exports, event and
+  request handlers, timer callbacks, Promise jobs and unhandled rejections are all
+  located. Frames outside script modules, such as `native` ones, stay as they are.
 - A syntax error fails the load with `VmError::Transpile`, one diagnostic per line
   as `path:line:column: message`, followed by its labels and help, indented.
 - Each module's source map is built when it is transpiled, kept with it in memory
@@ -209,12 +294,15 @@ export function add(points: number): number {
 
 ## Execution Budget
 
-Every load, call and emit runs under `VmOptions::execution_timeout` (5 seconds by
-default), including the Promise jobs it queues. For a load, the budget starts when
-the script's top-level code runs, after transpilation. JavaScript still running when
-it expires is interrupted and the operation fails with `VmError::Execution`; the
+Every load, call, emit, request and `advance_timers` runs under
+`VmOptions::execution_timeout` (5 seconds by default), including the Promise jobs
+it queues. The budget starts at QuickJS's first interrupt check, after about ten
+thousand interpreter steps: an operation shorter than that never reads the clock,
+and a longer one gets its full budget from there. JavaScript still running when it
+expires is interrupted and the operation fails with `VmError::Execution`; the
 engine stays usable. The budget is cooperative: it cannot stop a Rust host function
-that blocks.
+that blocks, and time spent in host functions before the first check is not
+counted.
 
 To stop a script earlier, for example from a UI "stop" button or a watchdog thread,
 take an `InterruptHandle` before handing work to the engine's thread. It is `Send`
@@ -230,8 +318,9 @@ std::thread::spawn(move || {
 let result = engine.call::<()>("rules", "simulate", ());
 ```
 
-`interrupt` stops the load, call or emit in progress; the engine stays usable. A
-request made while nothing runs has no effect on the next operation.
+`interrupt` stops the operation in progress (load, call, emit, request or
+`advance_timers`); the engine stays usable. A request made while nothing runs has
+no effect on the next operation.
 
 ## Transpilation Cache
 

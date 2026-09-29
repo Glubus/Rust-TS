@@ -15,6 +15,7 @@ mod bytes;
 mod collections;
 pub mod derive;
 mod ecosystem;
+mod field_atoms;
 mod js_text;
 mod json;
 mod maps;

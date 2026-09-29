@@ -8,12 +8,14 @@ use crate::contract::{
     TsRecordKey, TsType,
 };
 
-use super::declarations::{HOT_CONTEXT_TYPE, is_unknown_schema, render_ts_type, schema_type_name};
+use super::declarations::{
+    EVENT_CONTEXT_TYPE, HOT_CONTEXT_TYPE, is_unknown_schema, render_event_map, render_ts_type,
+    schema_type_name,
+};
 use ident::{identifier, indent, property_name};
 use tree::{ObjectNode, ObjectTree};
 
 const HOST_HELPERS: &str = include_str!("../../../assets/sdk_host_helpers.ts");
-const EVENT_HELPERS: &str = include_str!("../../../assets/sdk_event_helpers.ts");
 
 pub(crate) fn render_typescript_sdk(descriptors: &[HostContractDescriptor]) -> String {
     let mut builder = SdkBuilder::default();
@@ -33,6 +35,7 @@ struct SdkBuilder {
     contexts: ObjectTree<SdkContext>,
     host_functions: BTreeMap<String, SdkFunctionType>,
     host_events: BTreeMap<String, String>,
+    host_replies: BTreeMap<String, String>,
     has_host_functions: bool,
 }
 
@@ -42,7 +45,9 @@ impl SdkBuilder {
             HostContractAbi::Function { input, output } => {
                 self.push_function(&descriptor.name, input, output);
             }
-            HostContractAbi::Callback { payload } => self.push_callback(&descriptor.name, payload),
+            HostContractAbi::Callback { payload, reply } => {
+                self.push_callback(&descriptor.name, payload, reply.as_ref());
+            }
             HostContractAbi::Context { schema } => self.push_context(&descriptor.name, schema),
             HostContractAbi::Unknown => {}
         }
@@ -70,11 +75,15 @@ impl SdkBuilder {
         );
     }
 
-    fn push_callback(&mut self, name: &str, payload: &Schema) {
+    fn push_callback(&mut self, name: &str, payload: &Schema, reply: Option<&Schema>) {
         self.schemas.push(payload);
-        let payload_type = schema_type_name(payload);
         self.host_events
-            .insert(name.to_owned(), payload_type.clone());
+            .insert(name.to_owned(), schema_type_name(payload));
+        if let Some(reply) = reply {
+            self.schemas.push(reply);
+            self.host_replies
+                .insert(name.to_owned(), schema_type_name(reply));
+        }
         self.events.insert(
             name,
             SdkEvent {
@@ -135,13 +144,16 @@ impl SdkBuilder {
             return None;
         }
 
-        let events = self
-            .host_events
-            .iter()
-            .map(|(event_name, payload_type)| format!("  {event_name:?}: {payload_type};"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        Some(format!("type HostEvents = {{\n{events}\n}};"))
+        let entries = |map: &BTreeMap<String, String>| {
+            map.iter()
+                .map(|(event_name, ty)| format!("  {event_name:?}: {ty};"))
+                .collect::<Vec<_>>()
+        };
+        Some(format!(
+            "{}\n\n{}",
+            render_event_map("HostEvents", &entries(&self.host_events)),
+            render_event_map("HostReplies", &entries(&self.host_replies)),
+        ))
     }
 
     fn host_function_api(&self) -> Option<String> {
@@ -153,10 +165,11 @@ impl SdkBuilder {
     }
 
     fn event_helpers(&self) -> Option<String> {
-        (!self.host_events.is_empty()).then(|| EVENT_HELPERS.trim().to_owned())
+        (!self.host_events.is_empty()).then(|| EVENT_CONTEXT_TYPE.trim().to_owned())
     }
 
-    /// The `ctx` global: `ctx.hot` always, `ctx.on` once there are events to type it.
+    /// The `ctx` global: `ctx.hot` always, `ctx.on` and `ctx.off` once there are events
+    /// to type them.
     fn ctx_export(&self) -> String {
         let events = if self.host_events.is_empty() {
             ""

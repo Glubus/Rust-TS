@@ -7,8 +7,9 @@ use rquickjs::{
     prelude::Func,
 };
 use rustts::{
-    Engine, HostContract, HostContractKind, HostContractRegistry, HostFunction, HostFunctionSignature, NativeBytes,
-    Schema, TsField, TsSchema, TsType, VmContractValidation, VmError, VmOptions,
+    Engine, HostContract, HostContractKind, HostContractRegistry, HostFunction,
+    HostFunctionSignature, NativeBytes, Schema, TsField, TsSchema, TsType, VmContractValidation,
+    VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

@@ -15,6 +15,33 @@
   and `VmError::Transpile` lists `path:line:column: message` diagnostics instead of
   a debug dump. Update code that parses either. Existing cache artifacts are
   rebuilt once: they now carry a source map.
+- `HostFunction` is split in two: `HostFunctionSignature` holds `Input`, `Output`,
+  `input_schema`, `output_schema` and `function_descriptor`; `HostFunction` only
+  keeps `call`. Move everything but `call` into an `impl HostFunctionSignature`
+  block. The contract type no longer needs `Send + Sync` to be registered.
+- `HostContractRegistry` has new required methods (`register_function_with`,
+  `register_typed_function_with`, their `_with_caller` variants and
+  `register_typed_request`); implement them in your own registries.
+- `HostCallbackDescriptor` has a new `reply_schema` field and
+  `HostContractAbi::Callback` a new `reply` field; add them to struct literals and
+  patterns that list every field. Serialized descriptors omit them when `None`.
+- Generated declarations and SDK with host events declare `HostReplies`,
+  `HostEventReply`, `HostEventHandler` and `HostEventContext`, and type `ctx` as
+  `HostEventContext & { readonly hot: HostHotContext }`, which adds `ctx.off`.
+  Update snapshots of the generated text.
+- `ctx.on` misuse now throws `TypeError: ctx.on expects ...` instead of
+  `__rustts_on expects ...`.
+- Scripts get the globals `console`, `setTimeout`, `setInterval`, `clearTimeout`
+  and `clearInterval`, installed before their code runs.
+- The `__vm_handlers` global is gone: handler lists live in the prelude and the
+  engine only, and change only through `ctx.on` and `ctx.off`.
+- The execution budget starts at QuickJS's first interrupt check, after about ten
+  thousand interpreter steps, instead of when the operation starts; time spent in
+  host functions before that check is no longer counted.
+- Derived encoders (`#[derive(TsSchema)]`) define each field as an own data
+  property, as `JSON.parse` does, instead of assigning it: a setter a script put on
+  `Object.prototype` no longer runs, and a field named `__proto__` becomes an own
+  property instead of changing the prototype.
 
 ### Added
 
@@ -34,6 +61,35 @@
   or `<id>.ts` for an inline script) and the TypeScript line and column. Source maps
   are built at transpile time, cached with the JavaScript and only read on errors.
   See [Error Locations](docs/guides/engine.md#error-locations).
+- Host functions implemented by closures: `typed_function_with::<C>(handler)` and
+  `function_with` register a `Send + Sync` closure for a contract implementing
+  `HostFunctionSignature`, so a handler can hold state. `typed_function_with_caller`
+  and `function_with_caller` also hand it a `Caller`, whose `script_id()` names the
+  calling script. See
+  [Implement A Host Function With A Closure](docs/guides/register-host-functions.md#implement-a-host-function-with-a-closure).
+- Requests, events whose handlers answer: `Engine::request(event, &payload)`
+  returns `Vec<(&str, R)>`, each handler's reply with its script id in delivery
+  order, awaiting `async` handlers. `HostRequest` and `typed_request` type the
+  handlers' return value in the generated TypeScript. See
+  [Requests](docs/guides/engine.md#requests).
+- `ctx.off(event, handler)` removes a handler; a script without handlers left for
+  an event is no longer entered by `emit` for it.
+- `console.debug`, `log`, `info`, `warn` and `error` in scripts, written to stderr
+  by default; `Engine::set_console` routes them, with their `ConsoleLevel` and
+  script id, to the host. Logged error stacks point at the TypeScript source.
+- Timers on a host-driven clock: `setTimeout`, `setInterval`, `clearTimeout` and
+  `clearInterval`, fired by `Engine::advance_timers(elapsed)`, the only thing that
+  moves the clock, so they are deterministic. `await`ing a timer works in event
+  handlers. See [Timers](docs/guides/engine.md#timers).
+- `emit` and `request` cost about a third of what they did per script (from about
+  300 to about 100 ns for one handler on the development machine, 15 ns above a
+  raw QuickJS call): the engine keeps a snapshot of each script's handler functions,
+  so a delivery reads no global, no property by name and no array, and a short
+  operation no longer reads the clock to start its budget.
+- Derived encoders look each field name's atom up once per runtime instead of on
+  every field of every value: about 15 % less time to encode a small struct.
+  [Per-Frame Data](docs/guides/engine.md#per-frame-data) shows how to shape payloads
+  sent every frame.
 
 ## 0.3.0 — 2026-09-25
 

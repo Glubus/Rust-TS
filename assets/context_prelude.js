@@ -1,6 +1,7 @@
 // Installed in every script context, once `globalThis.__rustts_native` holds the
-// native host functions, `__rustts_listen` records the events the context listens
-// to and, on a reload, `__rustts_hot_data` holds the previous version's saved state.
+// native host functions, `__rustts_handlers` keeps the engine's copy of each event's
+// handler list and, on a reload, `__rustts_hot_data` holds the previous version's
+// saved state.
 // One script instead of two: each evaluation in a fresh context pays its own parse
 // and compile.
 (() => {
@@ -53,27 +54,172 @@
     };
   }
 
-  // Event handlers: `ctx.on(event, handler)`; the engine reads `__vm_handlers` and
-  // only visits contexts whose events `listen` recorded.
-  const listen = globalThis.__rustts_listen;
-  delete globalThis.__rustts_listen;
-  const handlers = Object.create(null);
-  globalThis.__rustts_on = (eventName, handler) => {
+  // Event handlers: `ctx.on(event, handler)` / `ctx.off(event, handler)`. Every change
+  // hands the event's list to the engine through `setHandlers` (`undefined` once it
+  // has no handler), which keeps a snapshot of its functions: delivering an event
+  // looks nothing up by name, skips contexts that do not listen to it, and a
+  // delivery in progress keeps the snapshot it took.
+  const setHandlers = globalThis.__rustts_handlers;
+  delete globalThis.__rustts_handlers;
+  const handlers = new Map();
+  const expectHandler = (method, eventName, handler) => {
     if (typeof eventName !== "string") {
-      throw new TypeError("__rustts_on expects a string event name");
+      throw new TypeError(`${method} expects a string event name`);
     }
     if (typeof handler !== "function") {
-      throw new TypeError("__rustts_on expects a function handler");
+      throw new TypeError(`${method} expects a function handler`);
     }
-    const list = handlers[eventName] ?? (handlers[eventName] = []);
+  };
+  globalThis.__rustts_on = (eventName, handler) => {
+    expectHandler("ctx.on", eventName, handler);
+    let list = handlers.get(eventName);
+    if (list === undefined) {
+      list = [];
+      handlers.set(eventName, list);
+    }
     list.push(handler);
-    listen(eventName);
+    setHandlers(eventName, list);
+  };
+  const off = (eventName, handler) => {
+    expectHandler("ctx.off", eventName, handler);
+    const list = handlers.get(eventName);
+    const index = list === undefined ? -1 : list.indexOf(handler);
+    if (index < 0) {
+      return;
+    }
+    list.splice(index, 1);
+    if (list.length === 0) {
+      handlers.delete(eventName);
+      setHandlers(eventName, undefined);
+    } else {
+      setHandlers(eventName, list);
+    }
   };
   globalThis.ctx = {
     on: globalThis.__rustts_on,
+    off,
     hot: hotReload(),
   };
-  globalThis.__vm_handlers = handlers;
+
+  // `console`: each call joins its arguments into one message for the host sink.
+  const writeConsole = globalThis.__rustts_console;
+  delete globalThis.__rustts_console;
+  const describe = (value) => {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (value instanceof Error) {
+      const stack = typeof value.stack === "string" ? value.stack.trimEnd() : "";
+      return stack === "" ? `${value.name}: ${value.message}` : `${value.name}: ${value.message}\n${stack}`;
+    }
+    try {
+      const json = JSON.stringify(value);
+      if (json !== undefined) {
+        return json;
+      }
+    } catch {
+      // Cycles and BigInt have no JSON form.
+    }
+    return String(value);
+  };
+  const consoleMethod = (level) => (...args) => {
+    writeConsole(level, args.map(describe).join(" "));
+  };
+  globalThis.console = {
+    debug: consoleMethod("debug"),
+    log: consoleMethod("log"),
+    info: consoleMethod("info"),
+    warn: consoleMethod("warn"),
+    error: consoleMethod("error"),
+  };
+
+  // Timers on the engine clock, which only the host's `advance_timers` moves. The
+  // engine enters this context only once `schedule` says a timer is due.
+  const now = globalThis.__rustts_now;
+  const schedule = globalThis.__rustts_schedule;
+  delete globalThis.__rustts_now;
+  delete globalThis.__rustts_schedule;
+  const timers = new Map();
+  let nextTimerId = 1;
+  let earliest = Infinity;
+  const reschedule = () => {
+    let due = Infinity;
+    for (const timer of timers.values()) {
+      if (timer.due < due) {
+        due = timer.due;
+      }
+    }
+    earliest = due;
+    schedule(due);
+  };
+  const addTimer = (name, callback, delay, args, repeats) => {
+    if (typeof callback !== "function") {
+      throw new TypeError(`${name} expects a function callback`);
+    }
+    const wait = Math.max(0, Number(delay) || 0);
+    const timer = { callback, args, due: now() + wait, interval: repeats ? wait : undefined };
+    const id = nextTimerId++;
+    timers.set(id, timer);
+    if (timer.due < earliest) {
+      earliest = timer.due;
+      schedule(earliest);
+    }
+    return id;
+  };
+  const clearTimer = (id) => {
+    const timer = timers.get(id);
+    if (timer !== undefined) {
+      timers.delete(id);
+      if (timer.due === earliest) {
+        reschedule();
+      }
+    }
+  };
+  globalThis.setTimeout = (callback, delay, ...args) =>
+    addTimer("setTimeout", callback, delay, args, false);
+  globalThis.setInterval = (callback, delay, ...args) =>
+    addTimer("setInterval", callback, delay, args, true);
+  globalThis.clearTimeout = clearTimer;
+  globalThis.clearInterval = clearTimer;
+  Object.defineProperty(globalThis, "__rustts_timers", {
+    value: Object.freeze({
+      // Fires the timers due at `time` in due order, then creation order; every one
+      // runs even after one throws, and the first error is rethrown.
+      run: (time) => {
+        const due = [];
+        for (const [id, timer] of timers) {
+          if (timer.due <= time) {
+            due.push([id, timer]);
+          }
+        }
+        due.sort(([leftId, left], [rightId, right]) => left.due - right.due || leftId - rightId);
+        let failed = false;
+        let failure;
+        for (const [id, timer] of due) {
+          if (timers.get(id) !== timer) {
+            continue; // cleared by a callback that ran before it
+          }
+          if (timer.interval === undefined) {
+            timers.delete(id);
+          } else {
+            timer.due += timer.interval;
+          }
+          try {
+            timer.callback(...timer.args);
+          } catch (error) {
+            if (!failed) {
+              failed = true;
+              failure = error;
+            }
+          }
+        }
+        reschedule();
+        if (failed) {
+          throw failure;
+        }
+      },
+    }),
+  });
 
   // Host functions, reachable three ways that all end in the same native function:
   // host module imports, namespaced globals (`user.find(...)`) and the `__host`

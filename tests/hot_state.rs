@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, JsDecode, Schema, TsField,
-    TsType, VmError, VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    JsDecode, Schema, TsField, TsType, VmError, VmOptions,
 };
 
 use support::TestCacheDir;

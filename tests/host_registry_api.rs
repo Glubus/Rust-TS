@@ -1,8 +1,9 @@
 #[cfg(feature = "derive")]
 use rustts::TsSchema;
 use rustts::{
-    Engine, HostCallback, HostContext, HostContract, HostContractKind, HostFunction, HostFunctionSignature, HostMetadata,
-    Schema, TsField, TsType, VmContractValidation, VmError, VmUnknownFieldValidation,
+    Engine, HostCallback, HostContext, HostContract, HostContractKind, HostFunction,
+    HostFunctionSignature, HostMetadata, Schema, TsField, TsType, VmContractValidation, VmError,
+    VmUnknownFieldValidation,
 };
 use serde_json::{Value, json};
 use std::process::Command;
@@ -290,7 +291,8 @@ fn registry_supports_fluent_contract_registration() {
     assert_eq!(
         engine.registry().dts().expect("render dts"),
         format!(
-            "type OverlayContext = {{ visible: boolean; }};\n\ndeclare const overlay: OverlayContext;\n\ntype ScoreUpdatePayload = {{ combo: number; }};\n\ntype FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {{\n  export function find(input: FindUserInput): FindUserOutput;\n}}\n\ntype HostEvents = {{\n  \"score.update\": ScoreUpdatePayload;\n}};\n\n{}\n\ndeclare const ctx: {{\n  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n  readonly hot: HostHotContext;\n}};\n",
+            "type OverlayContext = {{ visible: boolean; }};\n\ndeclare const overlay: OverlayContext;\n\ntype ScoreUpdatePayload = {{ combo: number; }};\n\ntype FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {{\n  export function find(input: FindUserInput): FindUserOutput;\n}}\n\ntype HostEvents = {{\n  \"score.update\": ScoreUpdatePayload;\n}};\n\ntype HostReplies = {{}};\n\n{}\n\n{}\n\ndeclare const ctx: HostEventContext & {{ readonly hot: HostHotContext }};\n",
+            include_str!("../assets/event_context.ts").trim(),
             include_str!("../assets/hot_context.ts").trim()
         )
     );

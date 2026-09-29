@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::declarations::HOT_CONTEXT_TYPE;
+use super::declarations::{EVENT_CONTEXT_TYPE, HOT_CONTEXT_TYPE};
 use super::{HostContractRegistry, InMemoryHostContractRegistry};
 use crate::contract::{
     Caller, HostCallback, HostContext, HostContract, HostContractAbi, HostContractKind,
@@ -329,7 +329,7 @@ fn dts_is_generated_from_contract_schemas() {
     assert_eq!(
         declarations,
         format!(
-            "type DemoCallbackPayload = {{ combo: number; }};\n\ntype DemoFunctionInput = void;\n\ndeclare namespace demo {{\n  export function function(input: DemoFunctionInput): unknown;\n}}\n\ntype HostEvents = {{\n  \"demo.callback\": DemoCallbackPayload;\n}};\n\n{}",
+            "type DemoCallbackPayload = {{ combo: number; }};\n\ntype DemoFunctionInput = void;\n\ndeclare namespace demo {{\n  export function function(input: DemoFunctionInput): unknown;\n}}\n\ntype HostEvents = {{\n  \"demo.callback\": DemoCallbackPayload;\n}};\n\ntype HostReplies = {{}};\n\n{}",
             ctx_declaration(true)
         )
     );
@@ -351,15 +351,19 @@ fn dts_generates_function_declaration_from_contract_model() {
     );
 }
 
-/// The declarations' closing `ctx` section, typing `ctx.on` only when events exist.
+/// The declarations' closing `ctx` section, typing `ctx.on` and `ctx.off` only when
+/// events exist.
 fn ctx_declaration(with_events: bool) -> String {
-    let on = if with_events {
-        "  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n"
+    let (event_context, events) = if with_events {
+        (
+            format!("{}\n\n", EVENT_CONTEXT_TYPE.trim()),
+            "HostEventContext & ",
+        )
     } else {
-        ""
+        (String::new(), "")
     };
     format!(
-        "{}\n\ndeclare const ctx: {{\n{on}  readonly hot: HostHotContext;\n}};\n",
+        "{event_context}{}\n\ndeclare const ctx: {events}{{ readonly hot: HostHotContext }};\n",
         HOT_CONTEXT_TYPE.trim()
     )
 }

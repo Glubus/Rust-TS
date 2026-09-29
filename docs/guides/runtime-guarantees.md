@@ -13,9 +13,9 @@ development can skip these checks when the package is absent, with a diagnostic.
 
 ## Threads and isolation
 
-`Engine` runs every load, call and emit on the thread that owns it, one at a time.
-RustTS starts no threads and runs no background work: between two calls, no script
-code runs.
+`Engine` runs every load, call, emit, request and `advance_timers` on the thread
+that owns it, one at a time. RustTS starts no threads and runs no background work:
+between two calls, no script code runs, and timers only fire in `advance_timers`.
 
 Each script owns a separate QuickJS context and ESM module graph, so scripts do not
 share globals. Scripts of the same `Engine` share its QuickJS runtime: memory limit,
@@ -26,9 +26,11 @@ engine.
 ## Execution budget
 
 `VmOptions::execution_timeout` defaults to 5 seconds. It limits the wall time of
-each load, call and emit, starting when JavaScript starts running: it excludes
-transpilation and module resolution, and includes every Promise job the operation
-queues. One `emit` has one budget for all the scripts it reaches.
+each load, call, emit, request and `advance_timers`, starting at QuickJS's first
+interrupt check once JavaScript runs (after about ten thousand interpreter steps):
+it excludes transpilation and module resolution, and includes every Promise job
+the operation queues. One `emit`, `request` or `advance_timers` has one budget for
+all the scripts it reaches.
 
 QuickJS's interrupt handler stops JavaScript still running when the budget
 expires; the operation fails with `VmError::Execution` and the engine stays
@@ -41,10 +43,12 @@ remain.
 ## Promises
 
 Promise jobs queued by an operation run before it returns, for every script.
-An `async` export resolves before `call` returns its value. A Promise that no
-script job can settle fails the call instead of waiting. A Promise rejection that
-no handler caught by the end of the operation fails it, even when the operation's
-own work succeeded.
+An `async` export resolves before `call` returns its value, and an `async` request
+handler before `request` returns its reply. A Promise the host waits on that no
+script job can settle fails the operation instead of waiting; one waiting on a
+timer settles in a later `advance_timers`. A Promise rejection that no handler
+caught by the end of the operation fails it, even when the operation's own work
+succeeded.
 
 ## Reload
 

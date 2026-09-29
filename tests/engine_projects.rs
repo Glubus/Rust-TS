@@ -4,8 +4,8 @@ use std::fs;
 use std::path::Path;
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, NativeBytes, Schema,
-    TsField, TsSchema, TsType, VmError, VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    NativeBytes, Schema, TsField, TsSchema, TsType, VmError, VmOptions,
 };
 use serde_json::{Value, json};
 

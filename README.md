@@ -89,12 +89,15 @@ The current core is focused on the Rust-first contract model:
   calls in both directions
 - TypeScript transpilation through `oxc`, with an optional disk cache
 - inline scripts and static ESM project graphs
-- typed host functions and callbacks
+- typed host functions, as static functions or closures that can see the calling
+  script, and callbacks, including requests whose handlers reply
+- `ctx.on` / `ctx.off`, `console` routed to the host, and timers on a clock the host
+  advances
 - native Rust ↔ JavaScript value conversion with `serde_json` semantics
 - generated TypeScript declarations and SDK helpers
 - optional contract validation
 - native `Uint8Array` in both directions through `NativeBytes`
-- execution budget per load, call and emit
+- execution budget per load, call, emit, request and timer advance
 
 ## Performance
 

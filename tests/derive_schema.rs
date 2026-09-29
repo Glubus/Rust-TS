@@ -8,8 +8,9 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use rustts::{
-    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature, InMemoryHostContractRegistry, Schema,
-    TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema, TsType, VmError, VmOptions,
+    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    InMemoryHostContractRegistry, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema,
+    TsType, VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

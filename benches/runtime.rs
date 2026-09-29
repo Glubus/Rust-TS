@@ -13,8 +13,8 @@ use criterion::{
     measurement::WallTime,
 };
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, MemoryStats, Schema,
-    TsField, TsType, VmError, VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    MemoryStats, Schema, TsField, TsType, VmError, VmOptions,
 };
 use serde_json::json;
 

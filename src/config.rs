@@ -47,8 +47,9 @@ pub struct VmOptions {
     /// Directory for transpiled JavaScript artifacts, reused across runs and reloads.
     /// `None` (the default) transpiles in memory on every load.
     pub cache_dir: Option<PathBuf>,
-    /// Maximum wall time per load, call or emit, including the Promise jobs it queues.
-    /// Rust host handlers must return cooperatively; they cannot be preempted.
+    /// Maximum wall time per load, call, emit, request or timer advance, including the
+    /// Promise jobs it queues. Rust host handlers must return cooperatively; they
+    /// cannot be preempted.
     pub execution_timeout: Duration,
     /// QuickJS memory limit in bytes.
     pub memory_limit_bytes: usize,

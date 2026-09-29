@@ -17,7 +17,6 @@ pub use base::HostContract;
 pub(crate) use bridge::{js_value_to_json, json_to_js_value};
 pub use callback::{HostCallback, HostRequest};
 pub use caller::Caller;
-pub(crate) use codec::array_length;
 pub use codec::{
     JsArgs, JsDecode, JsEncode, at_path, codec_error, derive, expect_array_len, expect_object,
 };

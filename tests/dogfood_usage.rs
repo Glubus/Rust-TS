@@ -3,8 +3,8 @@
 mod support;
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsSchema, VmError,
-    VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    Schema, TsSchema, VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 

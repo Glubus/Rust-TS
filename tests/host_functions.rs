@@ -144,7 +144,8 @@ fn closure_state_is_shared_by_every_script() {
         })
         .expect("register closure");
     for id in ["alpha", "beta"] {
-        let source = format!(r#"export function bump(): number {{ return counter.bump("{id}"); }}"#);
+        let source =
+            format!(r#"export function bump(): number {{ return counter.bump("{id}"); }}"#);
         engine.load_script(id, &source).expect("load script");
     }
 
@@ -203,7 +204,9 @@ fn ids_seen_by(engine: &mut Engine) -> [String; 3] {
             r#"export function who(): string { return "v2:" + host.whoami(); }"#,
         )
         .expect("reload alpha");
-    let reloaded: String = engine.call("alpha", "who", ()).expect("call reloaded alpha");
+    let reloaded: String = engine
+        .call("alpha", "who", ())
+        .expect("call reloaded alpha");
     let beta: String = engine.call("beta", "who", ()).expect("call beta");
     [alpha, reloaded, beta]
 }
@@ -250,7 +253,11 @@ fn validation_guards_closure_inputs_and_outputs() {
         .registry()
         .function_with_caller::<AddTag>(move |caller, input| {
             handler_handled.lock().expect("handled").push(input.clone());
-            let script = if input["id"] == 0 { json!(0) } else { json!(caller.script_id()) };
+            let script = if input["id"] == 0 {
+                json!(0)
+            } else {
+                json!(caller.script_id())
+            };
             Ok(json!({ "id": input["id"], "script": script }))
         })
         .expect("register closure");
@@ -307,13 +314,18 @@ fn stateful_typed_closures_run_when_validating() {
     let invalid = engine.call::<u64>("script", "invalid", ());
 
     assert_eq!(second, 2);
-    assert!(matches!(invalid, Err(VmError::Execution { .. })), "{invalid:?}");
+    assert!(
+        matches!(invalid, Err(VmError::Execution { .. })),
+        "{invalid:?}"
+    );
     assert_eq!(total.load(Ordering::SeqCst), 2);
 }
 
 /// Declarations and SDK source of a registry holding only what `register` adds.
 fn generated(
-    register: impl FnOnce(&InMemoryHostContractRegistry) -> Result<&InMemoryHostContractRegistry, VmError>,
+    register: impl FnOnce(
+        &InMemoryHostContractRegistry,
+    ) -> Result<&InMemoryHostContractRegistry, VmError>,
 ) -> (String, String) {
     let registry = InMemoryHostContractRegistry::new();
     register(&registry).expect("register contract");
@@ -345,9 +357,8 @@ fn closures_generate_the_same_declared_contract_as_static_functions() {
     let from_closure =
         generated(|registry| registry.function_with::<Lookup>(|id| Ok(format!("closure-{id}"))));
     let from_caller = generated(|registry| {
-        registry.function_with_caller::<Lookup>(|caller, id| {
-            Ok(format!("{}-{id}", caller.script_id()))
-        })
+        registry
+            .function_with_caller::<Lookup>(|caller, id| Ok(format!("{}-{id}", caller.script_id())))
     });
 
     assert!(from_static.0.contains("LookupOutput"), "{}", from_static.0);
