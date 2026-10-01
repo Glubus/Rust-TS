@@ -4,12 +4,16 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "derive")]
+use rustts::js::{Ctx, Value as JsValue};
 use rustts::{
     Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    InMemoryHostContractRegistry, Schema, TsField, TsType, VmContractValidation, VmError,
-    VmOptions,
+    InMemoryHostContractRegistry, Schema, TsType, VmContractValidation, VmError, VmOptions,
 };
-use serde_json::{Value, json};
+#[cfg(feature = "derive")]
+use rustts::{JsEncode, TsSchema};
+#[cfg(feature = "derive")]
+use serde_json::Value;
 
 /// `counter.bump(name)`: counts calls, returns the running total.
 struct Bump;
@@ -51,17 +55,56 @@ impl HostFunctionSignature for WhoAmI {
     type Output = String;
 }
 
+/// A label declared as a TypeScript `string` that can carry a number, so a handler can
+/// break its declared output.
+#[cfg(feature = "derive")]
+enum Label {
+    Text(String),
+    Number(f64),
+}
+
+#[cfg(feature = "derive")]
+impl TsSchema for Label {
+    fn ts_type() -> TsType {
+        TsType::String
+    }
+}
+
+#[cfg(feature = "derive")]
+impl JsEncode for Label {
+    fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> rustts::js::Result<JsValue<'js>> {
+        match self {
+            Self::Text(text) => text.encode_js(ctx),
+            Self::Number(number) => number.encode_js(ctx),
+        }
+    }
+}
+
 /// `tags.add({ id })`: validated input and output.
+#[cfg(feature = "derive")]
 struct AddTag;
 
+#[cfg(feature = "derive")]
+#[derive(Debug, Clone, PartialEq, TsSchema)]
+#[rustts(decode_only)]
+struct AddTagInput {
+    id: u32,
+}
+
+#[cfg(feature = "derive")]
+#[derive(TsSchema)]
+#[rustts(encode_only)]
+struct AddTagOutput {
+    id: u32,
+    script: Label,
+}
+
+#[cfg(feature = "derive")]
 impl HostContract for AddTag {
     const NAME: &'static str = "tags.add";
 
     fn schema() -> Schema {
-        Schema::typed(
-            "AddTagInput",
-            TsType::Object(vec![TsField::required("id", TsType::Number)]),
-        )
+        AddTagInput::schema()
     }
 
     fn kind() -> HostContractKind {
@@ -69,19 +112,10 @@ impl HostContract for AddTag {
     }
 }
 
+#[cfg(feature = "derive")]
 impl HostFunctionSignature for AddTag {
-    type Input = Value;
-    type Output = Value;
-
-    fn output_schema() -> Schema {
-        Schema::typed(
-            "AddTagOutput",
-            TsType::Object(vec![
-                TsField::required("id", TsType::Number),
-                TsField::required("script", TsType::String),
-            ]),
-        )
-    }
+    type Input = AddTagInput;
+    type Output = AddTagOutput;
 }
 
 /// `user.lookup(id)`: implemented statically as well, to compare registrations.
@@ -104,10 +138,6 @@ impl HostContract for Lookup {
 impl HostFunctionSignature for Lookup {
     type Input = u64;
     type Output = String;
-
-    fn output_schema() -> Schema {
-        Schema::typed("LookupOutput", TsType::String)
-    }
 }
 
 impl HostFunction for Lookup {
@@ -138,7 +168,7 @@ fn closure_state_is_shared_by_every_script() {
     let (handler_total, handler_names) = (Arc::clone(&total), Arc::clone(&names));
     engine
         .registry()
-        .typed_function_with::<Bump>(move |name| {
+        .function_with::<Bump>(move |name| {
             handler_names.lock().expect("names").push(name);
             Ok(handler_total.fetch_add(1, Ordering::SeqCst) + 1)
         })
@@ -164,7 +194,7 @@ fn closure_errors_are_catchable_in_scripts() {
     let mut engine = engine();
     engine
         .registry()
-        .typed_function_with::<Bump>(|name| {
+        .function_with::<Bump>(|name| {
             Err(VmError::Execution {
                 details: format!("{name} may not bump"),
             })
@@ -216,17 +246,6 @@ fn typed_caller_handlers_see_the_calling_script_across_reloads() {
     let mut engine = engine();
     engine
         .registry()
-        .typed_function_with_caller::<WhoAmI>(|caller, ()| Ok(caller.script_id().to_owned()))
-        .expect("register closure");
-
-    assert_eq!(ids_seen_by(&mut engine), ["alpha", "v2:alpha", "beta"]);
-}
-
-#[test]
-fn json_caller_handlers_see_the_calling_script_across_reloads() {
-    let mut engine = engine();
-    engine
-        .registry()
         .function_with_caller::<WhoAmI>(|caller, ()| Ok(caller.script_id().to_owned()))
         .expect("register closure");
 
@@ -238,12 +257,13 @@ fn caller_handlers_see_the_calling_script_when_validating() {
     let mut engine = validating_engine();
     engine
         .registry()
-        .typed_function_with_caller::<WhoAmI>(|caller, ()| Ok(caller.script_id().to_owned()))
+        .function_with_caller::<WhoAmI>(|caller, ()| Ok(caller.script_id().to_owned()))
         .expect("register closure");
 
     assert_eq!(ids_seen_by(&mut engine), ["alpha", "v2:alpha", "beta"]);
 }
 
+#[cfg(feature = "derive")]
 #[test]
 fn validation_guards_closure_inputs_and_outputs() {
     let mut engine = validating_engine();
@@ -253,12 +273,15 @@ fn validation_guards_closure_inputs_and_outputs() {
         .registry()
         .function_with_caller::<AddTag>(move |caller, input| {
             handler_handled.lock().expect("handled").push(input.clone());
-            let script = if input["id"] == 0 {
-                json!(0)
+            let script = if input.id == 0 {
+                Label::Number(0.0)
             } else {
-                json!(caller.script_id())
+                Label::Text(caller.script_id().to_owned())
             };
-            Ok(json!({ "id": input["id"], "script": script }))
+            Ok(AddTagOutput {
+                id: input.id,
+                script,
+            })
         })
         .expect("register closure");
     engine
@@ -286,7 +309,7 @@ fn validation_guards_closure_inputs_and_outputs() {
     }
     assert_eq!(
         *handled.lock().expect("handled"),
-        [json!({ "id": 7 }), json!({ "id": 0 })],
+        [AddTagInput { id: 7 }, AddTagInput { id: 0 }],
         "an invalid input never reaches the handler"
     );
 }
@@ -298,7 +321,7 @@ fn stateful_typed_closures_run_when_validating() {
     let handler_total = Arc::clone(&total);
     engine
         .registry()
-        .typed_function_with::<Bump>(move |_| Ok(handler_total.fetch_add(1, Ordering::SeqCst) + 1))
+        .function_with::<Bump>(move |_| Ok(handler_total.fetch_add(1, Ordering::SeqCst) + 1))
         .expect("register closure");
     engine
         .load_script(
@@ -337,22 +360,6 @@ fn generated(
 
 #[test]
 fn closures_generate_the_same_typed_contract_as_static_functions() {
-    let from_static = generated(|registry| registry.typed_function::<Lookup>());
-    let from_closure = generated(|registry| {
-        registry.typed_function_with::<Lookup>(|id| Ok(format!("closure-{id}")))
-    });
-    let from_caller = generated(|registry| {
-        registry.typed_function_with_caller::<Lookup>(|caller, id| {
-            Ok(format!("{}-{id}", caller.script_id()))
-        })
-    });
-
-    assert_eq!(from_closure, from_static);
-    assert_eq!(from_caller, from_static);
-}
-
-#[test]
-fn closures_generate_the_same_declared_contract_as_static_functions() {
     let from_static = generated(|registry| registry.function::<Lookup>());
     let from_closure =
         generated(|registry| registry.function_with::<Lookup>(|id| Ok(format!("closure-{id}"))));
@@ -361,7 +368,6 @@ fn closures_generate_the_same_declared_contract_as_static_functions() {
             .function_with_caller::<Lookup>(|caller, id| Ok(format!("{}-{id}", caller.script_id())))
     });
 
-    assert!(from_static.0.contains("LookupOutput"), "{}", from_static.0);
     assert_eq!(from_closure, from_static);
     assert_eq!(from_caller, from_static);
 }

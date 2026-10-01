@@ -15,15 +15,31 @@
   and `VmError::Transpile` lists `path:line:column: message` diagnostics instead of
   a debug dump. Update code that parses either. Existing cache artifacts are
   rebuilt once: they now carry a source map.
-- `HostFunction` is split in two: `HostFunctionSignature` holds `Input`, `Output`,
-  `input_schema`, `output_schema` and `function_descriptor`; `HostFunction` only
-  keeps `call`. Move everything but `call` into an `impl HostFunctionSignature`
-  block. The contract type no longer needs `Send + Sync` to be registered.
-- `HostContractRegistry` has new required methods (`register_function_with`,
-  `register_typed_function_with`, their `_with_caller` variants,
-  `register_async_function_with`, `register_typed_async_function_with` and
-  their `_with_caller` variants, and `register_typed_request`); implement
-  them in custom registries.
+- `HostFunction` is split in two: `HostFunctionSignature` holds `Input` and `Output`;
+  `HostFunction` only keeps `call`. Move everything but `call` into an
+  `impl HostFunctionSignature` block. The contract type no longer needs
+  `Send + Sync` to be registered.
+- **The JSON registration path is gone.** Values cross natively only, and the schemas
+  come from `TsSchema` of the `Input`, `Output` and `Payload` types:
+  - Removed: the untyped `function`, `function_with`, `function_with_caller`,
+    `async_function_with`, `async_function_with_caller` and `callback` registrations
+    (and their `register_*` trait methods), `HostFunctionSignature::input_schema`,
+    `output_schema` and `function_descriptor`, and `HostCallback::payload_schema` and
+    `callback_descriptor`. `Input`, `Output` and `Payload` no longer need `serde`
+    bounds.
+  - The `typed_*` registrations lose their prefix: `typed_function` is now
+    `function`, and likewise `function_with`, `function_with_caller`,
+    `async_function_with`, `async_function_with_caller`, `callback` and `request`
+    (`register_function`, ..., `register_request` on `HostContractRegistry`, which
+    custom registries implement).
+  - A contract with a free-form value uses `serde_json::Value`, which has the schema
+    `Json`; to describe an object, derive `TsSchema` on a struct. A schema written by
+    hand for a type that does not declare it is no longer possible.
+    `HostContract::schema()` stays required but only context contracts use it.
+  - Contract validation now checks a JSON snapshot of the values the native codec
+    converts. A host function that resolves with an invalid output no longer gets
+    `VmError::ContractValidation` from `HostResolver::resolve`: the engine finds it
+    when it converts the output, and the script's Promise rejects.
 - `HostCallbackDescriptor` has a new `reply_schema` field and
   `HostContractAbi::Callback` a new `reply` field; add them to struct literals and
   patterns that list every field. Serialized descriptors omit them when `None`.
@@ -64,15 +80,15 @@
   or `<id>.ts` for an inline script) and the TypeScript line and column. Source maps
   are built at transpile time, cached with the JavaScript and only read on errors.
   See [Error Locations](docs/guides/engine.md#error-locations).
-- Host functions implemented by closures: `typed_function_with::<C>(handler)` and
-  `function_with` register a `Send + Sync` closure for a contract implementing
-  `HostFunctionSignature`, so a handler can hold state. `typed_function_with_caller`
-  and `function_with_caller` also hand it a `Caller`, whose `script_id()` names the
+- Host functions implemented by closures: `function_with::<C>(handler)` registers a
+  `Send + Sync` closure for a contract implementing `HostFunctionSignature`, so a
+  handler can hold state. `function_with_caller`
+  also hands it a `Caller`, whose `script_id()` names the
   calling script. See
   [Implement A Host Function With A Closure](docs/guides/register-host-functions.md#implement-a-host-function-with-a-closure).
 - Requests, events whose handlers answer: `Engine::request(event, &payload)`
   returns `Vec<(&str, R)>`, each handler's reply with its script id in delivery
-  order, awaiting `async` handlers. `HostRequest` and `typed_request` type the
+  order, awaiting `async` handlers. `HostRequest` and `request` type the
   handlers' return value in the generated TypeScript. See
   [Requests](docs/guides/engine.md#requests).
 - `ctx.off(event, handler)` removes a handler; a script without handlers left for
@@ -97,8 +113,8 @@
   sets or, with `None`, turns off automatic collection, so a game can keep cycle
   collection pauses (tens of milliseconds on a large heap) out of time-critical
   stretches. See [Garbage Collection](docs/guides/engine.md#garbage-collection).
-- Host-driven async functions: register typed or JSON contracts with
-  `typed_async_function_with` / `async_function_with` (and `_with_caller`), answer
+- Host-driven async functions: register contracts with
+  `async_function_with` (and `_with_caller`), answer
   via the one-shot `HostResolver<T>` from any thread, then call `Engine::pump`
   on the engine thread to resume scripts. `call_deferred` and `request_deferred`
   yield `PendingCall` handles across frames; pending work cancels on successful

@@ -173,7 +173,7 @@ fn generated_declarations_type_request_replies() {
     let engine = engine();
     engine
         .registry()
-        .typed_request::<Label>()
+        .request::<Label>()
         .expect("register request");
     let dts = engine.registry().dts().expect("render declarations");
 
@@ -197,7 +197,7 @@ fn generated_sdk_types_request_replies_and_off() {
     let engine = engine();
     engine
         .registry()
-        .typed_request::<Label>()
+        .request::<Label>()
         .expect("register request");
     let sdk = engine.registry().sdk().expect("render SDK");
 

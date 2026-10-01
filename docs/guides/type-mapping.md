@@ -188,6 +188,6 @@ impl JsDecode for Celsius {
 RustTS is built with. Use it instead of a direct `rquickjs` dependency; it also
 provides `Runtime` and `Context` for unit-testing a codec.
 
-`typed_function` requires `Input: TsSchema + JsDecode` and
-`Output: TsSchema + JsEncode`; `typed_callback` requires
+`function` requires `Input: TsSchema + JsDecode` and
+`Output: TsSchema + JsEncode`; `callback` requires
 `Payload: TsSchema + JsEncode`.

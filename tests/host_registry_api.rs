@@ -1,9 +1,9 @@
-#[cfg(feature = "derive")]
-use rustts::TsSchema;
+#![cfg(feature = "derive")]
+
 use rustts::{
     Engine, HostCallback, HostContext, HostContract, HostContractKind, HostFunction,
-    HostFunctionSignature, HostMetadata, Schema, TsField, TsType, VmContractValidation, VmError,
-    VmUnknownFieldValidation,
+    HostFunctionSignature, HostMetadata, JsDecode, JsEncode, Schema, TsField, TsSchema, TsType,
+    VmContractValidation, VmError, VmUnknownFieldValidation,
 };
 use serde_json::{Value, json};
 use std::process::Command;
@@ -18,10 +18,78 @@ struct OverlayContext;
 struct EchoValidation;
 struct EchoTypeRefValidation;
 struct BadOutputValidation;
-#[cfg(feature = "derive")]
 struct RecordAction;
 
 const HOST_VALIDATION_SCRIPT: &str = include_str!("projects/host_validation/main.ts");
+
+/// Defines a type that crosses as an arbitrary JSON value but declares `$ts_type` (and the
+/// named `$dependencies`) as its schema, so contract validation is checked against the
+/// declared schema rather than against the Rust type.
+macro_rules! json_with_declared_schema {
+    ($name:ident, $ts_type:expr, $dependencies:expr) => {
+        #[allow(dead_code)]
+        struct $name(Value);
+
+        impl TsSchema for $name {
+            fn schema_name() -> &'static str {
+                stringify!($name)
+            }
+
+            fn ts_type() -> TsType {
+                $ts_type
+            }
+
+            fn schema_dependencies() -> Vec<Schema> {
+                $dependencies
+            }
+        }
+
+        impl JsEncode for $name {
+            fn encode_js<'js>(
+                &self,
+                ctx: &rustts::js::Ctx<'js>,
+            ) -> rustts::js::Result<rustts::js::Value<'js>> {
+                self.0.encode_js(ctx)
+            }
+        }
+
+        impl JsDecode for $name {
+            fn decode_js<'js>(
+                ctx: &rustts::js::Ctx<'js>,
+                value: rustts::js::Value<'js>,
+            ) -> rustts::js::Result<Self> {
+                Value::decode_js(ctx, value).map($name)
+            }
+        }
+    };
+}
+
+json_with_declared_schema!(
+    ValidationInput,
+    TsType::Object(vec![TsField::required("id", TsType::Number)]),
+    Vec::new()
+);
+json_with_declared_schema!(
+    ValidationTypeRefInput,
+    TsType::Object(vec![TsField::required(
+        "user_id",
+        TsType::TypeRef(String::from("UserId")),
+    )]),
+    vec![Schema::typed("UserId", TsType::Number)]
+);
+json_with_declared_schema!(ValidationTypeRefOutput, TsType::Json, Vec::new());
+json_with_declared_schema!(BadOutputInput, TsType::Number, Vec::new());
+json_with_declared_schema!(BadOutputOutput, TsType::Number, Vec::new());
+
+#[derive(TsSchema)]
+#[serde(transparent)]
+#[allow(dead_code)]
+struct FindUserInput(u64);
+
+#[derive(TsSchema)]
+#[serde(transparent)]
+#[allow(dead_code)]
+struct FindUserOutput(String);
 
 impl HostContract for FindUser {
     const NAME: &'static str = "user.find";
@@ -29,7 +97,7 @@ impl HostContract for FindUser {
     const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
     fn schema() -> Schema {
-        Schema::typed("FindUserInput", TsType::Number)
+        FindUserInput::schema()
     }
 
     fn metadata() -> HostMetadata {
@@ -45,18 +113,20 @@ impl HostContract for FindUser {
 }
 
 impl HostFunctionSignature for FindUser {
-    type Input = u64;
-    type Output = String;
-
-    fn output_schema() -> Schema {
-        Schema::typed("FindUserOutput", TsType::String)
-    }
+    type Input = FindUserInput;
+    type Output = FindUserOutput;
 }
 
 impl HostFunction for FindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
-        Ok(format!("user-{input}"))
+        Ok(FindUserOutput(format!("user-{}", input.0)))
     }
+}
+
+#[derive(TsSchema)]
+#[allow(dead_code)]
+struct ScoreUpdatePayload {
+    combo: u32,
 }
 
 impl HostContract for ScoreUpdate {
@@ -65,10 +135,7 @@ impl HostContract for ScoreUpdate {
     const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
 
     fn schema() -> Schema {
-        Schema::typed(
-            "ScoreUpdatePayload",
-            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
-        )
+        ScoreUpdatePayload::schema()
     }
 
     fn kind() -> HostContractKind {
@@ -77,7 +144,7 @@ impl HostContract for ScoreUpdate {
 }
 
 impl HostCallback for ScoreUpdate {
-    type Payload = ();
+    type Payload = ScoreUpdatePayload;
 }
 
 impl HostContract for OverlayContext {
@@ -99,8 +166,7 @@ impl HostContract for OverlayContext {
 
 impl HostContext for OverlayContext {}
 
-#[cfg(feature = "derive")]
-#[derive(serde::Deserialize, TsSchema)]
+#[derive(TsSchema)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct ActionActor {
@@ -108,8 +174,7 @@ struct ActionActor {
     display_name: String,
 }
 
-#[cfg(feature = "derive")]
-#[derive(serde::Deserialize, TsSchema)]
+#[derive(TsSchema)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct RecordActionInput {
@@ -119,7 +184,6 @@ struct RecordActionInput {
     confirmed: bool,
 }
 
-#[cfg(feature = "derive")]
 impl HostContract for RecordAction {
     const NAME: &'static str = "action.record";
     const IMPORT_MODULE: &'static str = "test";
@@ -134,17 +198,11 @@ impl HostContract for RecordAction {
     }
 }
 
-#[cfg(feature = "derive")]
 impl HostFunctionSignature for RecordAction {
     type Input = RecordActionInput;
     type Output = String;
-
-    fn output_schema() -> Schema {
-        String::schema()
-    }
 }
 
-#[cfg(feature = "derive")]
 impl HostFunction for RecordAction {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("{}:{}", input.action_id, input.actor.actor_id))
@@ -157,7 +215,7 @@ impl HostContract for EchoValidation {
     const EXPORT_PATH: &'static [&'static str] = &["validation", "echo"];
 
     fn schema() -> Schema {
-        validation_input_schema()
+        ValidationInput::schema()
     }
 
     fn kind() -> HostContractKind {
@@ -166,12 +224,8 @@ impl HostContract for EchoValidation {
 }
 
 impl HostFunctionSignature for EchoValidation {
-    type Input = Value;
-    type Output = Value;
-
-    fn output_schema() -> Schema {
-        validation_input_schema()
-    }
+    type Input = ValidationInput;
+    type Output = ValidationInput;
 }
 
 impl HostFunction for EchoValidation {
@@ -186,14 +240,7 @@ impl HostContract for EchoTypeRefValidation {
     const EXPORT_PATH: &'static [&'static str] = &["validation", "echoRef"];
 
     fn schema() -> Schema {
-        Schema::typed(
-            "ValidationTypeRefInput",
-            TsType::Object(vec![TsField::required(
-                "user_id",
-                TsType::TypeRef(String::from("UserId")),
-            )]),
-        )
-        .with_dependencies(vec![Schema::typed("UserId", TsType::Number)])
+        ValidationTypeRefInput::schema()
     }
 
     fn kind() -> HostContractKind {
@@ -202,17 +249,13 @@ impl HostContract for EchoTypeRefValidation {
 }
 
 impl HostFunctionSignature for EchoTypeRefValidation {
-    type Input = Value;
-    type Output = Value;
-
-    fn output_schema() -> Schema {
-        Schema::typed("ValidationTypeRefOutput", TsType::Json)
-    }
+    type Input = ValidationTypeRefInput;
+    type Output = ValidationTypeRefOutput;
 }
 
 impl HostFunction for EchoTypeRefValidation {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
-        Ok(input)
+        Ok(ValidationTypeRefOutput(input.0))
     }
 }
 
@@ -222,7 +265,7 @@ impl HostContract for BadOutputValidation {
     const EXPORT_PATH: &'static [&'static str] = &["validation", "badOutput"];
 
     fn schema() -> Schema {
-        Schema::typed("BadOutputInput", TsType::Number)
+        BadOutputInput::schema()
     }
 
     fn kind() -> HostContractKind {
@@ -231,25 +274,14 @@ impl HostContract for BadOutputValidation {
 }
 
 impl HostFunctionSignature for BadOutputValidation {
-    type Input = Value;
-    type Output = Value;
-
-    fn output_schema() -> Schema {
-        Schema::typed("BadOutputOutput", TsType::Number)
-    }
+    type Input = BadOutputInput;
+    type Output = BadOutputOutput;
 }
 
 impl HostFunction for BadOutputValidation {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
-        Ok(json!("not-a-number"))
+        Ok(BadOutputOutput(json!("not-a-number")))
     }
-}
-
-fn validation_input_schema() -> Schema {
-    Schema::typed(
-        "ValidationInput",
-        TsType::Object(vec![TsField::required("id", TsType::Number)]),
-    )
 }
 
 #[test]
@@ -330,7 +362,6 @@ fn registry_generates_sdk_source_from_contracts() {
     assert!(sdk.contains("ctx,"));
 }
 
-#[cfg(feature = "derive")]
 #[test]
 fn generated_sdk_uses_flattened_derived_input_schema() {
     let cache_dir = TestCacheDir::new("host-registry-sdk-flatten");
@@ -682,7 +713,6 @@ fn host_contract_validation_can_reject_unknown_input_fields() {
     ));
 }
 
-#[cfg(feature = "derive")]
 #[test]
 fn host_contract_validation_uses_flattened_derived_input_schema() {
     let cache_dir = TestCacheDir::new("host-contract-flatten-validation");

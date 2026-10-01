@@ -5,7 +5,7 @@ use std::path::Path;
 
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    NativeBytes, Schema, TsField, TsSchema, TsType, VmError, VmOptions,
+    NativeBytes, Schema, TsField, TsType, VmError, VmOptions,
 };
 use serde_json::{Value, json};
 
@@ -49,10 +49,6 @@ impl HostContract for FindUser {
 impl HostFunctionSignature for FindUser {
     type Input = u64;
     type Output = String;
-
-    fn output_schema() -> Schema {
-        Schema::typed("FindUserOutput", TsType::String)
-    }
 }
 
 impl HostFunction for FindUser {
@@ -78,10 +74,6 @@ impl HostContract for FindInvoice {
 impl HostFunctionSignature for FindInvoice {
     type Input = u64;
     type Output = String;
-
-    fn output_schema() -> Schema {
-        Schema::typed("FindInvoiceOutput", TsType::String)
-    }
 }
 
 impl HostFunction for FindInvoice {
@@ -105,10 +97,6 @@ impl HostContract for ReadNativeBytes {
 impl HostFunctionSignature for ReadNativeBytes {
     type Input = Value;
     type Output = NativeBytes;
-
-    fn output_schema() -> Schema {
-        NativeBytes::schema()
-    }
 }
 
 impl HostFunction for ReadNativeBytes {
@@ -508,7 +496,7 @@ fn typed_host_function_returns_native_bytes_as_uint8array() {
     let mut engine = engine();
     engine
         .registry()
-        .typed_function::<ReadNativeBytes>()
+        .function::<ReadNativeBytes>()
         .expect("register native bytes host function");
     let declarations = engine.registry().types().expect("render declarations");
     engine

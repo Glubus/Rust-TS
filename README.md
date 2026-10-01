@@ -33,8 +33,8 @@ let mut engine = Engine::new(&VmOptions::default())?;
 
 engine
     .registry()
-    .typed_function::<FindUser>()?
-    .typed_callback::<UserFound>()?;
+    .function::<FindUser>()?
+    .callback::<UserFound>()?;
 
 engine.registry().write_sdk_files_with_names("generated", &SdkFileNames {
     types: "my_sdk.d.ts".into(),

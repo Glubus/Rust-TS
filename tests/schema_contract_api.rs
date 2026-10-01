@@ -1,44 +1,22 @@
+#![cfg(feature = "derive")]
+
 use std::collections::HashMap;
 
 use rustts::{
     HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    InMemoryHostContractRegistry, Schema, TsField, TsSchema, TsType, VmError,
+    InMemoryHostContractRegistry, Schema, TsSchema, VmError,
 };
-use serde::{Deserialize, Serialize};
 
 struct FindUsers;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, TsSchema)]
 struct FindUsersInput {
     ids: Vec<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, TsSchema)]
 struct FindUsersOutput {
     users: HashMap<String, Option<String>>,
-}
-
-impl TsSchema for FindUsersInput {
-    fn schema_name() -> &'static str {
-        "FindUsersInput"
-    }
-
-    fn ts_type() -> TsType {
-        TsType::Object(vec![TsField::required("ids", Vec::<u64>::ts_type())])
-    }
-}
-
-impl TsSchema for FindUsersOutput {
-    fn schema_name() -> &'static str {
-        "FindUsersOutput"
-    }
-
-    fn ts_type() -> TsType {
-        TsType::Object(vec![TsField::required(
-            "users",
-            HashMap::<String, Option<String>>::ts_type(),
-        )])
-    }
 }
 
 impl HostContract for FindUsers {
@@ -58,14 +36,6 @@ impl HostContract for FindUsers {
 impl HostFunctionSignature for FindUsers {
     type Input = FindUsersInput;
     type Output = FindUsersOutput;
-
-    fn input_schema() -> Schema {
-        FindUsersInput::schema()
-    }
-
-    fn output_schema() -> Schema {
-        FindUsersOutput::schema()
-    }
 }
 
 impl HostFunction for FindUsers {

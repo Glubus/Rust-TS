@@ -1,6 +1,6 @@
 /**
  * What a handler of event `K` returns: the reply type of a request registered with
- * `typed_request`, nothing for a plain callback. An `async` handler returns a
+ * `request`, nothing for a plain callback. An `async` handler returns a
  * Promise of it.
  */
 type HostEventReply<K extends keyof HostEvents> = K extends keyof HostReplies

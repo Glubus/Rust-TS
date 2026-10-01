@@ -86,7 +86,7 @@ impl ReplyInbox {
 /// Settles the Promise a script received from an async host function.
 ///
 /// A handler registered with
-/// [`InMemoryHostContractRegistry::typed_async_function_with`](crate::InMemoryHostContractRegistry::typed_async_function_with)
+/// [`InMemoryHostContractRegistry::async_function_with`](crate::InMemoryHostContractRegistry::async_function_with)
 /// or one of its siblings receives one resolver per call. The resolver is `Send`: keep
 /// it, move it to another thread, and settle it once with [`Self::resolve`] or
 /// [`Self::reject`]. Settling only queues the result; the script observes it when the

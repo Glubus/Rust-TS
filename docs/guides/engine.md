@@ -17,8 +17,8 @@ use rustts::{Engine, VmOptions};
 let mut engine = Engine::new(&VmOptions::default())?;
 engine
     .registry()
-    .typed_function::<FindUser>()?
-    .typed_callback::<UserFound>()?;
+    .function::<FindUser>()?
+    .callback::<UserFound>()?;
 
 engine.load_script("rules", include_str!("rules.ts"))?;
 
@@ -101,7 +101,7 @@ ctx.on("menu.label", item => `Save ${item}`);
 - An `async` handler's Promise is awaited: its reply is what it resolves to.
 - Every handler runs even after one fails (a throw, a rejection, a reply that does
   not decode as `R`); `request` then returns the first error.
-- Register the event with `typed_request::<T>()`, where `T` implements
+- Register the event with `request::<T>()`, where `T` implements
   [`HostRequest`](register-host-functions.md#declare-a-request), so the generated
   TypeScript requires handlers to return the reply type.
 

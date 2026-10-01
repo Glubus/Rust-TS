@@ -56,7 +56,7 @@ impl Engine {
     /// script Promise jobs only. Every handler runs even after one fails, a throw, a
     /// rejection or a reply that does not decode as `R`; the first error is returned.
     /// Register the event with
-    /// [`typed_request`](crate::InMemoryHostContractRegistry::typed_request) so the
+    /// [`request`](crate::InMemoryHostContractRegistry::request) so the
     /// generated TypeScript types the handlers' reply.
     pub fn request<P: JsEncode + ?Sized, R: JsDecode>(
         &self,

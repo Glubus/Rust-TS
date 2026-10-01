@@ -85,10 +85,6 @@ impl HostContract for Inc {
 impl HostFunctionSignature for Inc {
     type Input = f64;
     type Output = f64;
-
-    fn output_schema() -> Schema {
-        Schema::typed("IncOutput", TsType::Number)
-    }
 }
 
 impl HostFunction for Inc {
@@ -266,7 +262,7 @@ impl EngineBackend {
         let mut engine = Engine::new(&VmOptions::default()).expect("create engine");
         engine
             .registry()
-            .typed_function::<Inc>()
+            .function::<Inc>()
             .and_then(|registry| registry.callback::<ScoreUpdate>())
             .expect("register engine contracts");
         engine

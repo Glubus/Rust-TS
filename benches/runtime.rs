@@ -15,7 +15,7 @@ use criterion::{
 };
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    MemoryStats, Schema, TsField, TsType, VmError, VmOptions,
+    MemoryStats, Schema, TsField, TsSchema, TsType, VmError, VmOptions,
 };
 use serde_json::json;
 
@@ -424,6 +424,28 @@ fn format_signed_float(value: f64, unit: &str) -> String {
     format!("{value:+.2} {unit}")
 }
 
+#[derive(TsSchema)]
+#[rustts(name = "CreateInvoiceInput")]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct BenchCreateInvoiceInput {
+    account_id: String,
+    total: f64,
+}
+
+#[derive(TsSchema)]
+#[rustts(name = "CreateInvoiceOutput")]
+struct BenchCreateInvoiceOutput {
+    id: String,
+    accepted: bool,
+}
+
+#[derive(TsSchema)]
+#[rustts(name = "ScoreUpdatePayload")]
+struct BenchScoreUpdatePayload {
+    combo: f64,
+}
+
 struct BenchFindUser;
 struct BenchCreateInvoice;
 struct BenchScoreUpdate;
@@ -445,10 +467,6 @@ impl HostContract for BenchFindUser {
 impl HostFunctionSignature for BenchFindUser {
     type Input = u64;
     type Output = String;
-
-    fn output_schema() -> Schema {
-        Schema::typed("FindUserOutput", TsType::String)
-    }
 }
 
 impl HostFunction for BenchFindUser {
@@ -476,23 +494,16 @@ impl HostContract for BenchCreateInvoice {
 }
 
 impl HostFunctionSignature for BenchCreateInvoice {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
-    fn output_schema() -> Schema {
-        Schema::typed(
-            "CreateInvoiceOutput",
-            TsType::Object(vec![
-                TsField::required("id", TsType::String),
-                TsField::required("accepted", TsType::Boolean),
-            ]),
-        )
-    }
+    type Input = BenchCreateInvoiceInput;
+    type Output = BenchCreateInvoiceOutput;
 }
 
 impl HostFunction for BenchCreateInvoice {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
-        Ok(json!({ "id": "invoice_1", "accepted": true }))
+        Ok(BenchCreateInvoiceOutput {
+            id: "invoice_1".to_owned(),
+            accepted: true,
+        })
     }
 }
 
@@ -514,7 +525,7 @@ impl HostContract for BenchScoreUpdate {
 }
 
 impl HostCallback for BenchScoreUpdate {
-    type Payload = serde_json::Value;
+    type Payload = BenchScoreUpdatePayload;
 }
 
 /// Engine with the host contracts `realistic_mod_pack` imports from `"test"`.

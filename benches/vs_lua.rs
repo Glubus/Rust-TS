@@ -104,10 +104,6 @@ impl HostContract for Inc {
 impl HostFunctionSignature for Inc {
     type Input = f64;
     type Output = f64;
-
-    fn output_schema() -> Schema {
-        Schema::typed("IncOutput", TsType::Number)
-    }
 }
 
 impl HostFunction for Inc {
@@ -185,7 +181,7 @@ fn rustts_engine() -> Engine {
     let mut engine = Engine::new(&VmOptions::default()).expect("create rustts engine");
     engine
         .registry()
-        .typed_function::<Inc>()
+        .function::<Inc>()
         .and_then(|registry| registry.callback::<ScoreUpdate>())
         .expect("register bench contracts");
     engine

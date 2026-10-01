@@ -14,8 +14,8 @@ let engine = Engine::new(&options)?;
 
 engine
     .registry()
-    .typed_function::<FindUser>()?
-    .typed_callback::<UserFound>()?;
+    .function::<FindUser>()?
+    .callback::<UserFound>()?;
 ```
 
 Every registered callback appears in the declarations and the SDK.

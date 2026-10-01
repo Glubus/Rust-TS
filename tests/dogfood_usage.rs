@@ -148,8 +148,8 @@ fn dogfood_engine() -> Engine {
     let engine = Engine::new(&VmOptions::default()).expect("create engine");
     engine
         .registry()
-        .typed_function::<DogfoodFindUser>()
-        .and_then(|registry| registry.typed_callback::<DogfoodUserFound>())
+        .function::<DogfoodFindUser>()
+        .and_then(|registry| registry.callback::<DogfoodUserFound>())
         .expect("register typed dogfood contracts");
     engine
 }

@@ -79,7 +79,7 @@ impl HostFunction for Add {
 fn main() -> Result<(), VmError> {
     let mut engine = Engine::new(&VmOptions::default())?;
 
-    engine.registry().typed_function::<Add>()?;
+    engine.registry().function::<Add>()?;
     engine.registry().write_sdk_files_with_names(
         "target/generated",
         &SdkFileNames {
@@ -103,7 +103,7 @@ What matters:
 - `AddInput` is the script input type.
 - `AddOutput` is the script output type.
 - `#[derive(TsSchema)]` lets the registry generate TypeScript declarations.
-- `typed_function::<Add>()` registers the Rust function in the engine; register
+- `function::<Add>()` registers the Rust function in the engine; register
   contracts before loading the scripts that call them.
 - `Engine` runs the script on the current thread: `call` returns once the script
   function has returned.

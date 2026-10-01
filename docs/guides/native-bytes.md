@@ -41,10 +41,6 @@ impl HostContract for ReadAsset {
 impl HostFunctionSignature for ReadAsset {
     type Input = ReadAssetInput;
     type Output = NativeBytes;
-
-    fn output_schema() -> Schema {
-        NativeBytes::schema()
-    }
 }
 
 impl HostFunction for ReadAsset {
@@ -75,9 +71,9 @@ if (bytes.byteLength >= 4) {
 
 ## Validation Caveat
 
-When contract validation is enabled, values are validated as JSON first, so
-bytes cross as number arrays on that path. Keep validation off for large
-byte payloads in production.
+When contract validation is enabled, each value is also converted to JSON for the
+check, so a large byte payload is copied into a number array on every call. Keep
+validation off for large byte payloads in production.
 
 Use this type for byte payloads. Do not use JSON arrays for large buffers unless
 you specifically need JSON compatibility.

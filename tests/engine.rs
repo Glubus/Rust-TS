@@ -19,7 +19,7 @@ fn budget_includes_synchronous_host_handler_time() {
     let mut engine = engine_with_timeout(Duration::from_millis(200));
     engine
         .registry()
-        .typed_function_with::<Double>(|n| {
+        .function_with::<Double>(|n| {
             std::thread::sleep(Duration::from_millis(400));
             Ok(n * 2.0)
         })
@@ -68,10 +68,6 @@ impl HostContract for Double {
 impl HostFunctionSignature for Double {
     type Input = f64;
     type Output = f64;
-
-    fn output_schema() -> Schema {
-        Schema::typed("DoubleOutput", TsType::Number)
-    }
 }
 
 impl HostFunction for Double {
@@ -97,10 +93,6 @@ impl HostContract for Failing {
 impl HostFunctionSignature for Failing {
     type Input = ();
     type Output = f64;
-
-    fn output_schema() -> Schema {
-        Schema::typed("FailOutput", TsType::Number)
-    }
 }
 
 impl HostFunction for Failing {
@@ -179,7 +171,7 @@ fn typed_host_functions_are_reachable_by_import_and_by_global() {
     let mut engine = engine();
     engine
         .registry()
-        .typed_function::<Double>()
+        .function::<Double>()
         .expect("register host function");
     engine
         .load_script(
@@ -227,7 +219,7 @@ fn host_function_errors_are_catchable_in_scripts() {
     let mut engine = engine();
     engine
         .registry()
-        .typed_function::<Failing>()
+        .function::<Failing>()
         .expect("register host function");
     engine
         .load_script(
@@ -261,7 +253,7 @@ fn contract_validation_rejects_inputs_outside_the_schema() {
     .expect("create engine");
     engine
         .registry()
-        .typed_function::<Double>()
+        .function::<Double>()
         .expect("register host function");
     engine
         .load_script(

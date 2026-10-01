@@ -8,15 +8,11 @@ use crate::error::VmError;
 pub trait HostContractRegistry: Send + Sync {
     /// Registers one host function contract, implemented by its static
     /// [`HostFunction::call`].
-    fn register_function<T>(&self) -> Result<(), VmError>
-    where
-        T: HostFunction + 'static;
-
-    /// Registers one host function contract using `TsSchema` from its input and output types.
     ///
-    /// Script calls convert the input with [`JsDecode`] and the output with [`JsEncode`],
-    /// natively and without JSON text.
-    fn register_typed_function<T>(&self) -> Result<(), VmError>
+    /// The schemas come from `TsSchema` of the input and output types. Script calls
+    /// convert the input with [`JsDecode`] and the output with [`JsEncode`], natively
+    /// and without JSON text.
+    fn register_function<T>(&self) -> Result<(), VmError>
     where
         T: HostFunction + 'static,
         T::Input: TsSchema + JsDecode,
@@ -25,15 +21,6 @@ pub trait HostContractRegistry: Send + Sync {
     /// Registers function contract `C` implemented by `handler`, a closure that can
     /// hold state; see [`Self::register_function`].
     fn register_function_with<C>(
-        &self,
-        handler: impl Fn(C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
-    ) -> Result<(), VmError>
-    where
-        C: HostFunctionSignature + 'static;
-
-    /// Registers function contract `C` implemented by `handler`, a closure that can
-    /// hold state; see [`Self::register_typed_function`].
-    fn register_typed_function_with<C>(
         &self,
         handler: impl Fn(C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
     ) -> Result<(), VmError>
@@ -49,15 +36,6 @@ pub trait HostContractRegistry: Send + Sync {
         handler: impl Fn(&Caller<'_>, C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
     ) -> Result<(), VmError>
     where
-        C: HostFunctionSignature + 'static;
-
-    /// Registers function contract `C` implemented by `handler`, which also receives
-    /// the [`Caller`]; see [`Self::register_typed_function_with`].
-    fn register_typed_function_with_caller<C>(
-        &self,
-        handler: impl Fn(&Caller<'_>, C::Input) -> Result<C::Output, VmError> + Send + Sync + 'static,
-    ) -> Result<(), VmError>
-    where
         C: HostFunctionSignature + 'static,
         C::Input: TsSchema + JsDecode,
         C::Output: TsSchema + JsEncode;
@@ -65,21 +43,9 @@ pub trait HostContractRegistry: Send + Sync {
     /// Registers async function contract `C` implemented by `handler`: scripts receive a
     /// `Promise` of the output, which the [`HostResolver`] passed to `handler` with each
     /// call's input settles. An `Err` from `handler` rejects the Promise at once. Values
-    /// cross as JSON; see [`Self::register_function_with`].
+    /// cross as in [`Self::register_function_with`]; the output is converted on the
+    /// engine thread, so it must be `Send`.
     fn register_async_function_with<C>(
-        &self,
-        handler: impl Fn(C::Input, HostResolver<C::Output>) -> Result<(), VmError>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Result<(), VmError>
-    where
-        C: HostFunctionSignature + 'static;
-
-    /// Registers async function contract `C` implemented by `handler`, with values
-    /// crossing natively; see [`Self::register_async_function_with`] and
-    /// [`Self::register_typed_function_with`].
-    fn register_typed_async_function_with<C>(
         &self,
         handler: impl Fn(C::Input, HostResolver<C::Output>) -> Result<(), VmError>
         + Send
@@ -101,36 +67,19 @@ pub trait HostContractRegistry: Send + Sync {
         + 'static,
     ) -> Result<(), VmError>
     where
-        C: HostFunctionSignature + 'static;
-
-    /// Registers async function contract `C` implemented by `handler`, which also
-    /// receives the [`Caller`]; see [`Self::register_typed_async_function_with`].
-    fn register_typed_async_function_with_caller<C>(
-        &self,
-        handler: impl Fn(&Caller<'_>, C::Input, HostResolver<C::Output>) -> Result<(), VmError>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Result<(), VmError>
-    where
         C: HostFunctionSignature + 'static,
         C::Input: TsSchema + JsDecode,
         C::Output: TsSchema + JsEncode + Send;
 
-    /// Registers one host callback contract.
-    fn register_callback<T>(&self) -> Result<(), VmError>
-    where
-        T: HostCallback + Send + Sync + 'static;
-
     /// Registers one host callback contract using `TsSchema` from its payload type.
-    fn register_typed_callback<T>(&self) -> Result<(), VmError>
+    fn register_callback<T>(&self) -> Result<(), VmError>
     where
         T: HostCallback + Send + Sync + 'static,
         T::Payload: TsSchema + JsEncode;
 
     /// Registers one host request, a callback whose handlers reply, using `TsSchema` from
     /// its payload and reply types.
-    fn register_typed_request<T>(&self) -> Result<(), VmError>
+    fn register_request<T>(&self) -> Result<(), VmError>
     where
         T: HostRequest + Send + Sync + 'static,
         T::Payload: TsSchema + JsEncode,

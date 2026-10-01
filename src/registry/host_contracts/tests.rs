@@ -1,11 +1,11 @@
-use serde_json::Value;
-
-use super::declarations::{EVENT_CONTEXT_TYPE, HOT_CONTEXT_TYPE};
+use super::declarations::{EVENT_CONTEXT_TYPE, HOT_CONTEXT_TYPE, render_typescript_declarations};
+use super::sdk::render_typescript_sdk;
 use super::{HostContractRegistry, InMemoryHostContractRegistry};
 use crate::contract::{
-    Caller, HostCallback, HostContext, HostContract, HostContractAbi, HostContractKind,
-    HostFunction, HostFunctionSignature, HostMetadata, Schema, TsEnumVariant, TsField, TsLiteral,
-    TsRecordKey, TsType,
+    HostCallback, HostCallbackDescriptor, HostContext, HostContract, HostContractAbi,
+    HostContractDescriptor, HostContractKind, HostFunction, HostFunctionDescriptor,
+    HostFunctionSignature, HostMetadata, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey,
+    TsSchema, TsType,
 };
 use crate::error::VmError;
 
@@ -63,10 +63,6 @@ impl HostContract for GeneratedFunction {
 impl HostFunctionSignature for GeneratedFunction {
     type Input = ();
     type Output = ();
-
-    fn output_schema() -> Schema {
-        Schema::typed("FindUserOutput", TsType::String)
-    }
 }
 
 impl HostFunction for GeneratedFunction {
@@ -124,14 +120,14 @@ fn register_function_stores_descriptor() {
     let descriptor = registry.get(DemoFunction::NAME).unwrap().unwrap();
     assert_eq!(descriptor.name, DemoFunction::NAME);
     assert_eq!(descriptor.kind, HostContractKind::Function);
-    assert_eq!(descriptor.schema.name, "DemoFunctionInput");
     let function = descriptor.function.expect("function descriptor");
-    assert_eq!(function.input_schema.name, "DemoFunctionInput");
-    assert_eq!(function.output_schema.name, "unknown");
+    assert_eq!(function.input_schema, <() as TsSchema>::schema());
+    assert_eq!(function.output_schema, <() as TsSchema>::schema());
+    assert_eq!(descriptor.schema, function.input_schema);
     assert!(matches!(
         descriptor.abi,
         HostContractAbi::Function { input, output, returns_promise: false }
-            if input.name == "DemoFunctionInput" && output.name == "unknown"
+            if input == <() as TsSchema>::schema() && output == <() as TsSchema>::schema()
     ));
 }
 
@@ -144,12 +140,12 @@ fn register_callback_stores_descriptor() {
     let descriptor = registry.get(DemoCallback::NAME).unwrap().unwrap();
     assert_eq!(descriptor.name, DemoCallback::NAME);
     assert_eq!(descriptor.kind, HostContractKind::Callback);
-    assert_eq!(descriptor.schema.name, "DemoCallbackPayload");
     let callback = descriptor.callback.unwrap();
-    assert_eq!(callback.payload_schema.name, "DemoCallbackPayload");
+    assert_eq!(callback.payload_schema, <() as TsSchema>::schema());
+    assert_eq!(descriptor.schema, callback.payload_schema);
     assert!(matches!(
         descriptor.abi,
-        HostContractAbi::Callback { payload, .. } if payload.name == "DemoCallbackPayload"
+        HostContractAbi::Callback { payload, .. } if payload == <() as TsSchema>::schema()
     ));
 }
 
@@ -181,18 +177,6 @@ fn fluent_registration_chains_contracts() {
     assert!(registry.descriptor(DemoCallback::NAME).unwrap().is_some());
     assert!(registry.descriptor(DemoFunction::NAME).unwrap().is_some());
     assert!(registry.descriptor(DemoContext::NAME).unwrap().is_some());
-}
-
-#[test]
-fn invoke_function_executes_registered_binding() {
-    let registry = InMemoryHostContractRegistry::new();
-    registry.register_function::<DemoFunction>().unwrap();
-
-    let result = registry
-        .invoke_function(DemoFunction::NAME, &Caller::new("script"), Value::Null)
-        .unwrap();
-
-    assert_eq!(result, Some(Value::Null));
 }
 
 #[test]
@@ -270,28 +254,77 @@ impl HostContract for ComplexGeneratedFunction {
 impl HostFunctionSignature for ComplexGeneratedFunction {
     type Input = ();
     type Output = ();
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed(
-            "CreateInvoiceOutput",
-            TsType::Object(vec![
-                TsField::required("id", TsType::Nullable(Box::new(TsType::String))),
-                TsField::required(
-                    "state",
-                    TsType::Enum {
-                        tag: Some(String::from("kind")),
-                        variants: vec![
-                            TsEnumVariant::unit("created"),
-                            TsEnumVariant::payload(
-                                "failed",
-                                vec![TsField::required("reason", TsType::String)],
-                            ),
-                        ],
-                    },
-                ),
-            ]),
-        )
-    }
+/// Output schema of [`ComplexGeneratedFunction`], hand-built to exercise every shape
+/// the declaration renderer handles.
+fn complex_output_schema() -> Schema {
+    Schema::typed(
+        "CreateInvoiceOutput",
+        TsType::Object(vec![
+            TsField::required("id", TsType::Nullable(Box::new(TsType::String))),
+            TsField::required(
+                "state",
+                TsType::Enum {
+                    tag: Some(String::from("kind")),
+                    variants: vec![
+                        TsEnumVariant::unit("created"),
+                        TsEnumVariant::payload(
+                            "failed",
+                            vec![TsField::required("reason", TsType::String)],
+                        ),
+                    ],
+                },
+            ),
+        ]),
+    )
+}
+
+/// The descriptor a registration of function contract `C` produces, for schemas that no
+/// Rust type declares, so renderer tests can feed it any shape.
+fn function_descriptor<C: HostContract>(input: Schema, output: Schema) -> HostContractDescriptor {
+    let function = HostFunctionDescriptor {
+        input_schema: input.clone(),
+        output_schema: output.clone(),
+        returns_promise: false,
+    };
+    let mut descriptor = C::descriptor();
+    descriptor.schema = input.clone();
+    descriptor.abi = HostContractAbi::Function {
+        input,
+        output,
+        returns_promise: false,
+    };
+    descriptor.function = Some(function);
+    descriptor
+}
+
+/// The descriptor a registration of callback contract `C` produces, for a hand-built
+/// payload schema.
+fn callback_descriptor<C: HostContract>(payload: Schema) -> HostContractDescriptor {
+    let callback = HostCallbackDescriptor {
+        payload_schema: payload.clone(),
+        reply_schema: None,
+    };
+    let mut descriptor = C::descriptor();
+    descriptor.schema = payload.clone();
+    descriptor.abi = HostContractAbi::Callback {
+        payload,
+        reply: None,
+    };
+    descriptor.callback = Some(callback);
+    descriptor
+}
+
+fn find_user() -> HostContractDescriptor {
+    function_descriptor::<GeneratedFunction>(
+        Schema::typed("FindUserInput", TsType::Number),
+        Schema::typed("FindUserOutput", TsType::String),
+    )
+}
+
+fn demo_callback() -> HostContractDescriptor {
+    callback_descriptor::<DemoCallback>(DemoCallback::schema())
 }
 
 impl HostFunction for ComplexGeneratedFunction {
@@ -302,12 +335,11 @@ impl HostFunction for ComplexGeneratedFunction {
 
 #[test]
 fn dts_renders_nested_namespaces_and_complex_schema_types() {
-    let registry = InMemoryHostContractRegistry::new();
-    registry
-        .register_function::<ComplexGeneratedFunction>()
-        .unwrap();
-
-    let declarations = registry.dts().unwrap();
+    let declarations =
+        render_typescript_declarations(&[function_descriptor::<ComplexGeneratedFunction>(
+            ComplexGeneratedFunction::schema(),
+            complex_output_schema(),
+        )]);
 
     assert_eq!(
         declarations,
@@ -320,11 +352,13 @@ fn dts_renders_nested_namespaces_and_complex_schema_types() {
 
 #[test]
 fn dts_is_generated_from_contract_schemas() {
-    let registry = InMemoryHostContractRegistry::new();
-    registry.register_function::<DemoFunction>().unwrap();
-    registry.register_callback::<DemoCallback>().unwrap();
-
-    let declarations = registry.dts().unwrap();
+    let declarations = render_typescript_declarations(&[
+        demo_callback(),
+        function_descriptor::<DemoFunction>(
+            Schema::typed("DemoFunctionInput", TsType::Void),
+            Schema::named("unknown"),
+        ),
+    ]);
 
     assert_eq!(
         declarations,
@@ -337,10 +371,7 @@ fn dts_is_generated_from_contract_schemas() {
 
 #[test]
 fn dts_generates_function_declaration_from_contract_model() {
-    let registry = InMemoryHostContractRegistry::new();
-    registry.register_function::<GeneratedFunction>().unwrap();
-
-    let declarations = registry.dts().unwrap();
+    let declarations = render_typescript_declarations(&[find_user()]);
 
     assert_eq!(
         declarations,
@@ -370,10 +401,7 @@ fn ctx_declaration(with_events: bool) -> String {
 
 #[test]
 fn sdk_generates_function_wrapper_from_contract_model() {
-    let registry = InMemoryHostContractRegistry::new();
-    registry.register_function::<GeneratedFunction>().unwrap();
-
-    let sdk = registry.sdk().unwrap();
+    let sdk = render_typescript_sdk(&[find_user()]);
 
     assert!(sdk.contains("type FindUserInput = number;"));
     assert!(sdk.contains("type FindUserOutput = string;"));
@@ -388,10 +416,7 @@ fn sdk_generates_function_wrapper_from_contract_model() {
 
 #[test]
 fn sdk_generates_event_wrapper_from_callback_contracts() {
-    let registry = InMemoryHostContractRegistry::new();
-    registry.register_callback::<DemoCallback>().unwrap();
-
-    let sdk = registry.sdk().unwrap();
+    let sdk = render_typescript_sdk(&[demo_callback()]);
 
     assert!(sdk.contains("type DemoCallbackPayload = { combo: number; };"));
     assert!(sdk.contains("type HostEvents = {"));

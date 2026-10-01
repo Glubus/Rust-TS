@@ -6,9 +6,10 @@ use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rustts::js::{Ctx, Object, Value as JsValue};
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    JsDecode, Schema, TsField, TsType, VmError, VmOptions,
+    JsDecode, JsEncode, Schema, TsField, TsSchema, TsType, VmError, VmOptions,
 };
 
 use support::TestCacheDir;
@@ -46,10 +47,6 @@ impl HostContract for Record {
 impl HostFunctionSignature for Record {
     type Input = String;
     type Output = bool;
-
-    fn output_schema() -> Schema {
-        Schema::typed("RecordOutput", TsType::Boolean)
-    }
 }
 
 impl HostFunction for Record {
@@ -61,14 +58,33 @@ impl HostFunction for Record {
 
 struct Tick;
 
+struct TickPayload {
+    frame: f64,
+}
+
+impl TsSchema for TickPayload {
+    fn schema_name() -> &'static str {
+        "TickPayload"
+    }
+
+    fn ts_type() -> TsType {
+        TsType::Object(vec![TsField::required("frame", TsType::Number)])
+    }
+}
+
+impl JsEncode for TickPayload {
+    fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> rustts::js::Result<JsValue<'js>> {
+        let payload = Object::new(ctx.clone())?;
+        payload.set("frame", self.frame)?;
+        Ok(payload.into_value())
+    }
+}
+
 impl HostContract for Tick {
     const NAME: &'static str = "game.tick";
 
     fn schema() -> Schema {
-        Schema::typed(
-            "TickPayload",
-            TsType::Object(vec![TsField::required("frame", TsType::Number)]),
-        )
+        TickPayload::schema()
     }
 
     fn kind() -> HostContractKind {
@@ -77,7 +93,7 @@ impl HostContract for Tick {
 }
 
 impl HostCallback for Tick {
-    type Payload = ();
+    type Payload = TickPayload;
 }
 
 #[test]

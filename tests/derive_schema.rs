@@ -206,14 +206,6 @@ impl HostContract for CreateInvoice {
 impl HostFunctionSignature for CreateInvoice {
     type Input = CreateInvoiceInput;
     type Output = CreateInvoiceOutput;
-
-    fn input_schema() -> Schema {
-        CreateInvoiceInput::schema()
-    }
-
-    fn output_schema() -> Schema {
-        CreateInvoiceOutput::schema()
-    }
 }
 
 impl HostFunction for CreateInvoice {
@@ -240,14 +232,6 @@ impl HostContract for FindSession {
 impl HostFunctionSignature for FindSession {
     type Input = FindSessionInput;
     type Output = FindSessionOutput;
-
-    fn input_schema() -> Schema {
-        FindSessionInput::schema()
-    }
-
-    fn output_schema() -> Schema {
-        FindSessionOutput::schema()
-    }
 }
 
 impl HostFunction for FindSession {
@@ -604,7 +588,7 @@ fn flattened_map_sdk_predicates_check_every_key() {
     let mut engine = Engine::new(&VmOptions::default()).expect("create engine");
     engine
         .registry()
-        .typed_function::<RecordScores>()
+        .function::<RecordScores>()
         .expect("register flattened-map host function");
     let sdk = engine.registry().sdk().expect("render SDK");
     let source = format!(
@@ -654,7 +638,7 @@ impl HostFunction for RecordScores {
 fn flattened_map_declarations_typecheck() {
     let registry = InMemoryHostContractRegistry::new();
     registry
-        .typed_function::<RecordScores>()
+        .function::<RecordScores>()
         .expect("register flattened-map host function");
     let dts = registry.dts().expect("render declarations");
     let sdk = registry.sdk().expect("render SDK");
@@ -1043,7 +1027,7 @@ fn transparent_newtypes_drive_host_contract_dts() {
 fn typed_function_registration_uses_input_and_output_ts_schema() {
     let registry = InMemoryHostContractRegistry::new();
     registry
-        .typed_function::<AutoCreateInvoice>()
+        .function::<AutoCreateInvoice>()
         .expect("register typed derived-schema host function");
 
     let descriptor = registry
@@ -1071,7 +1055,7 @@ fn typed_function_registration_uses_input_and_output_ts_schema() {
 fn typed_callback_registration_uses_payload_ts_schema() {
     let registry = InMemoryHostContractRegistry::new();
     registry
-        .typed_callback::<AutoInvoiceCreated>()
+        .callback::<AutoInvoiceCreated>()
         .expect("register typed derived-schema callback");
 
     let descriptor = registry

@@ -298,10 +298,10 @@ impl IntegratedBridgeBench {
             .register_function::<HostLargeCopyJson>()
             .expect("register large json copy");
         registry
-            .register_typed_function::<HostSmallCopyTyped>()
+            .register_function::<HostSmallCopyTyped>()
             .expect("register small typed copy");
         registry
-            .register_typed_function::<HostLargeCopyTyped>()
+            .register_function::<HostLargeCopyTyped>()
             .expect("register large typed copy");
         registry
             .register_function::<HostGetField>()
@@ -313,7 +313,7 @@ impl IntegratedBridgeBench {
             .register_function::<HostBytesJsonArray>()
             .expect("register json array bytes");
         registry
-            .register_typed_function::<HostBytesNative>()
+            .register_function::<HostBytesNative>()
             .expect("register native bytes");
 
         engine
@@ -431,10 +431,6 @@ impl HostContract for HostSmallCopyJson {
 impl HostFunctionSignature for HostSmallCopyJson {
     type Input = Value;
     type Output = Value;
-
-    fn output_schema() -> Schema {
-        small_payload_schema()
-    }
 }
 
 impl HostFunction for HostSmallCopyJson {
@@ -463,10 +459,6 @@ impl HostContract for HostLargeCopyJson {
 impl HostFunctionSignature for HostLargeCopyJson {
     type Input = Value;
     type Output = Value;
-
-    fn output_schema() -> Schema {
-        large_payload_schema()
-    }
 }
 
 impl HostFunction for HostLargeCopyJson {
@@ -490,10 +482,6 @@ impl HostContract for HostSmallCopyTyped {
 impl HostFunctionSignature for HostSmallCopyTyped {
     type Input = EmptyInput;
     type Output = SmallPayload;
-
-    fn output_schema() -> Schema {
-        SmallPayload::schema()
-    }
 }
 
 impl HostFunction for HostSmallCopyTyped {
@@ -522,10 +510,6 @@ impl HostContract for HostLargeCopyTyped {
 impl HostFunctionSignature for HostLargeCopyTyped {
     type Input = EmptyInput;
     type Output = LargePayload;
-
-    fn output_schema() -> Schema {
-        LargePayload::schema()
-    }
 }
 
 impl HostFunction for HostLargeCopyTyped {
@@ -551,10 +535,6 @@ impl HostContract for HostGetField {
 impl HostFunctionSignature for HostGetField {
     type Input = Value;
     type Output = u32;
-
-    fn output_schema() -> Schema {
-        Schema::typed("FieldValue", TsType::Number)
-    }
 }
 
 impl HostFunction for HostGetField {
@@ -582,10 +562,6 @@ impl HostContract for HostReadNativeU32 {
 impl HostFunctionSignature for HostReadNativeU32 {
     type Input = Value;
     type Output = u32;
-
-    fn output_schema() -> Schema {
-        Schema::typed("NativeU32", TsType::Number)
-    }
 }
 
 impl HostFunction for HostReadNativeU32 {
@@ -613,10 +589,6 @@ impl HostContract for HostBytesJsonArray {
 impl HostFunctionSignature for HostBytesJsonArray {
     type Input = Value;
     type Output = Value;
-
-    fn output_schema() -> Schema {
-        Schema::typed("ByteArray", TsType::Array(Box::new(TsType::Number)))
-    }
 }
 
 impl HostFunction for HostBytesJsonArray {
@@ -641,10 +613,6 @@ impl HostContract for HostBytesNative {
 impl HostFunctionSignature for HostBytesNative {
     type Input = Value;
     type Output = NativeBytes;
-
-    fn output_schema() -> Schema {
-        NativeBytes::schema()
-    }
 }
 
 impl HostFunction for HostBytesNative {
@@ -658,27 +626,6 @@ fn parse_byte_input(input: Value) -> Result<ByteInput, VmError> {
     serde_json::from_value(input).map_err(|error| VmError::Execution {
         details: error.to_string(),
     })
-}
-
-fn small_payload_schema() -> Schema {
-    Schema::typed(
-        "SmallPayload",
-        TsType::Object(vec![
-            TsField::required("id", TsType::Number),
-            TsField::required("hp", TsType::Number),
-            TsField::required("mp", TsType::Number),
-        ]),
-    )
-}
-
-fn large_payload_schema() -> Schema {
-    Schema::typed(
-        "LargePayload",
-        TsType::Object(vec![TsField::required(
-            "fields",
-            TsType::Array(Box::new(TsType::Number)),
-        )]),
-    )
 }
 
 fn field_read_input_schema() -> Schema {

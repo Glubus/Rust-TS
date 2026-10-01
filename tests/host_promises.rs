@@ -8,12 +8,15 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+#[cfg(feature = "derive")]
+use rustts::js::{Ctx, Value as JsValue};
 use rustts::{
     Engine, HostContract, HostContractAbi, HostContractKind, HostFunctionSignature, HostResolver,
-    InMemoryHostContractRegistry, Schema, TsField, TsType, VmContractValidation, VmError,
-    VmOptions,
+    InMemoryHostContractRegistry, Schema, TsType, VmContractValidation, VmError, VmOptions,
 };
-use serde_json::{Value, json};
+#[cfg(feature = "derive")]
+use rustts::{JsEncode, TsSchema};
+use serde_json::json;
 use support::TestCacheDir;
 
 /// `scores.lookup(name)`: a player's score, answered by the host later.
@@ -56,17 +59,55 @@ impl HostFunctionSignature for WhoAmI {
     type Output = String;
 }
 
-/// `tags.add({ id })`: JSON values checked against declared schemas.
+/// A label declared as a TypeScript `string` that can carry a number, so a resolution can
+/// break the declared output.
+#[cfg(feature = "derive")]
+enum Label {
+    Text(String),
+    Number(f64),
+}
+
+#[cfg(feature = "derive")]
+impl TsSchema for Label {
+    fn ts_type() -> TsType {
+        TsType::String
+    }
+}
+
+#[cfg(feature = "derive")]
+impl JsEncode for Label {
+    fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> rustts::js::Result<JsValue<'js>> {
+        match self {
+            Self::Text(text) => text.encode_js(ctx),
+            Self::Number(number) => number.encode_js(ctx),
+        }
+    }
+}
+
+/// `tags.add({ id })`: values checked against the declared schemas.
+#[cfg(feature = "derive")]
 struct AddTag;
 
+#[cfg(feature = "derive")]
+#[derive(Debug, PartialEq, TsSchema)]
+#[rustts(decode_only)]
+struct AddTagInput {
+    id: u32,
+}
+
+#[cfg(feature = "derive")]
+#[derive(TsSchema)]
+#[rustts(encode_only)]
+struct AddTagOutput {
+    label: Label,
+}
+
+#[cfg(feature = "derive")]
 impl HostContract for AddTag {
     const NAME: &'static str = "tags.add";
 
     fn schema() -> Schema {
-        Schema::typed(
-            "AddTagInput",
-            TsType::Object(vec![TsField::required("id", TsType::Number)]),
-        )
+        AddTagInput::schema()
     }
 
     fn kind() -> HostContractKind {
@@ -74,16 +115,10 @@ impl HostContract for AddTag {
     }
 }
 
+#[cfg(feature = "derive")]
 impl HostFunctionSignature for AddTag {
-    type Input = Value;
-    type Output = Value;
-
-    fn output_schema() -> Schema {
-        Schema::typed(
-            "AddTagOutput",
-            TsType::Object(vec![TsField::required("label", TsType::String)]),
-        )
-    }
+    type Input = AddTagInput;
+    type Output = AddTagOutput;
 }
 
 type Calls<I, O> = Arc<Mutex<Vec<(I, HostResolver<O>)>>>;
@@ -113,7 +148,7 @@ fn score_engine(options: &VmOptions) -> (Engine, Calls<String, u32>) {
     let kept = Arc::clone(&calls);
     engine
         .registry()
-        .typed_async_function_with::<Score>(move |name, resolver| {
+        .async_function_with::<Score>(move |name, resolver| {
             kept.lock().expect("calls").push((name, resolver));
             Ok(())
         })
@@ -200,7 +235,7 @@ fn failed_calls_reject_at_once_instead_of_throwing() {
     let mut engine = Engine::new(&VmOptions::default()).expect("create engine");
     engine
         .registry()
-        .typed_async_function_with::<Score>(|name, _resolver| {
+        .async_function_with::<Score>(|name, _resolver| {
             Err(VmError::Execution {
                 details: format!("{name} is unknown"),
             })
@@ -241,10 +276,11 @@ fn failed_calls_reject_at_once_instead_of_throwing() {
     );
 }
 
+#[cfg(feature = "derive")]
 #[test]
 fn validation_checks_inputs_at_the_call_and_outputs_at_resolution() {
     let mut engine = Engine::new(&validating()).expect("create engine");
-    let calls: Calls<Value, Value> = Arc::default();
+    let calls: Calls<AddTagInput, AddTagOutput> = Arc::default();
     let kept = Arc::clone(&calls);
     engine
         .registry()
@@ -281,24 +317,18 @@ fn validation_checks_inputs_at_the_call_and_outputs_at_resolution() {
     let (bad_output_input, bad_resolver) = last_call(&calls);
     let (valid_input, valid_resolver) = last_call(&calls);
     valid_resolver
-        .resolve(json!({ "label": "seven" }))
+        .resolve(AddTagOutput {
+            label: Label::Text(String::from("seven")),
+        })
         .expect("valid output");
-    let error = bad_resolver
-        .resolve(json!({ "label": 8 }))
-        .expect_err("invalid output");
+    bad_resolver
+        .resolve(AddTagOutput {
+            label: Label::Number(8.0),
+        })
+        .expect("a bad output is only found when the engine thread converts it");
 
-    assert_eq!(valid_input, json!({ "id": 7 }));
-    assert_eq!(bad_output_input, json!({ "id": 8 }));
-    assert!(
-        matches!(
-            error,
-            VmError::ContractValidation {
-                direction: "output",
-                ..
-            }
-        ),
-        "{error:?}"
-    );
+    assert_eq!(valid_input, AddTagInput { id: 7 });
+    assert_eq!(bad_output_input, AddTagInput { id: 8 });
 
     engine.pump().expect("pump");
 
@@ -347,23 +377,15 @@ fn ids_resolved_by(engine: &mut Engine) -> [String; 2] {
 
 #[test]
 fn caller_handlers_see_the_calling_script() {
-    let mut typed = Engine::new(&VmOptions::default()).expect("create engine");
-    typed
+    let mut engine = Engine::new(&VmOptions::default()).expect("create engine");
+    engine
         .registry()
-        .typed_async_function_with_caller::<WhoAmI>(|caller, (), resolver| {
-            resolver.resolve(caller.script_id().to_owned())
-        })
-        .expect("register typed async function");
-    let mut json = Engine::new(&VmOptions::default()).expect("create engine");
-    json.registry()
         .async_function_with_caller::<WhoAmI>(|caller, (), resolver| {
             resolver.resolve(caller.script_id().to_owned())
         })
-        .expect("register async function");
+        .expect("register typed async function");
 
-    for engine in [&mut typed, &mut json] {
-        assert_eq!(ids_resolved_by(engine), ["alpha", "beta"]);
-    }
+    assert_eq!(ids_resolved_by(&mut engine), ["alpha", "beta"]);
 }
 
 #[test]
@@ -505,9 +527,9 @@ fn settled_calls_release_their_promises() {
 fn async_descriptors_declare_a_promise_and_sync_ones_serialize_unchanged() {
     let registry = InMemoryHostContractRegistry::new();
     registry
-        .typed_async_function_with::<Score>(|_, _| Ok(()))
+        .async_function_with::<Score>(|_, _| Ok(()))
         .expect("register async function")
-        .typed_function_with::<WhoAmI>(|()| Ok(String::new()))
+        .function_with::<WhoAmI>(|()| Ok(String::new()))
         .expect("register sync function");
 
     let score = registry
@@ -536,7 +558,7 @@ fn async_descriptors_declare_a_promise_and_sync_ones_serialize_unchanged() {
 fn score_registry() -> InMemoryHostContractRegistry {
     let registry = InMemoryHostContractRegistry::new();
     registry
-        .typed_async_function_with::<Score>(|_, _| Ok(()))
+        .async_function_with::<Score>(|_, _| Ok(()))
         .expect("register async function");
     registry
 }

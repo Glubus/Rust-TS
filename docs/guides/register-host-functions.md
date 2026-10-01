@@ -6,7 +6,7 @@ This guide shows the normal flow:
 2. Declare Rust payload structs.
 3. Derive `TsSchema`.
 4. Implement `HostFunction` or `HostCallback`.
-5. Register contracts with `typed_function` and `typed_callback`.
+5. Register contracts with `function` and `callback`.
 6. Generate declaration and SDK files for your package.
 7. Load scripts that call your functions and handle your events.
 
@@ -97,7 +97,7 @@ impl HostFunction for FindUser {
 }
 ```
 
-`typed_function::<FindUser>()` uses `FindUserInput::schema()` and
+`function::<FindUser>()` uses `FindUserInput::schema()` and
 `FindUserOutput::schema()` automatically, so you do not need to hand-write the
 TypeScript shape.
 
@@ -114,16 +114,16 @@ with its handler, a closure that can hold state. Here `SpawnEnemy` is declared l
 ```rust
 engine
     .registry()
-    .typed_function_with::<SpawnEnemy>(move |input| world.spawn(input.kind, input.position))?;
+    .function_with::<SpawnEnemy>(move |input| world.spawn(input.kind, input.position))?;
 ```
 
 The generated TypeScript is the same as for a static function. The closure must be
-`Send + Sync + 'static` because the registry is; `function_with` is the untyped
+`Send + Sync + 'static` because the registry is; `function_with` is the closure
 counterpart of `function`.
 
 ### Return A Promise Resolved By The Game
 
-Use `typed_async_function_with` when a host answer arrives in a later frame.
+Use `async_function_with` when a host answer arrives in a later frame.
 The contract only implements `HostFunctionSignature`; its `Output` is the
 **resolved value**, and the generated TypeScript signature returns
 `Promise<Output>`. Keep the resolver in game state and settle it when the data
@@ -136,7 +136,7 @@ use rustts::HostResolver;
 
 let pending: Arc<Mutex<VecDeque<HostResolver<u32>>>> = Arc::new(Mutex::new(VecDeque::new()));
 let next = Arc::clone(&pending);
-engine.registry().typed_async_function_with::<LookupScore>(
+engine.registry().async_function_with::<LookupScore>(
     move |_player, resolver| {
         next.lock().expect("score queue").push_back(resolver);
         Ok(())
@@ -151,8 +151,9 @@ engine.pump()?; // only now do awaiting script continuations run
 ```
 
 `LookupScore` declares `Input` and `Output = u32` like `FindUser` above.
-`async_function_with` uses the declared schemas; the `_with_caller` variants
-also receive `Caller`. Dropping a resolver rejects the Promise; `reject(error)`
+`async_function_with` takes its schemas from `TsSchema` of `Input` and `Output`
+(`Output` must be `Send`); `async_function_with_caller` also receives a
+`Caller`. Dropping a resolver rejects the Promise; `reject(error)`
 does so explicitly. An old resolver becomes cancelled when its script reloads
 successfully or unloads, and `resolve`/`reject` then return
 `VmError::Cancelled`. No host reply automatically drives JavaScript.
@@ -162,14 +163,14 @@ the synchronous `call` cannot wait for a host reply from a later frame.
 
 ### Know The Calling Script
 
-`typed_function_with_caller` (or `function_with_caller`) hands the handler a
+`function_with_caller` hands the handler a
 `Caller` too: `caller.script_id()` is the id the calling script was loaded under,
 kept across reloads. Use it to scope a mod's permissions, storage or logs:
 
 ```rust
 engine
     .registry()
-    .typed_function_with_caller::<SaveSetting>(move |caller, input| {
+    .function_with_caller::<SaveSetting>(move |caller, input| {
         settings.save(caller.script_id(), &input.key, input.value)
     })?;
 ```
@@ -216,7 +217,7 @@ impl HostCallback for UserFound {
 A request is a callback whose handlers answer: `Engine::request` returns what each
 handler returned. Declare the callback like `UserFound`, here `MenuLabel` named
 `menu.label` with a `String` payload, implement `HostRequest` on top of
-`HostCallback`, and register it with `typed_request` so the generated TypeScript
+`HostCallback`, and register it with `request` so the generated TypeScript
 types the handlers' return value:
 
 ```rust
@@ -226,7 +227,7 @@ impl HostRequest for MenuLabel {
     type Reply = String;
 }
 
-engine.registry().typed_request::<MenuLabel>()?;
+engine.registry().request::<MenuLabel>()?;
 
 let labels: Vec<(&str, String)> = engine.request("menu.label", "save")?;
 ```
@@ -244,8 +245,8 @@ let mut engine = create_engine()?;
 
 engine
     .registry()
-    .typed_function::<FindUser>()?
-    .typed_callback::<UserFound>()?;
+    .function::<FindUser>()?
+    .callback::<UserFound>()?;
 ```
 
 That registry is the source of truth for:
@@ -258,7 +259,7 @@ That registry is the source of truth for:
 The synchronous host functions above run on the engine's thread and return
 their value directly. An `Err` returned by the handler is thrown in the script
 as an exception the script can catch. To return a Promise instead, use
-[`typed_async_function_with`](#return-a-promise-resolved-by-the-game).
+[`async_function_with`](#return-a-promise-resolved-by-the-game).
 
 ## Generate The SDK Files
 
@@ -383,7 +384,7 @@ messages matter more than accepting loose payloads.
 ## What To Remember
 
 - Register contracts before loading scripts.
-- Prefer `typed_function` and `typed_callback` when payload types implement
+- Prefer `function` and `callback` when payload types implement
   `TsSchema`; use the `_with` variants when the handler needs state, and the
   `_with_caller` ones when it needs to know which script called.
 - Keep event names stable; they become part of the generated TypeScript API.
