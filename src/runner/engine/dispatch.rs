@@ -1,0 +1,179 @@
+//! Calling exports and delivering events and requests, and the settling that ends
+//! every operation.
+
+use rquickjs::{CatchResultExt, CaughtError, Ctx, Value as JsValue};
+
+use crate::contract::{JsArgs, JsDecode, JsEncode};
+use crate::error::VmError;
+
+use super::super::errors::{caught_js_error, in_typescript, js_error};
+use super::super::events::deliver;
+use super::Engine;
+
+impl Engine {
+    /// Calls one exported function. Arguments encode through [`JsArgs`] (a tuple, a
+    /// `Vec` or a slice) and the result decodes through [`JsDecode`], natively on both
+    /// sides; `call::<serde_json::Value>(id, name, vec![json])` keeps a JSON-shaped API.
+    /// An `async` export resolves before its value is decoded.
+    pub fn call<R: JsDecode>(
+        &self,
+        script_id: &str,
+        function: &str,
+        args: impl JsArgs,
+    ) -> Result<R, VmError> {
+        let script = self.script(script_id)?;
+        let _budget = self.budget();
+        let result = script.context.with(|ctx| {
+            let export = script.export(&ctx, script_id, function)?;
+            let args = args.encode_args(&ctx).map_err(js_error)?;
+            let returned = export
+                .call_arg::<JsValue<'_>>(args)
+                .catch(&ctx)
+                .map_err(caught_js_error)?;
+            let value = self.await_returned(&ctx, returned, || {
+                format!("function `{function}` of script `{script_id}`")
+            })?;
+            R::decode_js(&ctx, value)
+                .catch(&ctx)
+                .map_err(caught_js_error)
+        });
+        self.attribute_interrupt(self.settle(result))
+    }
+
+    /// Delivers one event to every handler registered for it, script by script in load
+    /// order; returns the number of scripts that had at least one handler. A throwing
+    /// handler does not stop the others: every handler runs, then the first error is
+    /// returned. The payload is encoded once per script with handlers and shared by all
+    /// of that script's handlers. Scripts that never registered a handler for `event`
+    /// cost a set lookup.
+    pub fn emit<P: JsEncode + ?Sized>(&self, event: &str, payload: &P) -> Result<usize, VmError> {
+        self.dispatch(event, payload, |_, _, _| Ok(()))
+    }
+
+    /// Delivers one event like [`Engine::emit`] and returns what every handler returned,
+    /// with the id of its script, in delivery order: scripts in load order, handlers in
+    /// registration order. An `async` handler's Promise is awaited first, running
+    /// script Promise jobs only. Every handler runs even after one fails, a throw, a
+    /// rejection or a reply that does not decode as `R`; the first error is returned.
+    /// Register the event with
+    /// [`typed_request`](crate::InMemoryHostContractRegistry::typed_request) so the
+    /// generated TypeScript types the handlers' reply.
+    pub fn request<P: JsEncode + ?Sized, R: JsDecode>(
+        &self,
+        event: &str,
+        payload: &P,
+    ) -> Result<Vec<(&str, R)>, VmError> {
+        let mut replies = Vec::new();
+        self.dispatch(event, payload, |script_id, ctx, returned| {
+            let value = self.await_returned(ctx, returned, || {
+                format!("a `{event}` handler of script `{script_id}`")
+            })?;
+            let reply = R::decode_js(ctx, value)
+                .catch(ctx)
+                .map_err(caught_js_error)?;
+            replies.push((script_id, reply));
+            Ok(())
+        })?;
+        Ok(replies)
+    }
+
+    /// Runs every handler of `event` in load order, handing each returned value to
+    /// `on_return`; see [`Engine::emit`].
+    pub(super) fn dispatch<'a, P: JsEncode + ?Sized>(
+        &'a self,
+        event: &str,
+        payload: &P,
+        mut on_return: impl for<'js> FnMut(&'a str, &Ctx<'js>, JsValue<'js>) -> Result<(), VmError>,
+    ) -> Result<usize, VmError> {
+        let _budget = self.budget();
+        // Every script visited has at least one handler for the event.
+        let mut delivered = 0;
+        let mut first_error = None;
+        for (script_id, script) in &self.scripts {
+            let Some(handlers) = script.signals.events.handlers(event) else {
+                continue;
+            };
+            delivered += 1;
+            let outcome = script.context.with(|ctx| {
+                deliver(&ctx, &handlers, payload, |returned| {
+                    on_return(script_id, &ctx, returned)
+                })
+            });
+            if let Err(error) = outcome {
+                first_error.get_or_insert(error);
+            }
+        }
+        if delivered == 0 {
+            // No JavaScript ran, so there is no Promise job to settle.
+            return Ok(0);
+        }
+        self.attribute_interrupt(self.settle(first_error.map_or(Ok(delivered), Err)))
+    }
+
+    /// Awaits a Promise a script returned to the host, from an export or a request
+    /// handler, by running the job queue; `what` names the function in the error of a
+    /// Promise that cannot settle. Its rejection is the error, so it is not also
+    /// reported as unhandled.
+    fn await_returned<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        returned: JsValue<'js>,
+        what: impl FnOnce() -> String,
+    ) -> Result<JsValue<'js>, VmError> {
+        let Some(promise) = returned.as_promise() else {
+            return Ok(returned);
+        };
+        let settled = promise.finish::<JsValue<'_>>().catch(ctx);
+        self.rejections.forget(ctx, &returned);
+        settled.map_err(|error| match error {
+            CaughtError::Error(rquickjs::Error::WouldBlock) => VmError::Execution {
+                details: format!(
+                    "{} returned a Promise that never settles: only script Promise jobs run on an Engine",
+                    what()
+                ),
+            },
+            error => caught_js_error(error),
+        })
+    }
+
+    /// Runs every job left in the queue, for all scripts, then reports in order: the
+    /// operation's own error, a job that threw, a Promise rejection nobody handled,
+    /// with its locations pointing at the TypeScript source. Runs even when the
+    /// operation failed, so nothing leaks into the next one.
+    pub(super) fn settle<T>(&self, result: Result<T, VmError>) -> Result<T, VmError> {
+        let mut job_error = None;
+        loop {
+            match self.runtime.execute_pending_job() {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(exception) => {
+                    let error = exception.0.with(|ctx| {
+                        caught_js_error(CaughtError::from_error(&ctx, rquickjs::Error::Exception))
+                    });
+                    job_error.get_or_insert(error);
+                }
+            }
+        }
+        self.harvest_tasks();
+        let unhandled = self.rejections.take();
+        if self.execution.budget_expired() {
+            job_error.get_or_insert_with(|| VmError::Execution {
+                details: "execution budget exceeded".to_owned(),
+            });
+        }
+        let value = result.map_err(|error| in_typescript(error, &self.module_store))?;
+        match job_error.or(unhandled) {
+            Some(error) => Err(in_typescript(error, &self.module_store)),
+            None => Ok(value),
+        }
+    }
+
+    /// Reports an operation that failed after an [`InterruptHandle`] request as
+    /// [`VmError::Interrupted`] rather than as the QuickJS interrupt exception.
+    pub(super) fn attribute_interrupt<T>(&self, result: Result<T, VmError>) -> Result<T, VmError> {
+        match result {
+            Err(_) if self.execution.interrupt_requested() => Err(VmError::Interrupted),
+            result => result,
+        }
+    }
+}

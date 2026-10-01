@@ -16,11 +16,11 @@ fn engine_with_timeout(timeout: Duration) -> Engine {
 
 #[test]
 fn budget_includes_synchronous_host_handler_time() {
-    let mut engine = engine_with_timeout(Duration::from_millis(10));
+    let mut engine = engine_with_timeout(Duration::from_millis(200));
     engine
         .registry()
         .typed_function_with::<Double>(|n| {
-            std::thread::sleep(Duration::from_millis(30));
+            std::thread::sleep(Duration::from_millis(400));
             Ok(n * 2.0)
         })
         .expect("register");
