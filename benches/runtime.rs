@@ -1,5 +1,6 @@
 //! Engine lifecycle costs: startup, first inline/project load with and without the
-//! transpile disk cache, SDK generation, and the memory shape of many small scripts.
+//! transpile disk cache, SDK generation, the memory shape of many small scripts, and
+//! the per-frame cost of `emit` and `advance_timers` as the script count grows.
 //!
 //! Per-call and emit overhead are measured against Lua and raw QuickJS in `vs_lua`.
 
@@ -9,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use criterion::{
-    BatchSize, Bencher, BenchmarkGroup, Criterion, criterion_group, criterion_main,
+    BatchSize, Bencher, BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main,
     measurement::WallTime,
 };
 use rustts::{
@@ -25,6 +26,19 @@ const MOD_PACK_ENTRY: &str = concat!(
 );
 const MANY_SMALL_SCRIPT_COUNT: usize = 400;
 const MEMORY_REPORT_SCRIPT_COUNTS: &[usize] = &[100, 400, 800, 1000];
+const FRAME_SCRIPT_COUNTS: &[usize] = &[1, 50, 250, 500, 1000];
+const FRAME_DURATION: Duration = Duration::from_micros(500);
+const FRAME_SCRIPT: &str = r#"
+let total = 0;
+ctx.on("frame", (event: { dt: number }) => { total += event.dt; });
+export {};
+"#;
+/// A zero-delay interval is due on every `advance_timers` call.
+const TIMER_SCRIPT: &str = r#"
+let total = 0;
+setInterval(() => { total += 1; }, 0);
+export {};
+"#;
 const MANY_SCRIPTS_MEMORY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 const MEMORY_REPORT_CHILD_ENV: &str = "RUSTTS_MEMORY_REPORT_SCRIPT_COUNT";
 const BYTES_PER_KIB: f64 = 1024.0;
@@ -42,6 +56,7 @@ fn runtime_benchmarks(c: &mut Criterion) {
     bench_cold_project_load(c);
     bench_sdk_generation(c);
     bench_many_small_scripts_memory_shape(c);
+    bench_frame_budget(c);
 }
 
 fn bench_engine_new(c: &mut Criterion) {
@@ -49,6 +64,44 @@ fn bench_engine_new(c: &mut Criterion) {
     c.bench_function("engine_new", |b| {
         b.iter(|| black_box(Engine::new(&options).expect("create engine")));
     });
+}
+
+/// One `ctx.on("frame")` handler per script, as in the 500 µs frame (2000 fps) the
+/// scripts share with render, input and audio. Throughput is scripts per frame, so
+/// the report shows the cost per script and where it stops being linear.
+/// `advance_timers` is measured with every script's timer due on each call.
+fn bench_frame_budget(c: &mut Criterion) {
+    let frame = json!({ "dt": 0.0005, "tick": 1 });
+    let mut group = c.benchmark_group("frame_budget");
+    configure_slow(&mut group);
+    for &script_count in FRAME_SCRIPT_COUNTS {
+        let events = scripts_engine(FRAME_SCRIPT, script_count);
+        let timers = scripts_engine(TIMER_SCRIPT, script_count);
+        group.throughput(Throughput::Elements(script_count as u64));
+        group.bench_function(format!("emit_{script_count}"), |b| {
+            b.iter(|| black_box(events.emit("frame", &frame).expect("emit frame")));
+        });
+        group.bench_function(format!("advance_timers_{script_count}"), |b| {
+            b.iter(|| {
+                black_box(
+                    timers
+                        .advance_timers(FRAME_DURATION)
+                        .expect("advance timers"),
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
+fn scripts_engine(source: &str, script_count: usize) -> Engine {
+    let mut engine = Engine::new(&many_scripts_options()).expect("create engine");
+    for index in 0..script_count {
+        engine
+            .load_script(format!("script-{index}"), source)
+            .expect("load script");
+    }
+    engine
 }
 
 /// First load of an inline script into a fresh engine: a full transpile without a

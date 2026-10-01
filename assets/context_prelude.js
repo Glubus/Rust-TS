@@ -157,8 +157,8 @@
       throw new TypeError(`${name} expects a function callback`);
     }
     const wait = Math.max(0, Number(delay) || 0);
-    const timer = { callback, args, due: now() + wait, interval: repeats ? wait : undefined };
     const id = nextTimerId++;
+    const timer = { id, callback, args, due: now() + wait, interval: repeats ? wait : undefined };
     timers.set(id, timer);
     if (timer.due < earliest) {
       earliest = timer.due;
@@ -186,26 +186,40 @@
       // Fires the timers due at `time` in due order, then creation order; every one
       // runs even after one throws, and the first error is rethrown.
       run: (time) => {
-        const due = [];
-        for (const [id, timer] of timers) {
+        let due;
+        for (const timer of timers.values()) {
           if (timer.due <= time) {
-            due.push([id, timer]);
+            if (due === undefined) {
+              due = [timer];
+            } else {
+              due.push(timer);
+            }
           }
         }
-        due.sort(([leftId, left], [rightId, right]) => left.due - right.due || leftId - rightId);
+        if (due === undefined) {
+          reschedule();
+          return;
+        }
+        if (due.length > 1) {
+          due.sort((left, right) => left.due - right.due || left.id - right.id);
+        }
         let failed = false;
         let failure;
-        for (const [id, timer] of due) {
-          if (timers.get(id) !== timer) {
+        for (const timer of due) {
+          if (timers.get(timer.id) !== timer) {
             continue; // cleared by a callback that ran before it
           }
           if (timer.interval === undefined) {
-            timers.delete(id);
+            timers.delete(timer.id);
           } else {
             timer.due += timer.interval;
           }
           try {
-            timer.callback(...timer.args);
+            if (timer.args.length === 0) {
+              timer.callback();
+            } else {
+              timer.callback(...timer.args);
+            }
           } catch (error) {
             if (!failed) {
               failed = true;

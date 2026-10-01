@@ -104,6 +104,11 @@
   yield `PendingCall` handles across frames; pending work cancels on successful
   reload or unload but survives failed reload. See
   [Deferred Script Results](docs/guides/engine.md#deferred-script-results).
+- Firing a due timer allocates less in the script prelude (no per-call tuple list,
+  no sort for a single due timer, no spread for a callback without arguments):
+  `advance_timers` with one due script went from about 4.4 to 2.6 µs on the loaded
+  development machine. `cargo bench --bench runtime -- frame_budget` now keeps the
+  per-frame cost of `emit` and `advance_timers` from 1 to 1000 scripts.
 
 ## 0.3.0 — 2026-09-25
 
