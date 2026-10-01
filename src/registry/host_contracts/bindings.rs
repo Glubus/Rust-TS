@@ -108,7 +108,6 @@ fn check_output<'js>(
 fn call_native<'js, C>(
     ctx: &Ctx<'js>,
     input: JsValue<'js>,
-    validator: Option<&dyn ContractValidator>,
     handler: impl FnOnce(C::Input) -> Result<C::Output, VmError>,
 ) -> JsResult<JsValue<'js>>
 where
@@ -116,10 +115,25 @@ where
     C::Input: JsDecode,
     C::Output: JsEncode,
 {
-    check_input(ctx, validator, &input)?;
     let input = C::Input::decode_js(ctx, input)?;
-    let output = handler(input).map_err(js_host_error)?.encode_js(ctx)?;
-    check_output(ctx, validator, &output)?;
+    handler(input).map_err(js_host_error)?.encode_js(ctx)
+}
+
+/// [`call_native`], checking the input and output against `validator`.
+fn call_validated<'js, C>(
+    ctx: &Ctx<'js>,
+    input: JsValue<'js>,
+    validator: &dyn ContractValidator,
+    handler: impl FnOnce(C::Input) -> Result<C::Output, VmError>,
+) -> JsResult<JsValue<'js>>
+where
+    C: HostFunctionSignature,
+    C::Input: JsDecode,
+    C::Output: JsEncode,
+{
+    check_input(ctx, Some(validator), &input)?;
+    let output = call_native::<C>(ctx, input, handler)?;
+    check_output(ctx, Some(validator), &output)?;
     Ok(output)
 }
 
@@ -170,17 +184,25 @@ where
         _script_id: &str,
         validator: Validator,
     ) -> JsResult<()> {
-        target.set(
-            name,
-            Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
-                call_native::<C>(
-                    &ctx,
-                    input_or_null(&ctx, input),
-                    validator.as_deref(),
-                    &self.handler,
-                )
-            }),
-        )
+        match validator {
+            None => target.set(
+                name,
+                Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                    call_native::<C>(&ctx, input_or_null(&ctx, input), &self.handler)
+                }),
+            ),
+            Some(validator) => target.set(
+                name,
+                Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                    call_validated::<C>(
+                        &ctx,
+                        input_or_null(&ctx, input),
+                        &*validator,
+                        &self.handler,
+                    )
+                }),
+            ),
+        }
     }
 }
 
@@ -206,18 +228,26 @@ where
         validator: Validator,
     ) -> JsResult<()> {
         let script_id = Box::<str>::from(script_id);
-        target.set(
-            name,
-            Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
-                let caller = Caller::new(&script_id);
-                call_native::<C>(
-                    &ctx,
-                    input_or_null(&ctx, input),
-                    validator.as_deref(),
-                    |input| (self.handler)(&caller, input),
-                )
-            }),
-        )
+        match validator {
+            None => target.set(
+                name,
+                Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                    let caller = Caller::new(&script_id);
+                    call_native::<C>(&ctx, input_or_null(&ctx, input), |input| {
+                        (self.handler)(&caller, input)
+                    })
+                }),
+            ),
+            Some(validator) => target.set(
+                name,
+                Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                    let caller = Caller::new(&script_id);
+                    call_validated::<C>(&ctx, input_or_null(&ctx, input), &*validator, |input| {
+                        (self.handler)(&caller, input)
+                    })
+                }),
+            ),
+        }
     }
 }
 

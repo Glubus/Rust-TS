@@ -273,6 +273,17 @@ impl InMemoryHostContractRegistry {
         Ok(())
     }
 
+    /// Runs `check` on the descriptor registered under `name` without cloning it; `Ok`
+    /// when there is none. Holds the registry lock for the check, which runs no handler.
+    fn with_descriptor(
+        &self,
+        name: &str,
+        check: impl FnOnce(&HostContractDescriptor) -> Result<(), VmError>,
+    ) -> Result<(), VmError> {
+        let guard = self.by_name.lock().map_err(|_| VmError::LockPoisoned)?;
+        guard.get(name).map_or(Ok(()), check)
+    }
+
     fn validate_function_input(
         &self,
         descriptor: &HostContractDescriptor,
@@ -345,17 +356,15 @@ impl ContractValidator for RegisteredContract {
     }
 
     fn validate_input(&self, input: &Value) -> Result<(), VmError> {
-        match self.registry.descriptor(&self.name)? {
-            Some(descriptor) => self.registry.validate_function_input(&descriptor, input),
-            None => Ok(()),
-        }
+        self.registry.with_descriptor(&self.name, |descriptor| {
+            self.registry.validate_function_input(descriptor, input)
+        })
     }
 
     fn validate_output(&self, output: &Value) -> Result<(), VmError> {
-        match self.registry.descriptor(&self.name)? {
-            Some(descriptor) => self.registry.validate_function_output(&descriptor, output),
-            None => Ok(()),
-        }
+        self.registry.with_descriptor(&self.name, |descriptor| {
+            self.registry.validate_function_output(descriptor, output)
+        })
     }
 }
 
