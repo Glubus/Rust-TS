@@ -15,7 +15,7 @@ use mlua::{Lua, LuaSerdeExt};
 use rquickjs::{Context, Ctx, Function, Object, Runtime, Value as JsValue, prelude::Func};
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    Schema, TsType, VmError, VmOptions,
+    VmError, VmOptions,
 };
 use serde_json::{Value, json};
 
@@ -92,10 +92,6 @@ impl HostContract for Inc {
     const IMPORT_MODULE: &'static str = "bench";
     const EXPORT_PATH: &'static [&'static str] = &["math", "inc"];
 
-    fn schema() -> Schema {
-        Schema::typed("IncInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -118,10 +114,6 @@ impl HostContract for ScoreUpdate {
     const NAME: &'static str = "score.update";
     const IMPORT_MODULE: &'static str = "bench";
     const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
-
-    fn schema() -> Schema {
-        Schema::typed("ScorePayload", TsType::Json)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback

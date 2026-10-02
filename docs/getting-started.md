@@ -32,7 +32,7 @@ Replace `src/main.rs` with:
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use rustts::{
-    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema,
+    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
     SdkFileNames, TsSchema, VmError, VmOptions,
 };
 
@@ -53,10 +53,6 @@ struct Add;
 
 impl HostContract for Add {
     const NAME: &'static str = "math.add";
-
-    fn schema() -> Schema {
-        AddInput::schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function

@@ -520,6 +520,7 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
         T: HostContext,
     {
         let mut descriptor = T::descriptor();
+        descriptor.schema = T::schema();
         descriptor.abi = HostContractAbi::Context {
             schema: descriptor.schema.clone(),
         };

@@ -15,7 +15,7 @@ use criterion::{
 };
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    MemoryStats, Schema, TsField, TsSchema, TsType, VmError, VmOptions,
+    MemoryStats, TsSchema, VmError, VmOptions,
 };
 use serde_json::json;
 
@@ -455,10 +455,6 @@ impl HostContract for BenchFindUser {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
-    fn schema() -> Schema {
-        Schema::typed("FindUserInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -477,16 +473,6 @@ impl HostFunction for BenchFindUser {
 
 impl HostContract for BenchCreateInvoice {
     const NAME: &'static str = "billing.invoice.create";
-
-    fn schema() -> Schema {
-        Schema::typed(
-            "CreateInvoiceInput",
-            TsType::Object(vec![
-                TsField::required("accountId", TsType::String),
-                TsField::required("total", TsType::Number),
-            ]),
-        )
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -511,13 +497,6 @@ impl HostContract for BenchScoreUpdate {
     const NAME: &'static str = "score.update";
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
-
-    fn schema() -> Schema {
-        Schema::typed(
-            "ScoreUpdatePayload",
-            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
-        )
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback

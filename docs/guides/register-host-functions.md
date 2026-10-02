@@ -43,7 +43,7 @@ the generated TypeScript namespace. For example, `user.find` becomes
 ```rust
 use serde::{Deserialize, Serialize};
 use rustts::{
-    HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsSchema, VmError,
+    HostContract, HostContractKind, HostFunction, HostFunctionSignature, TsSchema, VmError,
 };
 
 #[derive(Deserialize, TsSchema)]
@@ -66,10 +66,6 @@ struct FindUser;
 
 impl HostContract for FindUser {
     const NAME: &'static str = "user.find";
-
-    fn schema() -> Schema {
-        FindUserInput::schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -183,7 +179,7 @@ the ergonomic alias `user.onFound(...)`.
 
 ```rust
 use serde::{Deserialize, Serialize};
-use rustts::{HostCallback, HostContract, HostContractKind, Schema, TsSchema};
+use rustts::{HostCallback, HostContract, HostContractKind, TsSchema};
 
 #[derive(Deserialize, Serialize, TsSchema)]
 #[serde(rename_all = "camelCase")]
@@ -197,10 +193,6 @@ struct UserFound;
 
 impl HostContract for UserFound {
     const NAME: &'static str = "user.found";
-
-    fn schema() -> Schema {
-        UserFoundPayload::schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback
@@ -384,9 +376,10 @@ messages matter more than accepting loose payloads.
 ## What To Remember
 
 - Register contracts before loading scripts.
-- Prefer `function` and `callback` when payload types implement
-  `TsSchema`; use the `_with` variants when the handler needs state, and the
-  `_with_caller` ones when it needs to know which script called.
+- Every payload type implements `TsSchema`, `JsDecode` and `JsEncode`: derive them,
+  or use `serde_json::Value` for a free-form value. Use the `_with` variants when the
+  handler needs state, and the `_with_caller` ones when it needs to know which script
+  called.
 - Keep event names stable; they become part of the generated TypeScript API.
 - Use `user.onFound(...)`-style aliases for friendly game SDKs, and keep
   `ctx.on("user.found", ...)` / `ctx.off(...)` available for low-level dynamic cases.

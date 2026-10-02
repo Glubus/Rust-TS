@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use rustts::{
-    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature, Schema, TsType,
+    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
     VmContractValidation, VmError, VmOptions,
 };
 use serde_json::json;
@@ -56,10 +56,6 @@ impl HostContract for Double {
     const IMPORT_MODULE: &'static str = "host";
     const EXPORT_PATH: &'static [&'static str] = &["math", "double"];
 
-    fn schema() -> Schema {
-        Schema::typed("DoubleInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -80,10 +76,6 @@ struct Failing;
 
 impl HostContract for Failing {
     const NAME: &'static str = "host.fail";
-
-    fn schema() -> Schema {
-        Schema::typed("FailInput", TsType::Null)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function

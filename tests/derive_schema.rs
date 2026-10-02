@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use rustts::{
     Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    InMemoryHostContractRegistry, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema,
-    TsType, VmError, VmOptions,
+    InMemoryHostContractRegistry, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema, TsType,
+    VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -194,10 +194,6 @@ struct CreateInvoiceOutput {
 impl HostContract for CreateInvoice {
     const NAME: &'static str = "billing.invoice.create";
 
-    fn schema() -> Schema {
-        CreateInvoiceInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -219,10 +215,6 @@ impl HostFunction for CreateInvoice {
 
 impl HostContract for FindSession {
     const NAME: &'static str = "session.find";
-
-    fn schema() -> Schema {
-        FindSessionInput::schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -247,10 +239,6 @@ impl HostFunction for FindSession {
 impl HostContract for AutoCreateInvoice {
     const NAME: &'static str = "billing.invoice.autoCreate";
 
-    fn schema() -> Schema {
-        Schema::named("LegacyAutoCreateInvoiceSchema")
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -272,10 +260,6 @@ impl HostFunction for AutoCreateInvoice {
 
 impl HostContract for AutoInvoiceCreated {
     const NAME: &'static str = "billing.invoice.created";
-
-    fn schema() -> Schema {
-        Schema::named("LegacyAutoInvoiceCreatedSchema")
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback
@@ -613,10 +597,6 @@ struct RecordScores;
 
 impl HostContract for RecordScores {
     const NAME: &'static str = "scores.record";
-
-    fn schema() -> Schema {
-        OpenScores::schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function

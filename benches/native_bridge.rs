@@ -8,8 +8,7 @@ use rquickjs::{
 };
 use rustts::{
     Engine, HostContract, HostContractKind, HostContractRegistry, HostFunction,
-    HostFunctionSignature, NativeBytes, Schema, TsField, TsSchema, TsType, VmContractValidation,
-    VmError, VmOptions,
+    HostFunctionSignature, NativeBytes, TsSchema, VmContractValidation, VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -419,10 +418,6 @@ struct HostBytesNative;
 impl HostContract for HostSmallCopyJson {
     const NAME: &'static str = "bench.small.copyJson";
 
-    fn schema() -> Schema {
-        Schema::typed("VoidInput", TsType::Void)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -447,10 +442,6 @@ impl HostFunction for HostSmallCopyJson {
 impl HostContract for HostLargeCopyJson {
     const NAME: &'static str = "bench.large.copyJson";
 
-    fn schema() -> Schema {
-        Schema::typed("VoidInput", TsType::Void)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -469,10 +460,6 @@ impl HostFunction for HostLargeCopyJson {
 
 impl HostContract for HostSmallCopyTyped {
     const NAME: &'static str = "bench.small.copyTyped";
-
-    fn schema() -> Schema {
-        Schema::typed("VoidInput", TsType::Void)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -498,10 +485,6 @@ impl HostFunction for HostSmallCopyTyped {
 impl HostContract for HostLargeCopyTyped {
     const NAME: &'static str = "bench.large.copyTyped";
 
-    fn schema() -> Schema {
-        Schema::typed("VoidInput", TsType::Void)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -522,10 +505,6 @@ impl HostFunction for HostLargeCopyTyped {
 
 impl HostContract for HostGetField {
     const NAME: &'static str = "bench.field.get";
-
-    fn schema() -> Schema {
-        field_read_input_schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -550,10 +529,6 @@ impl HostFunction for HostGetField {
 impl HostContract for HostReadNativeU32 {
     const NAME: &'static str = "bench.native.readU32";
 
-    fn schema() -> Schema {
-        field_read_input_schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -577,10 +552,6 @@ impl HostFunction for HostReadNativeU32 {
 impl HostContract for HostBytesJsonArray {
     const NAME: &'static str = "bench.bytes.jsonArray";
 
-    fn schema() -> Schema {
-        byte_input_schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -600,10 +571,6 @@ impl HostFunction for HostBytesJsonArray {
 
 impl HostContract for HostBytesNative {
     const NAME: &'static str = "bench.bytes.native";
-
-    fn schema() -> Schema {
-        byte_input_schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -626,23 +593,6 @@ fn parse_byte_input(input: Value) -> Result<ByteInput, VmError> {
     serde_json::from_value(input).map_err(|error| VmError::Execution {
         details: error.to_string(),
     })
-}
-
-fn field_read_input_schema() -> Schema {
-    Schema::typed(
-        "FieldReadInput",
-        TsType::Object(vec![
-            TsField::required("handle", TsType::Number),
-            TsField::required("index", TsType::Number),
-        ]),
-    )
-}
-
-fn byte_input_schema() -> Schema {
-    Schema::typed(
-        "ByteInput",
-        TsType::Object(vec![TsField::required("byteCount", TsType::Number)]),
-    )
 }
 
 fn install_bridge(ctx: Ctx<'_>, _fixtures: Arc<NativeFixtures>) -> JsResult<()> {

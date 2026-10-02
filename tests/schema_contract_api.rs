@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use rustts::{
     HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    InMemoryHostContractRegistry, Schema, TsSchema, VmError,
+    InMemoryHostContractRegistry, TsSchema, VmError,
 };
 
 struct FindUsers;
@@ -23,10 +23,6 @@ impl HostContract for FindUsers {
     const NAME: &'static str = "user.findMany";
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["user", "findMany"];
-
-    fn schema() -> Schema {
-        FindUsersInput::schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function

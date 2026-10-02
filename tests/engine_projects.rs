@@ -5,7 +5,7 @@ use std::path::Path;
 
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    NativeBytes, Schema, TsField, TsType, VmError, VmOptions,
+    NativeBytes, VmError, VmOptions,
 };
 use serde_json::{Value, json};
 
@@ -37,10 +37,6 @@ impl HostContract for FindUser {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
-    fn schema() -> Schema {
-        Schema::typed("FindUserInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -62,10 +58,6 @@ impl HostContract for FindInvoice {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["billing", "invoice", "find"];
 
-    fn schema() -> Schema {
-        Schema::typed("FindInvoiceInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -84,10 +76,6 @@ impl HostFunction for FindInvoice {
 
 impl HostContract for ReadNativeBytes {
     const NAME: &'static str = "bench.bytes.native";
-
-    fn schema() -> Schema {
-        Schema::typed("ReadNativeBytesInput", TsType::Json)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -114,13 +102,6 @@ impl HostContract for ScoreUpdate {
     const NAME: &'static str = "score.update";
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
-
-    fn schema() -> Schema {
-        Schema::typed(
-            "ScorePayload",
-            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
-        )
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback

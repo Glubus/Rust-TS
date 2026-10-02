@@ -19,10 +19,6 @@ impl HostContract for DemoFunction {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["demo", "function"];
 
-    fn schema() -> Schema {
-        Schema::typed("DemoFunctionInput", TsType::Void)
-    }
-
     fn metadata() -> HostMetadata {
         HostMetadata {
             name: String::from(Self::NAME),
@@ -51,10 +47,6 @@ impl HostContract for GeneratedFunction {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
-    fn schema() -> Schema {
-        Schema::typed("FindUserInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -76,13 +68,6 @@ impl HostContract for DemoCallback {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["demo", "callback"];
 
-    fn schema() -> Schema {
-        Schema::typed(
-            "DemoCallbackPayload",
-            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
-        )
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Callback
     }
@@ -97,19 +82,19 @@ impl HostContract for DemoContext {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["demo", "context"];
 
+    fn kind() -> HostContractKind {
+        HostContractKind::Context
+    }
+}
+
+impl HostContext for DemoContext {
     fn schema() -> Schema {
         Schema::typed(
             "DemoContext",
             TsType::Object(vec![TsField::required("visible", TsType::Boolean)]),
         )
     }
-
-    fn kind() -> HostContractKind {
-        HostContractKind::Context
-    }
 }
-
-impl HostContext for DemoContext {}
 
 #[test]
 fn register_function_stores_descriptor() {
@@ -210,42 +195,6 @@ impl HostContract for ComplexGeneratedFunction {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["billing", "invoice", "create"];
 
-    fn schema() -> Schema {
-        Schema::typed(
-            "CreateInvoiceInput",
-            TsType::Object(vec![
-                TsField::required(
-                    "status",
-                    TsType::Union(vec![
-                        TsType::Literal(TsLiteral::String(String::from("draft"))),
-                        TsType::Literal(TsLiteral::String(String::from("paid"))),
-                    ]),
-                ),
-                TsField::optional(
-                    "metadata",
-                    TsType::Record {
-                        key: TsRecordKey::String,
-                        value: Box::new(TsType::Json),
-                    },
-                ),
-                TsField::required(
-                    "lines",
-                    TsType::Array(Box::new(TsType::Tuple(vec![
-                        TsType::String,
-                        TsType::Number,
-                    ]))),
-                ),
-                TsField::required(
-                    "paymentMethod",
-                    TsType::Enum {
-                        tag: None,
-                        variants: vec![TsEnumVariant::unit("card"), TsEnumVariant::unit("wire")],
-                    },
-                ),
-            ]),
-        )
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -254,6 +203,44 @@ impl HostContract for ComplexGeneratedFunction {
 impl HostFunctionSignature for ComplexGeneratedFunction {
     type Input = ();
     type Output = ();
+}
+
+/// Input schema of [`ComplexGeneratedFunction`], hand-built to exercise every shape the
+/// declaration renderer handles.
+fn complex_input_schema() -> Schema {
+    Schema::typed(
+        "CreateInvoiceInput",
+        TsType::Object(vec![
+            TsField::required(
+                "status",
+                TsType::Union(vec![
+                    TsType::Literal(TsLiteral::String(String::from("draft"))),
+                    TsType::Literal(TsLiteral::String(String::from("paid"))),
+                ]),
+            ),
+            TsField::optional(
+                "metadata",
+                TsType::Record {
+                    key: TsRecordKey::String,
+                    value: Box::new(TsType::Json),
+                },
+            ),
+            TsField::required(
+                "lines",
+                TsType::Array(Box::new(TsType::Tuple(vec![
+                    TsType::String,
+                    TsType::Number,
+                ]))),
+            ),
+            TsField::required(
+                "paymentMethod",
+                TsType::Enum {
+                    tag: None,
+                    variants: vec![TsEnumVariant::unit("card"), TsEnumVariant::unit("wire")],
+                },
+            ),
+        ]),
+    )
 }
 
 /// Output schema of [`ComplexGeneratedFunction`], hand-built to exercise every shape
@@ -324,7 +311,10 @@ fn find_user() -> HostContractDescriptor {
 }
 
 fn demo_callback() -> HostContractDescriptor {
-    callback_descriptor::<DemoCallback>(DemoCallback::schema())
+    callback_descriptor::<DemoCallback>(Schema::typed(
+        "DemoCallbackPayload",
+        TsType::Object(vec![TsField::required("combo", TsType::Number)]),
+    ))
 }
 
 impl HostFunction for ComplexGeneratedFunction {
@@ -337,7 +327,7 @@ impl HostFunction for ComplexGeneratedFunction {
 fn dts_renders_nested_namespaces_and_complex_schema_types() {
     let declarations =
         render_typescript_declarations(&[function_descriptor::<ComplexGeneratedFunction>(
-            ComplexGeneratedFunction::schema(),
+            complex_input_schema(),
             complex_output_schema(),
         )]);
 

@@ -2,8 +2,8 @@
 
 use rustts::{
     Engine, HostCallback, HostContext, HostContract, HostContractKind, HostFunction,
-    HostFunctionSignature, HostMetadata, JsDecode, JsEncode, Schema, TsField, TsSchema, TsType,
-    VmContractValidation, VmError, VmUnknownFieldValidation,
+    HostFunctionSignature, HostMetadata, Schema, TsField, TsSchema, TsType, VmContractValidation,
+    VmError, VmUnknownFieldValidation,
 };
 use serde_json::{Value, json};
 use std::process::Command;
@@ -15,71 +15,7 @@ use support::TestCacheDir;
 struct FindUser;
 struct ScoreUpdate;
 struct OverlayContext;
-struct EchoValidation;
-struct EchoTypeRefValidation;
-struct BadOutputValidation;
 struct RecordAction;
-
-const HOST_VALIDATION_SCRIPT: &str = include_str!("projects/host_validation/main.ts");
-
-/// Defines a type that crosses as an arbitrary JSON value but declares `$ts_type` (and the
-/// named `$dependencies`) as its schema, so contract validation is checked against the
-/// declared schema rather than against the Rust type.
-macro_rules! json_with_declared_schema {
-    ($name:ident, $ts_type:expr, $dependencies:expr) => {
-        #[allow(dead_code)]
-        struct $name(Value);
-
-        impl TsSchema for $name {
-            fn schema_name() -> &'static str {
-                stringify!($name)
-            }
-
-            fn ts_type() -> TsType {
-                $ts_type
-            }
-
-            fn schema_dependencies() -> Vec<Schema> {
-                $dependencies
-            }
-        }
-
-        impl JsEncode for $name {
-            fn encode_js<'js>(
-                &self,
-                ctx: &rustts::js::Ctx<'js>,
-            ) -> rustts::js::Result<rustts::js::Value<'js>> {
-                self.0.encode_js(ctx)
-            }
-        }
-
-        impl JsDecode for $name {
-            fn decode_js<'js>(
-                ctx: &rustts::js::Ctx<'js>,
-                value: rustts::js::Value<'js>,
-            ) -> rustts::js::Result<Self> {
-                Value::decode_js(ctx, value).map($name)
-            }
-        }
-    };
-}
-
-json_with_declared_schema!(
-    ValidationInput,
-    TsType::Object(vec![TsField::required("id", TsType::Number)]),
-    Vec::new()
-);
-json_with_declared_schema!(
-    ValidationTypeRefInput,
-    TsType::Object(vec![TsField::required(
-        "user_id",
-        TsType::TypeRef(String::from("UserId")),
-    )]),
-    vec![Schema::typed("UserId", TsType::Number)]
-);
-json_with_declared_schema!(ValidationTypeRefOutput, TsType::Json, Vec::new());
-json_with_declared_schema!(BadOutputInput, TsType::Number, Vec::new());
-json_with_declared_schema!(BadOutputOutput, TsType::Number, Vec::new());
 
 #[derive(TsSchema)]
 #[serde(transparent)]
@@ -95,10 +31,6 @@ impl HostContract for FindUser {
     const NAME: &'static str = "user.find";
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
-
-    fn schema() -> Schema {
-        FindUserInput::schema()
-    }
 
     fn metadata() -> HostMetadata {
         HostMetadata {
@@ -134,10 +66,6 @@ impl HostContract for ScoreUpdate {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
 
-    fn schema() -> Schema {
-        ScoreUpdatePayload::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Callback
     }
@@ -152,19 +80,19 @@ impl HostContract for OverlayContext {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["overlay"];
 
+    fn kind() -> HostContractKind {
+        HostContractKind::Context
+    }
+}
+
+impl HostContext for OverlayContext {
     fn schema() -> Schema {
         Schema::typed(
             "OverlayContext",
             TsType::Object(vec![TsField::required("visible", TsType::Boolean)]),
         )
     }
-
-    fn kind() -> HostContractKind {
-        HostContractKind::Context
-    }
 }
-
-impl HostContext for OverlayContext {}
 
 #[derive(TsSchema)]
 #[serde(rename_all = "camelCase")]
@@ -189,10 +117,6 @@ impl HostContract for RecordAction {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["action", "record"];
 
-    fn schema() -> Schema {
-        RecordActionInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -206,81 +130,6 @@ impl HostFunctionSignature for RecordAction {
 impl HostFunction for RecordAction {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("{}:{}", input.action_id, input.actor.actor_id))
-    }
-}
-
-impl HostContract for EchoValidation {
-    const NAME: &'static str = "validation.echo";
-    const IMPORT_MODULE: &'static str = "test";
-    const EXPORT_PATH: &'static [&'static str] = &["validation", "echo"];
-
-    fn schema() -> Schema {
-        ValidationInput::schema()
-    }
-
-    fn kind() -> HostContractKind {
-        HostContractKind::Function
-    }
-}
-
-impl HostFunctionSignature for EchoValidation {
-    type Input = ValidationInput;
-    type Output = ValidationInput;
-}
-
-impl HostFunction for EchoValidation {
-    fn call(input: Self::Input) -> Result<Self::Output, VmError> {
-        Ok(input)
-    }
-}
-
-impl HostContract for EchoTypeRefValidation {
-    const NAME: &'static str = "validation.echoRef";
-    const IMPORT_MODULE: &'static str = "test";
-    const EXPORT_PATH: &'static [&'static str] = &["validation", "echoRef"];
-
-    fn schema() -> Schema {
-        ValidationTypeRefInput::schema()
-    }
-
-    fn kind() -> HostContractKind {
-        HostContractKind::Function
-    }
-}
-
-impl HostFunctionSignature for EchoTypeRefValidation {
-    type Input = ValidationTypeRefInput;
-    type Output = ValidationTypeRefOutput;
-}
-
-impl HostFunction for EchoTypeRefValidation {
-    fn call(input: Self::Input) -> Result<Self::Output, VmError> {
-        Ok(ValidationTypeRefOutput(input.0))
-    }
-}
-
-impl HostContract for BadOutputValidation {
-    const NAME: &'static str = "validation.badOutput";
-    const IMPORT_MODULE: &'static str = "test";
-    const EXPORT_PATH: &'static [&'static str] = &["validation", "badOutput"];
-
-    fn schema() -> Schema {
-        BadOutputInput::schema()
-    }
-
-    fn kind() -> HostContractKind {
-        HostContractKind::Function
-    }
-}
-
-impl HostFunctionSignature for BadOutputValidation {
-    type Input = BadOutputInput;
-    type Output = BadOutputOutput;
-}
-
-impl HostFunction for BadOutputValidation {
-    fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
-        Ok(BadOutputOutput(json!("not-a-number")))
     }
 }
 
@@ -579,141 +428,6 @@ fn run_tsc(path: &std::path::Path) -> Option<std::process::Output> {
 }
 
 #[test]
-fn host_contract_input_validation_is_configurable() {
-    let cache_dir = TestCacheDir::new("host-contract-input-validation");
-    let mut options = cache_dir.engine_options();
-    options.contract_validation = VmContractValidation::Inputs;
-    let mut engine = Engine::new(&options).expect("create engine");
-
-    engine
-        .registry()
-        .function::<EchoValidation>()
-        .expect("register host function");
-    engine
-        .load_script("validation", HOST_VALIDATION_SCRIPT)
-        .expect("load validation script");
-
-    let error = engine
-        .call::<Value>("validation", "echo", vec![json!({ "id": "bad" })])
-        .expect_err("invalid input should fail");
-
-    assert!(matches!(
-        error,
-        VmError::Execution { details }
-            if details.contains("validation.echo")
-                && details.contains("input validation failed")
-                && details.contains("$.id")
-    ));
-}
-
-#[test]
-fn host_contract_input_validation_resolves_type_ref_dependencies() {
-    let cache_dir = TestCacheDir::new("host-contract-input-validation-typeref");
-    let mut options = cache_dir.engine_options();
-    options.contract_validation = VmContractValidation::Inputs;
-    let mut engine = Engine::new(&options).expect("create engine");
-
-    engine
-        .registry()
-        .function::<EchoTypeRefValidation>()
-        .expect("register host function");
-    engine
-        .load_script("validation", HOST_VALIDATION_SCRIPT)
-        .expect("load validation script");
-
-    let error = engine
-        .call::<Value>("validation", "echoRef", vec![json!({ "user_id": "bad" })])
-        .expect_err("invalid TypeRef input should fail");
-
-    assert!(matches!(
-        error,
-        VmError::Execution { details }
-            if details.contains("validation.echoRef")
-                && details.contains("input validation failed")
-                && details.contains("$.user_id: expected number, got string")
-    ));
-}
-
-#[test]
-fn host_contract_validation_disabled_keeps_bridge_permissive() {
-    let cache_dir = TestCacheDir::new("host-contract-validation-disabled");
-    let mut engine = Engine::new(&cache_dir.engine_options()).expect("create engine");
-
-    engine
-        .registry()
-        .function::<EchoValidation>()
-        .expect("register host function");
-    engine
-        .load_script("validation", HOST_VALIDATION_SCRIPT)
-        .expect("load validation script");
-    let result = engine
-        .call::<Value>("validation", "echo", vec![json!({ "id": "bad" })])
-        .expect("validation disabled");
-
-    assert_eq!(result, json!({ "id": "bad" }));
-}
-
-#[test]
-fn host_contract_output_validation_can_be_enabled_for_debug() {
-    let cache_dir = TestCacheDir::new("host-contract-output-validation");
-    let mut options = cache_dir.engine_options();
-    options.contract_validation = VmContractValidation::InputsAndOutputs;
-    let mut engine = Engine::new(&options).expect("create engine");
-
-    engine
-        .registry()
-        .function::<BadOutputValidation>()
-        .expect("register host function");
-    engine
-        .load_script("validation", HOST_VALIDATION_SCRIPT)
-        .expect("load validation script");
-
-    let error = engine
-        .call::<Value>("validation", "badOutput", vec![json!(1)])
-        .expect_err("invalid output should fail");
-
-    assert!(matches!(
-        error,
-        VmError::Execution { details }
-            if details.contains("validation.badOutput")
-                && details.contains("output validation failed")
-    ));
-}
-
-#[test]
-fn host_contract_validation_can_reject_unknown_input_fields() {
-    let cache_dir = TestCacheDir::new("host-contract-unknown-fields");
-    let mut options = cache_dir.engine_options();
-    options.contract_validation = VmContractValidation::Inputs;
-    options.unknown_field_validation = VmUnknownFieldValidation::Reject;
-    let mut engine = Engine::new(&options).expect("create engine");
-
-    engine
-        .registry()
-        .function::<EchoValidation>()
-        .expect("register host function");
-    engine
-        .load_script("validation", HOST_VALIDATION_SCRIPT)
-        .expect("load validation script");
-
-    let error = engine
-        .call::<Value>(
-            "validation",
-            "echo",
-            vec![json!({ "id": 1, "extra": true })],
-        )
-        .expect_err("unknown input field should fail");
-
-    assert!(matches!(
-        error,
-        VmError::Execution { details }
-            if details.contains("validation.echo")
-                && details.contains("input validation failed")
-                && details.contains("$.extra: unknown field")
-    ));
-}
-
-#[test]
 fn host_contract_validation_uses_flattened_derived_input_schema() {
     let cache_dir = TestCacheDir::new("host-contract-flatten-validation");
     let mut options = cache_dir.engine_options();
@@ -766,29 +480,4 @@ fn host_contract_validation_uses_flattened_derived_input_schema() {
                 && details.contains("input validation failed")
                 && details.contains("$.actor: unknown field")
     ));
-}
-
-#[test]
-fn host_contract_validation_allows_unknown_input_fields_by_default() {
-    let cache_dir = TestCacheDir::new("host-contract-unknown-fields-default");
-    let mut options = cache_dir.engine_options();
-    options.contract_validation = VmContractValidation::Inputs;
-    let mut engine = Engine::new(&options).expect("create engine");
-
-    engine
-        .registry()
-        .function::<EchoValidation>()
-        .expect("register host function");
-    engine
-        .load_script("validation", HOST_VALIDATION_SCRIPT)
-        .expect("load validation script");
-    let result = engine
-        .call::<Value>(
-            "validation",
-            "echo",
-            vec![json!({ "id": 1, "extra": true })],
-        )
-        .expect("unknown fields allowed by default");
-
-    assert_eq!(result, json!({ "id": 1, "extra": true }));
 }

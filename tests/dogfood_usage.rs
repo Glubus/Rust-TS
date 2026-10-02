@@ -4,7 +4,7 @@ mod support;
 
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    Schema, TsSchema, VmError, VmOptions,
+    TsSchema, VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 
@@ -75,10 +75,6 @@ struct DogfoodUserFound;
 impl HostContract for DogfoodFindUser {
     const NAME: &'static str = "user.find";
 
-    fn schema() -> Schema {
-        DogfoodFindUserInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -106,10 +102,6 @@ impl HostFunction for DogfoodFindUser {
 
 impl HostContract for DogfoodUserFound {
     const NAME: &'static str = "user.found";
-
-    fn schema() -> Schema {
-        DogfoodUserFoundPayload::schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback

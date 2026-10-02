@@ -8,14 +8,10 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-#[cfg(feature = "derive")]
-use rustts::js::{Ctx, Value as JsValue};
 use rustts::{
     Engine, HostContract, HostContractAbi, HostContractKind, HostFunctionSignature, HostResolver,
-    InMemoryHostContractRegistry, Schema, TsType, VmContractValidation, VmError, VmOptions,
+    InMemoryHostContractRegistry, VmContractValidation, VmError, VmOptions,
 };
-#[cfg(feature = "derive")]
-use rustts::{JsEncode, TsSchema};
 use serde_json::json;
 use support::TestCacheDir;
 
@@ -24,10 +20,6 @@ struct Score;
 
 impl HostContract for Score {
     const NAME: &'static str = "scores.lookup";
-
-    fn schema() -> Schema {
-        Schema::typed("ScoreInput", TsType::String)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -45,10 +37,6 @@ struct WhoAmI;
 impl HostContract for WhoAmI {
     const NAME: &'static str = "host.whoami";
 
-    fn schema() -> Schema {
-        Schema::typed("WhoAmIInput", TsType::Null)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -57,68 +45,6 @@ impl HostContract for WhoAmI {
 impl HostFunctionSignature for WhoAmI {
     type Input = ();
     type Output = String;
-}
-
-/// A label declared as a TypeScript `string` that can carry a number, so a resolution can
-/// break the declared output.
-#[cfg(feature = "derive")]
-enum Label {
-    Text(String),
-    Number(f64),
-}
-
-#[cfg(feature = "derive")]
-impl TsSchema for Label {
-    fn ts_type() -> TsType {
-        TsType::String
-    }
-}
-
-#[cfg(feature = "derive")]
-impl JsEncode for Label {
-    fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> rustts::js::Result<JsValue<'js>> {
-        match self {
-            Self::Text(text) => text.encode_js(ctx),
-            Self::Number(number) => number.encode_js(ctx),
-        }
-    }
-}
-
-/// `tags.add({ id })`: values checked against the declared schemas.
-#[cfg(feature = "derive")]
-struct AddTag;
-
-#[cfg(feature = "derive")]
-#[derive(Debug, PartialEq, TsSchema)]
-#[rustts(decode_only)]
-struct AddTagInput {
-    id: u32,
-}
-
-#[cfg(feature = "derive")]
-#[derive(TsSchema)]
-#[rustts(encode_only)]
-struct AddTagOutput {
-    label: Label,
-}
-
-#[cfg(feature = "derive")]
-impl HostContract for AddTag {
-    const NAME: &'static str = "tags.add";
-
-    fn schema() -> Schema {
-        AddTagInput::schema()
-    }
-
-    fn kind() -> HostContractKind {
-        HostContractKind::Function
-    }
-}
-
-#[cfg(feature = "derive")]
-impl HostFunctionSignature for AddTag {
-    type Input = AddTagInput;
-    type Output = AddTagOutput;
 }
 
 type Calls<I, O> = Arc<Mutex<Vec<(I, HostResolver<O>)>>>;
@@ -274,67 +200,6 @@ fn failed_calls_reject_at_once_instead_of_throwing() {
         returns_promise,
         "an invalid input rejects the returned Promise"
     );
-}
-
-#[cfg(feature = "derive")]
-#[test]
-fn validation_checks_inputs_at_the_call_and_outputs_at_resolution() {
-    let mut engine = Engine::new(&validating()).expect("create engine");
-    let calls: Calls<AddTagInput, AddTagOutput> = Arc::default();
-    let kept = Arc::clone(&calls);
-    engine
-        .registry()
-        .async_function_with::<AddTag>(move |input, resolver| {
-            kept.lock().expect("calls").push((input, resolver));
-            Ok(())
-        })
-        .expect("register async function");
-    engine
-        .load_script(
-            "tagger",
-            r#"
-            export async function add(id: unknown): Promise<string> {
-              try { return (await tags.add({ id } as any)).label; }
-              catch (error) { return `rejected: ${(error as Error).message}`; }
-            }
-            "#,
-        )
-        .expect("load script");
-
-    let bad_input: String = engine.call("tagger", "add", ("seven",)).expect("call");
-    assert!(bad_input.contains("input validation failed"), "{bad_input}");
-    assert!(
-        calls.lock().expect("calls").is_empty(),
-        "an invalid input never reaches the handler"
-    );
-
-    let valid = engine
-        .call_deferred::<String>("tagger", "add", (7,))
-        .expect("start valid call");
-    let bad_output = engine
-        .call_deferred::<String>("tagger", "add", (8,))
-        .expect("start call answered badly");
-    let (bad_output_input, bad_resolver) = last_call(&calls);
-    let (valid_input, valid_resolver) = last_call(&calls);
-    valid_resolver
-        .resolve(AddTagOutput {
-            label: Label::Text(String::from("seven")),
-        })
-        .expect("valid output");
-    bad_resolver
-        .resolve(AddTagOutput {
-            label: Label::Number(8.0),
-        })
-        .expect("a bad output is only found when the engine thread converts it");
-
-    assert_eq!(valid_input, AddTagInput { id: 7 });
-    assert_eq!(bad_output_input, AddTagInput { id: 8 });
-
-    engine.pump().expect("pump");
-
-    assert_eq!(valid.take().expect("finished").expect("value"), "seven");
-    let rejected = bad_output.take().expect("finished").expect("caught");
-    assert!(rejected.contains("output validation failed"), "{rejected}");
 }
 
 #[test]

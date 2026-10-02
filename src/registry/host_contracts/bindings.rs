@@ -430,17 +430,13 @@ mod lock_tests {
     use rquickjs::{Context, Function, Runtime};
 
     use super::*;
-    use crate::contract::{HostContract, HostContractKind, Schema};
+    use crate::contract::{HostContract, HostContractKind};
     use crate::runner::host_promises::HostPromises;
 
     struct Reentrant;
 
     impl HostContract for Reentrant {
         const NAME: &'static str = "test.reentrant";
-
-        fn schema() -> Schema {
-            Schema::named("null")
-        }
 
         fn kind() -> HostContractKind {
             HostContractKind::Function

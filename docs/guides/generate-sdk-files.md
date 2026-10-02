@@ -61,10 +61,6 @@ impl HostContract for FindUser {
     const IMPORT_MODULE: &'static str = "my_sdk";
     const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
-    fn schema() -> Schema {
-        FindUserInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }

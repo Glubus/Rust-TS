@@ -35,7 +35,11 @@
   - A contract with a free-form value uses `serde_json::Value`, which has the schema
     `Json`; to describe an object, derive `TsSchema` on a struct. A schema written by
     hand for a type that does not declare it is no longer possible.
-    `HostContract::schema()` stays required but only context contracts use it.
+  - `HostContract::schema()` is removed: delete it from function and callback
+    contracts. Only context contracts declare a schema, through the new required
+    `HostContext::schema()`. `HostContract::descriptor()` carries a placeholder schema
+    until a registration fills it.
+  - See [Migrate From 0.3 To 0.4](docs/guides/migrating-0.3-to-0.4.md).
   - Contract validation now checks a JSON snapshot of the values the native codec
     converts. A host function that resolves with an invalid output no longer gets
     `VmError::ContractValidation` from `HostResolver::resolve`: the engine finds it

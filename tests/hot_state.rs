@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use rustts::js::{Ctx, Object, Value as JsValue};
 use rustts::{
     Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    JsDecode, JsEncode, Schema, TsField, TsSchema, TsType, VmError, VmOptions,
+    JsDecode, JsEncode, TsField, TsSchema, TsType, VmError, VmOptions,
 };
 
 use support::TestCacheDir;
@@ -34,10 +34,6 @@ struct Record;
 
 impl HostContract for Record {
     const NAME: &'static str = "probe.record";
-
-    fn schema() -> Schema {
-        Schema::typed("RecordInput", TsType::String)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -82,10 +78,6 @@ impl JsEncode for TickPayload {
 
 impl HostContract for Tick {
     const NAME: &'static str = "game.tick";
-
-    fn schema() -> Schema {
-        TickPayload::schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback

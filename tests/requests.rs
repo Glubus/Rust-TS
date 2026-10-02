@@ -5,8 +5,7 @@ mod support;
 use std::fs;
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostRequest, Schema, TsType, VmError,
-    VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostRequest, VmError, VmOptions,
 };
 use serde_json::json;
 use support::TestCacheDir;
@@ -16,10 +15,6 @@ struct Label;
 
 impl HostContract for Label {
     const NAME: &'static str = "menu.label";
-
-    fn schema() -> Schema {
-        Schema::typed("LabelPayload", TsType::String)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback

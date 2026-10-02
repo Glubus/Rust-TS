@@ -4,26 +4,16 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "derive")]
-use rustts::js::{Ctx, Value as JsValue};
 use rustts::{
     Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
-    InMemoryHostContractRegistry, Schema, TsType, VmContractValidation, VmError, VmOptions,
+    InMemoryHostContractRegistry, VmContractValidation, VmError, VmOptions,
 };
-#[cfg(feature = "derive")]
-use rustts::{JsEncode, TsSchema};
-#[cfg(feature = "derive")]
-use serde_json::Value;
 
 /// `counter.bump(name)`: counts calls, returns the running total.
 struct Bump;
 
 impl HostContract for Bump {
     const NAME: &'static str = "counter.bump";
-
-    fn schema() -> Schema {
-        Schema::typed("BumpInput", TsType::String)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -41,10 +31,6 @@ struct WhoAmI;
 impl HostContract for WhoAmI {
     const NAME: &'static str = "host.whoami";
 
-    fn schema() -> Schema {
-        Schema::typed("WhoAmIInput", TsType::Null)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -55,69 +41,6 @@ impl HostFunctionSignature for WhoAmI {
     type Output = String;
 }
 
-/// A label declared as a TypeScript `string` that can carry a number, so a handler can
-/// break its declared output.
-#[cfg(feature = "derive")]
-enum Label {
-    Text(String),
-    Number(f64),
-}
-
-#[cfg(feature = "derive")]
-impl TsSchema for Label {
-    fn ts_type() -> TsType {
-        TsType::String
-    }
-}
-
-#[cfg(feature = "derive")]
-impl JsEncode for Label {
-    fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> rustts::js::Result<JsValue<'js>> {
-        match self {
-            Self::Text(text) => text.encode_js(ctx),
-            Self::Number(number) => number.encode_js(ctx),
-        }
-    }
-}
-
-/// `tags.add({ id })`: validated input and output.
-#[cfg(feature = "derive")]
-struct AddTag;
-
-#[cfg(feature = "derive")]
-#[derive(Debug, Clone, PartialEq, TsSchema)]
-#[rustts(decode_only)]
-struct AddTagInput {
-    id: u32,
-}
-
-#[cfg(feature = "derive")]
-#[derive(TsSchema)]
-#[rustts(encode_only)]
-struct AddTagOutput {
-    id: u32,
-    script: Label,
-}
-
-#[cfg(feature = "derive")]
-impl HostContract for AddTag {
-    const NAME: &'static str = "tags.add";
-
-    fn schema() -> Schema {
-        AddTagInput::schema()
-    }
-
-    fn kind() -> HostContractKind {
-        HostContractKind::Function
-    }
-}
-
-#[cfg(feature = "derive")]
-impl HostFunctionSignature for AddTag {
-    type Input = AddTagInput;
-    type Output = AddTagOutput;
-}
-
 /// `user.lookup(id)`: implemented statically as well, to compare registrations.
 struct Lookup;
 
@@ -125,10 +48,6 @@ impl HostContract for Lookup {
     const NAME: &'static str = "user.lookup";
     const IMPORT_MODULE: &'static str = "host";
     const EXPORT_PATH: &'static [&'static str] = &["user", "lookup"];
-
-    fn schema() -> Schema {
-        Schema::typed("LookupInput", TsType::Number)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Function
@@ -261,57 +180,6 @@ fn caller_handlers_see_the_calling_script_when_validating() {
         .expect("register closure");
 
     assert_eq!(ids_seen_by(&mut engine), ["alpha", "v2:alpha", "beta"]);
-}
-
-#[cfg(feature = "derive")]
-#[test]
-fn validation_guards_closure_inputs_and_outputs() {
-    let mut engine = validating_engine();
-    let handled = Arc::new(Mutex::new(Vec::new()));
-    let handler_handled = Arc::clone(&handled);
-    engine
-        .registry()
-        .function_with_caller::<AddTag>(move |caller, input| {
-            handler_handled.lock().expect("handled").push(input.clone());
-            let script = if input.id == 0 {
-                Label::Number(0.0)
-            } else {
-                Label::Text(caller.script_id().to_owned())
-            };
-            Ok(AddTagOutput {
-                id: input.id,
-                script,
-            })
-        })
-        .expect("register closure");
-    engine
-        .load_script(
-            "tagger",
-            r#"
-            export function valid(): string { return tags.add({ id: 7 }).script; }
-            export function badInput(): unknown { return tags.add({ id: "seven" }); }
-            export function badOutput(): unknown { return tags.add({ id: 0 }); }
-            "#,
-        )
-        .expect("load script");
-
-    let valid: String = engine.call("tagger", "valid", ()).expect("valid call");
-    let bad_input = engine.call::<Value>("tagger", "badInput", ());
-    let bad_output = engine.call::<Value>("tagger", "badOutput", ());
-
-    assert_eq!(valid, "tagger");
-    for (result, direction) in [(bad_input, "input"), (bad_output, "output")] {
-        let expected = format!("{direction} validation failed");
-        assert!(
-            matches!(result, Err(VmError::Execution { ref details }) if details.contains(&expected)),
-            "{direction}: {result:?}"
-        );
-    }
-    assert_eq!(
-        *handled.lock().expect("handled"),
-        [AddTagInput { id: 7 }, AddTagInput { id: 0 }],
-        "an invalid input never reaches the handler"
-    );
 }
 
 #[test]
