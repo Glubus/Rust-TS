@@ -212,6 +212,61 @@ fn stateful_typed_closures_run_when_validating() {
     assert_eq!(total.load(Ordering::SeqCst), 2);
 }
 
+/// A host handler that panics panics out of the call that reached it, as in any Rust
+/// callback, and the engine is usable afterwards.
+#[test]
+fn a_panicking_host_function_panics_out_of_the_call_and_leaves_the_engine_usable() {
+    let mut engine = engine();
+    engine
+        .registry()
+        .function_with::<Bump>(|name| {
+            assert!(!name.is_empty(), "host handler refused an empty name");
+            Ok(1)
+        })
+        .expect("register closure");
+    engine
+        .load_script(
+            "script",
+            r#"
+            export function boom(): number { return counter.bump(""); }
+            export function swallowed(): number {
+                try { return counter.bump(""); } catch { return -1; }
+            }
+            export function fine(): number { return counter.bump("a"); }
+            "#,
+        )
+        .expect("load script");
+
+    let boom = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.call::<f64>("script", "boom", ())
+    }));
+    let swallowed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.call::<f64>("script", "swallowed", ())
+    }));
+    let fine: f64 = engine
+        .call("script", "fine", ())
+        .expect("engine stays usable");
+
+    let message = |outcome: &std::thread::Result<_>| {
+        outcome.as_ref().err().and_then(|payload| {
+            payload.downcast_ref::<String>().cloned().or_else(|| {
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_owned())
+            })
+        })
+    };
+    assert!(
+        message(&boom).is_some_and(|text| text.contains("refused an empty name")),
+        "the call must panic with the handler's message"
+    );
+    assert!(
+        swallowed.is_err(),
+        "a script's try/catch must not swallow a Rust panic"
+    );
+    assert_eq!(fine, 1.0);
+}
+
 /// Declarations and SDK source of a registry holding only what `register` adds.
 fn generated(
     register: impl FnOnce(

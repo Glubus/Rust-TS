@@ -22,6 +22,7 @@ use super::console::{ConsoleLevel, ConsoleSink};
 use super::errors::js_error;
 use super::events::ListenedEvents;
 use super::execution::{ExecutionControl, ExecutionGuard};
+use super::host_fn::HostFnClass;
 use super::host_promises::HostPromises;
 use super::interrupt::InterruptHandle;
 use super::memory::memory_stats;
@@ -88,6 +89,8 @@ pub struct Engine {
     builtins: ScriptBuiltins,
     /// Bytecode of the context prelude, compiled by the first script that mounts.
     prelude: OnceCell<Box<[u8]>>,
+    /// The callable class of host functions, registered by the first script that mounts.
+    host_class: OnceCell<HostFnClass>,
     /// Contexts shared by scripts, by group name.
     groups: HashMap<Box<str>, ScriptGroup, FxBuildHasher>,
     /// The environment of every script loaded into a group, for its `rustts:env` module.
@@ -200,6 +203,7 @@ impl Engine {
             host_wake: Arc::default(),
             builtins: options.builtins,
             prelude: OnceCell::new(),
+            host_class: OnceCell::new(),
             groups: HashMap::default(),
             envs,
             rejections: UnhandledRejections::install(&runtime),

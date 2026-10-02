@@ -187,8 +187,22 @@
   for a two-field `serde_json::Value` or a derived struct. Ending an operation is
   cheaper too (an empty job queue and no rejection are checked, not run).
 
+- Calling a host function from a script is about 40 % cheaper: a host function is a
+  callable object of a QuickJS class of its own that the engine calls through the C API
+  with the arguments borrowed, instead of an rquickjs `Function` that clones the context
+  and the arguments about seven times per call and dispatches through a table. A script
+  looping over a one-argument host call went from 205 to 138 ns per iteration (the loop
+  alone is 50), 19.6 to 15.3 billion instructions for 20 million calls. `async` host
+  functions keep the rquickjs path.
+
 ### Fixes
 
+- A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
+  was stored and re-raised by the next rquickjs call, which a `catch` block in the script
+  could precede, so the call returned normally and the panic surfaced later, from an
+  unrelated call or never. It now waits until the operation ends and panics out of the
+  call that reached the handler. See [Errors And Panics In A Host
+  Function](docs/guides/register-host-functions.md#errors-and-panics-in-a-host-function).
 - A load that ran out of memory failed with `non-error exception: Null`. It now says
   `out of memory` and names `VmOptions::memory_limit_bytes`. The default 16 MiB holds
   about 200 scripts.

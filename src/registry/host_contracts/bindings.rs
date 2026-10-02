@@ -14,6 +14,7 @@ use crate::contract::{
 };
 use crate::error::VmError;
 use crate::runner::execution::ExecutionControl;
+use crate::runner::host_fn::{HostCall, HostFnClass};
 use crate::runner::host_promises::WeakHostPromises;
 
 type NamedBinding = (String, Binding);
@@ -42,6 +43,7 @@ trait HostFunctionBinding: Send + Sync {
         name: &str,
         script_id: &str,
         execution: &Arc<ExecutionControl>,
+        class: HostFnClass,
         validator: Validator,
     ) -> JsResult<()>;
 }
@@ -187,30 +189,21 @@ where
         name: &str,
         _script_id: &str,
         execution: &Arc<ExecutionControl>,
+        class: HostFnClass,
         validator: Validator,
     ) -> JsResult<()> {
         let execution = Arc::clone(execution);
-        match validator {
-            None => target.set(
-                name,
-                Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
-                    execution.start_clock();
-                    call_native::<C>(&ctx, input_or_null(&ctx, input), &self.handler)
-                }),
-            ),
-            Some(validator) => target.set(
-                name,
-                Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
-                    execution.start_clock();
-                    call_validated::<C>(
-                        &ctx,
-                        input_or_null(&ctx, input),
-                        &*validator,
-                        &self.handler,
-                    )
-                }),
-            ),
-        }
+        let call: HostCall = match validator {
+            None => Box::new(move |ctx, input| {
+                execution.start_clock();
+                call_native::<C>(ctx, input, &self.handler)
+            }),
+            Some(validator) => Box::new(move |ctx, input| {
+                execution.start_clock();
+                call_validated::<C>(ctx, input, &*validator, &self.handler)
+            }),
+        };
+        target.set(name, class.function(target.ctx(), call)?)
     }
 }
 
@@ -234,32 +227,26 @@ where
         name: &str,
         script_id: &str,
         execution: &Arc<ExecutionControl>,
+        class: HostFnClass,
         validator: Validator,
     ) -> JsResult<()> {
         let script_id = Box::<str>::from(script_id);
         let execution = Arc::clone(execution);
-        match validator {
-            None => target.set(
-                name,
-                Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
-                    execution.start_clock();
-                    let caller = Caller::new(&script_id);
-                    call_native::<C>(&ctx, input_or_null(&ctx, input), |input| {
-                        (self.handler)(&caller, input)
-                    })
-                }),
-            ),
-            Some(validator) => target.set(
-                name,
-                Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
-                    execution.start_clock();
-                    let caller = Caller::new(&script_id);
-                    call_validated::<C>(&ctx, input_or_null(&ctx, input), &*validator, |input| {
-                        (self.handler)(&caller, input)
-                    })
-                }),
-            ),
-        }
+        let call: HostCall = match validator {
+            None => Box::new(move |ctx, input| {
+                execution.start_clock();
+                let caller = Caller::new(&script_id);
+                call_native::<C>(ctx, input, |input| (self.handler)(&caller, input))
+            }),
+            Some(validator) => Box::new(move |ctx, input| {
+                execution.start_clock();
+                let caller = Caller::new(&script_id);
+                call_validated::<C>(ctx, input, &*validator, |input| {
+                    (self.handler)(&caller, input)
+                })
+            }),
+        };
+        target.set(name, class.function(target.ctx(), call)?)
     }
 }
 
@@ -411,6 +398,7 @@ impl FunctionBindingStore {
         script_id: &str,
         promises: &WeakHostPromises,
         execution: &Arc<ExecutionControl>,
+        class: HostFnClass,
         validator_for: impl Fn(&str) -> Validator,
     ) -> JsResult<()> {
         let mut shared_id = None;
@@ -418,7 +406,7 @@ impl FunctionBindingStore {
             let validator = validator_for(&name);
             match binding {
                 Binding::Sync(binding) => {
-                    binding.install(target, &name, script_id, execution, validator)?;
+                    binding.install(target, &name, script_id, execution, class, validator)?;
                 }
                 Binding::Async(binding) => {
                     let shared_id = shared_id.get_or_insert_with(|| Rc::<str>::from(script_id));
@@ -492,6 +480,7 @@ mod lock_tests {
                     "script",
                     &HostPromises::default().downgrade(),
                     &Arc::default(),
+                    HostFnClass::register(&ctx).unwrap(),
                     |_| None,
                 )
                 .unwrap();

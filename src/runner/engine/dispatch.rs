@@ -8,6 +8,7 @@ use crate::error::VmError;
 
 use super::super::errors::{caught_js_error, in_typescript, js_error};
 use super::super::events::deliver;
+use super::super::host_fn;
 use super::Engine;
 
 /// How a thrown `null` is described: QuickJS throws it when it runs out of memory while
@@ -229,6 +230,9 @@ impl Engine {
                 details: "execution budget exceeded".to_owned(),
             });
         }
+        // A host function that panicked cannot unwind through QuickJS: the panic waited,
+        // beyond reach of a script's `catch`, for the operation to end.
+        host_fn::resume_panic();
         let value = result.map_err(|error| self.reported(error))?;
         match job_error.or(unhandled) {
             Some(error) => Err(self.reported(error)),

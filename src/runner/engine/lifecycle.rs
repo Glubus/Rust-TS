@@ -16,6 +16,7 @@ use crate::registry::HostModuleStyle;
 use crate::types::{ReloadReport, ScriptId};
 
 use super::super::errors::{caught_js_error, js_error};
+use super::super::host_fn::HostFnClass;
 use super::super::host_promises::HostPromises;
 use super::super::module_loader::{ENV_SPECIFIER, RuntimeModuleGraph};
 use super::super::timers::timer_hooks;
@@ -459,8 +460,15 @@ impl Engine {
         hot_data: Option<HotData>,
     ) -> Result<(Object<'js>, ScriptHooks), VmError> {
         let functions = Object::new(ctx.clone()).map_err(js_error)?;
+        let class = match self.host_class.get() {
+            Some(class) => *class,
+            None => {
+                let class = HostFnClass::register(ctx).map_err(js_error)?;
+                *self.host_class.get_or_init(|| class)
+            }
+        };
         self.registry
-            .install_native_functions(&functions, script_id, host_promises, &self.execution)
+            .install_native_functions(&functions, script_id, host_promises, &self.execution, class)
             .map_err(js_error)?;
         // rquickjs gives every native function the `Function.prototype` of the first
         // context that created one, for the whole runtime: left alone, a script that
