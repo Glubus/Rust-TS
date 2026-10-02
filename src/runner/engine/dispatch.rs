@@ -52,7 +52,7 @@ impl Engine {
     /// of that script's handlers. Scripts that never registered a handler for `event`
     /// cost a set lookup.
     pub fn emit<P: JsEncode + ?Sized>(&self, event: &str, payload: &P) -> Result<usize, VmError> {
-        self.dispatch(event, payload, |_, _, _| Ok(()))
+        self.dispatch(event, payload, false, |_, _, _| Ok(()))
     }
 
     /// Delivers one event like [`Engine::emit`] and returns what every handler returned,
@@ -69,7 +69,7 @@ impl Engine {
         payload: &P,
     ) -> Result<Vec<(&str, R)>, VmError> {
         let mut replies = Vec::new();
-        self.dispatch(event, payload, |script_id, ctx, returned| {
+        self.dispatch(event, payload, true, |script_id, ctx, returned| {
             let value = self.await_returned(ctx, returned, || {
                 format!("a `{event}` handler of script `{script_id}`")
             })?;
@@ -88,6 +88,7 @@ impl Engine {
         &'a self,
         event: &str,
         payload: &P,
+        keep_results: bool,
         mut on_return: impl for<'js> FnMut(&'a str, &Ctx<'js>, JsValue<'js>) -> Result<(), VmError>,
     ) -> Result<usize, VmError> {
         let _budget = self.budget();
@@ -99,7 +100,7 @@ impl Engine {
         let count = self.scripts.len();
         let mut start = 0;
         while start < count {
-            let Some((_, first)) = self.scripts.get_index(start) else {
+            let Some((first_id, first)) = self.scripts.get_index(start) else {
                 break;
             };
             let mut end = start + 1;
@@ -107,6 +108,26 @@ impl Engine {
                 && first.shares_context(next)
             {
                 end += 1;
+            }
+            if end - start == 1 {
+                // A context of its own: one look at the script's handlers decides
+                // whether to enter it.
+                if let Some(handlers) = first.signals.events.handlers(event) {
+                    delivered += 1;
+                    let outcome = first.context.with(|ctx| match payload.encode_js(&ctx) {
+                        Ok(payload) => {
+                            deliver(&ctx, &handlers, &payload, keep_results, |returned| {
+                                on_return(first_id, &ctx, returned)
+                            })
+                        }
+                        Err(error) => Err(js_error(error)),
+                    });
+                    if let Err(error) = outcome {
+                        first_error.get_or_insert(error);
+                    }
+                }
+                start = end;
+                continue;
             }
             let listening = (start..end).any(|index| {
                 self.scripts
@@ -124,9 +145,10 @@ impl Engine {
                                 continue;
                             };
                             delivered += 1;
-                            let outcome = deliver(&ctx, &handlers, &payload, |returned| {
-                                on_return(script_id, &ctx, returned)
-                            });
+                            let outcome =
+                                deliver(&ctx, &handlers, &payload, keep_results, |returned| {
+                                    on_return(script_id, &ctx, returned)
+                                });
                             if let Err(error) = outcome {
                                 first_error.get_or_insert(error);
                             }
@@ -186,7 +208,9 @@ impl Engine {
     /// operation failed, so nothing leaks into the next one.
     pub(super) fn settle<T>(&self, result: Result<T, VmError>) -> Result<T, VmError> {
         let mut job_error = None;
-        loop {
+        // Asking is cheaper than running a job that is not there, and most operations
+        // queue none.
+        while self.runtime.is_job_pending() {
             match self.runtime.execute_pending_job() {
                 Ok(true) => {}
                 Ok(false) => break,

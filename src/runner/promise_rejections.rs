@@ -50,7 +50,11 @@ impl UnhandledRejections {
     }
 
     /// Returns the first rejection still unhandled and clears them all.
+    #[inline]
     pub(crate) fn take(&self) -> Option<VmError> {
+        if self.0.borrow().is_empty() {
+            return None;
+        }
         let pending = std::mem::take(&mut *self.0.borrow_mut());
         pending
             .into_iter()

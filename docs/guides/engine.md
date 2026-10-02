@@ -473,8 +473,10 @@ own is dropped with the script), so reloading one script many times grows memory
 What it buys, measured with `cargo bench --bench runtime -- 'load_many_scripts|emit'`
 on a loaded laptop, groups of 10 scripts loaded one after another: loading 400 scripts
 took 90 ms instead of 383 ms, and delivering a `{ dt, tick }` event to a one-line
-handler in every script took 58 µs for 250 scripts instead of 266 µs, 0.21 ms for 500
-instead of 2.0 ms and 1.5 ms for 1000 instead of 4.1 ms. Scripts of a group loaded
+handler in every script took 45 µs for 250 scripts instead of 302 µs, 0.34 ms for 500
+instead of 2.0 ms and 1.1 ms for 1000 instead of 4.6 ms. The gap is the cost of building
+the event in each context: every context has its own object shapes, which a shared
+context reuses. Scripts of a group loaded
 between scripts of other groups are served one visit per run, so load a group's scripts
 together.
 

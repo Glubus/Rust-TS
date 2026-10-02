@@ -166,7 +166,7 @@ impl Engine {
     ) -> Result<PendingCall<Vec<(ScriptId, R)>>, VmError> {
         let handle = PendingCall::new();
         let replies = RequestResults::new(handle.clone());
-        let delivery = self.dispatch(event, payload, |script_id, ctx, value| {
+        let delivery = self.dispatch(event, payload, true, |script_id, ctx, value| {
             let script = self.script(script_id)?;
             script
                 .request_guards
@@ -191,10 +191,15 @@ impl Engine {
         Ok(handle)
     }
 
+    /// Polls the scripts' deferred tasks; one comparison when none is waiting.
+    #[inline]
     pub(super) fn harvest_tasks(&self) {
-        if self.active_tasks.get() == 0 {
-            return;
+        if self.active_tasks.get() != 0 {
+            self.poll_tasks();
         }
+    }
+
+    fn poll_tasks(&self) {
         for script in self.scripts.values() {
             let mut tasks = script.tasks.borrow_mut();
             if !tasks.is_empty() {

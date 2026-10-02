@@ -176,6 +176,17 @@
   (see [Release builds without QuickJS
   assertions](docs/guides/engine.md#release-builds-without-quickjs-assertions)).
 
+- Delivering an event takes no reference to a handler or to the event: handlers are
+  kept as raw function values and called through the C API with borrowed values, where
+  `Function::call` took and released several references to the function, its context
+  and the event per handler (a context reference count is a write to memory of that
+  context, which is a cache miss once there are hundreds of them), and nothing wraps
+  the returned value when `emit` drops it. `emit` of a number to one handler went from
+  192 to 87 ns, and from 1.8 to 0.5 µs per script with 1000 scripts, each in a context
+  of its own. An event built from an object is dominated by building it, 360 to 480 ns
+  for a two-field `serde_json::Value` or a derived struct. Ending an operation is
+  cheaper too (an empty job queue and no rejection are checked, not run).
+
 ### Fixes
 
 - A load that ran out of memory failed with `non-error exception: Null`. It now says

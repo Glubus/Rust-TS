@@ -72,6 +72,47 @@ fn host_time_counts_against_the_budget_in_a_warm_context() {
     );
 }
 
+/// A delivery in progress runs the handler list it took: a handler removed meanwhile
+/// still runs in it, one added meanwhile waits for the next delivery.
+#[test]
+fn a_delivery_runs_the_snapshot_it_took_even_when_handlers_change_the_list() {
+    let engine = engine_with(
+        r#"
+        const order: string[] = [];
+        const late = () => { order.push("late"); };
+        const second = (event: { n: number }) => { order.push(`second:${event.n}`); };
+        const first = (event: { n: number }) => {
+            order.push(`first:${event.n}`);
+            ctx.off("tick", second);
+            ctx.on("tick", late);
+        };
+        ctx.on("tick", first);
+        ctx.on("tick", second);
+        export function read(): string { return order.join(","); }
+        export function clear(): void { order.length = 0; }
+        "#,
+    );
+
+    engine
+        .emit("tick", &json!({ "n": 7 }))
+        .expect("first delivery");
+    let first: String = engine.call("script", "read", ()).expect("read");
+    engine.call::<()>("script", "clear", ()).expect("clear");
+    engine
+        .emit("tick", &json!({ "n": 8 }))
+        .expect("second delivery");
+    let second: String = engine.call("script", "read", ()).expect("read");
+
+    assert_eq!(
+        first, "first:7,second:7",
+        "`second` was still in the list taken"
+    );
+    assert_eq!(
+        second, "first:8,late",
+        "the next delivery sees the new list"
+    );
+}
+
 fn engine() -> Engine {
     Engine::new(&VmOptions::default()).expect("create engine")
 }
