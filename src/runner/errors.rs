@@ -12,6 +12,17 @@ pub(crate) fn js_error(error: rquickjs::Error) -> VmError {
     }
 }
 
+/// The exception QuickJS left pending in `ctx` after a call through the C API returned
+/// the exception marker, as the operation's error. It clears the pending exception.
+pub(crate) fn pending_exception(ctx: &rquickjs::Ctx<'_>) -> VmError {
+    use rquickjs::CatchResultExt;
+    Err::<(), _>(rquickjs::Error::Exception)
+        .catch(ctx)
+        .map_or_else(caught_js_error, |()| VmError::Execution {
+            details: "an exception without a value".to_owned(),
+        })
+}
+
 pub(crate) fn caught_js_error(error: rquickjs::CaughtError<'_>) -> VmError {
     VmError::Execution {
         details: caught_js_error_details(&error),

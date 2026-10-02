@@ -9,9 +9,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use indexmap::IndexMap;
-use rquickjs::{
-    CatchResultExt, Context, Ctx, Function, Persistent, Runtime, Value, Value as JsValue, qjs,
-};
+use rquickjs::{Context, Ctx, Function, Persistent, Runtime, Value, Value as JsValue, qjs};
 use rustc_hash::FxBuildHasher;
 
 use crate::compiler::WatchedFiles;
@@ -21,7 +19,7 @@ use crate::registry::InMemoryHostContractRegistry;
 use crate::types::{MemoryStats, ScriptId};
 
 use super::console::{ConsoleLevel, ConsoleSink};
-use super::errors::{caught_js_error, js_error};
+use super::errors::{js_error, pending_exception};
 use super::events::ListenedEvents;
 use super::execution::{ExecutionControl, ExecutionGuard};
 use super::host_fn::HostFnClass;
@@ -39,6 +37,7 @@ use super::transpile::Transpiler;
 
 mod dispatch;
 mod host_driven;
+mod invoke;
 mod lifecycle;
 
 /// Single-thread RustTS engine.
@@ -301,10 +300,7 @@ impl EngineScript {
         // SAFETY: `value` is an owned value of `ctx`, which the wrapper releases.
         let value = unsafe {
             if qjs::JS_IsException(value) {
-                return Err(Err::<(), _>(rquickjs::Error::Exception)
-                    .catch(ctx)
-                    .map_err(caught_js_error)
-                    .unwrap_err());
+                return Err(pending_exception(ctx));
             }
             Value::from_raw(ctx.clone(), value)
         };

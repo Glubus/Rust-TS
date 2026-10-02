@@ -2,7 +2,7 @@
 //! element, slices and vectors one argument per item.
 
 use rquickjs::function::Args;
-use rquickjs::{Ctx, Result as JsResult};
+use rquickjs::{Ctx, Result as JsResult, qjs};
 
 use super::super::arity::for_each_tuple;
 use super::{JsArgs, JsEncode, at_path};
@@ -24,6 +24,10 @@ impl JsArgs for () {
     fn encode_args<'js>(&self, ctx: &Ctx<'js>) -> JsResult<Args<'js>> {
         Ok(Args::new(ctx.clone(), 0))
     }
+
+    fn encode_scalars(&self, _out: &mut [qjs::JSValue]) -> Option<usize> {
+        Some(0)
+    }
 }
 
 macro_rules! tuple_args {
@@ -33,6 +37,12 @@ macro_rules! tuple_args {
                 let mut args = Args::new(ctx.clone(), $len);
                 $(push_argument(ctx, &mut args, $index, &self.$index)?;)+
                 Ok(args)
+            }
+
+            fn encode_scalars(&self, out: &mut [qjs::JSValue]) -> Option<usize> {
+                let out = out.get_mut(..$len)?;
+                $(out[$index] = self.$index.encode_scalar()?;)+
+                Some($len)
             }
         }
     };
@@ -48,16 +58,32 @@ impl<T: JsEncode> JsArgs for [T] {
         }
         Ok(args)
     }
+
+    fn encode_scalars(&self, out: &mut [qjs::JSValue]) -> Option<usize> {
+        let out = out.get_mut(..self.len())?;
+        for (slot, argument) in out.iter_mut().zip(self) {
+            *slot = argument.encode_scalar()?;
+        }
+        Some(self.len())
+    }
 }
 
 impl<T: JsEncode> JsArgs for Vec<T> {
     fn encode_args<'js>(&self, ctx: &Ctx<'js>) -> JsResult<Args<'js>> {
         self.as_slice().encode_args(ctx)
     }
+
+    fn encode_scalars(&self, out: &mut [qjs::JSValue]) -> Option<usize> {
+        self.as_slice().encode_scalars(out)
+    }
 }
 
 impl<A: JsArgs + ?Sized> JsArgs for &A {
     fn encode_args<'js>(&self, ctx: &Ctx<'js>) -> JsResult<Args<'js>> {
         (**self).encode_args(ctx)
+    }
+
+    fn encode_scalars(&self, out: &mut [qjs::JSValue]) -> Option<usize> {
+        (**self).encode_scalars(out)
     }
 }

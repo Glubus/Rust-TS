@@ -3,9 +3,9 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use rquickjs::{Array, CatchResultExt, Ctx, Function, Value as JsValue, qjs};
+use rquickjs::{Array, Ctx, Function, Value as JsValue, qjs};
 
-use super::errors::{caught_js_error, js_error};
+use super::errors::{js_error, pending_exception};
 use super::retained::Retained;
 use crate::error::VmError;
 
@@ -123,9 +123,7 @@ pub(super) fn deliver<'js>(
         };
         // SAFETY: `returned` is the value `JS_Call` just gave back.
         let outcome = if unsafe { qjs::JS_IsException(returned) } {
-            Err(rquickjs::Error::Exception)
-                .catch(ctx)
-                .map_err(caught_js_error)
+            Err(pending_exception(ctx))
         } else if keep_results {
             // SAFETY: `returned` is an owned value of `ctx`, which the wrapper releases.
             on_return(unsafe { JsValue::from_raw(ctx.clone(), returned) })

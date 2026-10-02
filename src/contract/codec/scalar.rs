@@ -1,12 +1,16 @@
 //! `bool` and `()`.
 
-use rquickjs::{Ctx, Result as JsResult, Value as JsValue};
+use rquickjs::{Ctx, Result as JsResult, Value as JsValue, qjs};
 
 use super::{JsDecode, JsEncode, mismatch};
 
 impl JsEncode for bool {
     fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>> {
         Ok(JsValue::new_bool(ctx.clone(), *self))
+    }
+
+    fn encode_scalar(&self) -> Option<qjs::JSValue> {
+        Some(if *self { qjs::JS_TRUE } else { qjs::JS_FALSE })
     }
 }
 
@@ -15,6 +19,15 @@ impl JsDecode for bool {
         value
             .as_bool()
             .ok_or_else(|| mismatch(&value, "bool", "boolean"))
+    }
+
+    fn decode_scalar(value: qjs::JSValue) -> Option<Self> {
+        // SAFETY: reading the tag and payload of a value needs no context; the payload
+        // read matches the tag.
+        unsafe {
+            (qjs::JS_VALUE_GET_NORM_TAG(value) == qjs::JS_TAG_BOOL)
+                .then(|| qjs::JS_VALUE_GET_BOOL(value))
+        }
     }
 }
 
@@ -33,5 +46,11 @@ impl JsDecode for () {
         } else {
             Err(mismatch(&value, "()", "null"))
         }
+    }
+
+    fn decode_scalar(value: qjs::JSValue) -> Option<Self> {
+        // SAFETY: reading the tag of a value needs no context.
+        let tag = unsafe { qjs::JS_VALUE_GET_NORM_TAG(value) };
+        (tag == qjs::JS_TAG_NULL || tag == qjs::JS_TAG_UNDEFINED).then_some(())
     }
 }

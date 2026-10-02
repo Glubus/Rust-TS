@@ -10,6 +10,7 @@ use super::super::errors::{caught_js_error, in_typescript, js_error};
 use super::super::events::deliver;
 use super::super::host_fn;
 use super::Engine;
+use super::invoke::invoke;
 
 /// How a thrown `null` is described: QuickJS throws it when it runs out of memory while
 /// already handling an out of memory. Built without its assertions, the same failure
@@ -31,11 +32,13 @@ impl Engine {
         let _budget = self.budget();
         let result = script.context.with(|ctx| {
             let export = script.export(&self.export_atoms, &ctx, script_id, function)?;
-            let args = args.encode_args(&ctx).map_err(js_error)?;
-            let returned = export
-                .call_arg::<JsValue<'_>>(args)
-                .catch(&ctx)
-                .map_err(caught_js_error)?;
+            let returned = invoke(&ctx, &export, &args)?;
+            // A number, a boolean or nothing owns no memory: read it where it is.
+            if let Some(value) = R::decode_scalar(returned) {
+                return Ok(value);
+            }
+            // SAFETY: `returned` is an owned value of `ctx`, which the wrapper releases.
+            let returned = unsafe { JsValue::from_raw(ctx.clone(), returned) };
             let value = self.await_returned(&ctx, returned, || {
                 format!("function `{function}` of script `{script_id}`")
             })?;

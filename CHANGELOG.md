@@ -204,6 +204,15 @@
   1482. A name that is not a function (`export const answer = 42`) is now
   `VmError::FunctionNotFound`, where it was a conversion error.
 
+- `Engine::call` and `call_deferred` with only numbers and booleans as arguments (up
+  to 8), and a number, a boolean or `()` as the result, build and read them as raw
+  QuickJS values: no wrapper, so no context reference taken and released per argument
+  and per result. A call with two numbers went from 1342 to 996 instructions and from
+  about 660 to 422 cycles (about -35 %), a call without arguments from 1006 to 817.
+  Any other argument list or result (text, objects, a mix) goes through the same
+  encoders as before. `JsEncode::encode_scalar`, `JsDecode::decode_scalar` and
+  `JsArgs::encode_scalars` are the hooks, hidden and defaulted: nothing to migrate.
+
 ### Fixes
 
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It

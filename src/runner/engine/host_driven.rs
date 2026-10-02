@@ -5,11 +5,12 @@ use std::time::Duration;
 
 use rquickjs::{CatchResultExt, Value as JsValue};
 
+use super::invoke::invoke;
 use crate::contract::{JsArgs, JsDecode, JsEncode};
 use crate::error::VmError;
 use crate::types::ScriptId;
 
-use super::super::errors::{caught_js_error, js_error};
+use super::super::errors::caught_js_error;
 use super::super::tasks::{PendingCall, RequestGuard, RequestResults, ScriptTask};
 use super::super::timers::run_due_timers;
 use super::Engine;
@@ -103,11 +104,9 @@ impl Engine {
         let _budget = self.budget();
         let result = script.context.with(|ctx| {
             let export = script.export(&self.export_atoms, &ctx, script_id, function)?;
-            let args = args.encode_args(&ctx).map_err(js_error)?;
-            let returned = export
-                .call_arg::<JsValue<'_>>(args)
-                .catch(&ctx)
-                .map_err(caught_js_error)?;
+            let returned = invoke(&ctx, &export, &args)?;
+            // SAFETY: `returned` is an owned value of `ctx`, which the wrapper releases.
+            let returned = unsafe { JsValue::from_raw(ctx.clone(), returned) };
             let handle = PendingCall::new();
             if let Some(task) = ScriptTask::observe(&ctx, returned, &handle)? {
                 script.tasks.borrow_mut().push(task);
