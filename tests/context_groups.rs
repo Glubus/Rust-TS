@@ -549,3 +549,61 @@ fn generated_declarations_type_the_environment_module() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn the_scripts_of_a_group_are_handed_one_payload_object_and_other_scripts_their_own() {
+    let mut engine = engine();
+    let mutating = r#"
+        import { ctx } from "rustts:env";
+        ctx.on("tick", (event: { n: number }) => { event.n += 1; return event.n; });
+        export {};
+    "#;
+    engine
+        .load_script_in("pack", "first", mutating)
+        .expect("load");
+    engine
+        .load_script_in("pack", "second", mutating)
+        .expect("load");
+    engine
+        .load_script_in("elsewhere", "third", mutating)
+        .expect("load");
+    engine.load_script("fourth", mutating).expect("load");
+
+    let replies: Vec<(&str, u32)> = engine.request("tick", &json!({ "n": 0 })).expect("request");
+
+    assert_eq!(
+        replies,
+        [("first", 1), ("second", 2), ("third", 1), ("fourth", 1)],
+        "a group's scripts share the event they are handed"
+    );
+}
+
+#[test]
+fn a_script_of_another_group_in_between_does_not_break_the_load_order() {
+    let mut engine = engine();
+    let listener = |id: &str| {
+        format!(
+            r#"
+            import {{ ctx }} from "rustts:env";
+            ctx.on("tick", () => "{id}");
+            export {{}};
+            "#
+        )
+    };
+    for (group, id) in [
+        ("a", "a1"),
+        ("b", "b1"),
+        ("a", "a2"),
+        ("a", "a3"),
+        ("b", "b2"),
+    ] {
+        engine
+            .load_script_in(group, id, &listener(id))
+            .expect("load");
+    }
+
+    let replies: Vec<(&str, String)> = engine.request("tick", &json!({})).expect("request");
+
+    let ids: Vec<&str> = replies.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, ["a1", "b1", "a2", "a3", "b2"]);
+}

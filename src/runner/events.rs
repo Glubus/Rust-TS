@@ -6,7 +6,6 @@ use std::rc::{Rc, Weak};
 use rquickjs::{Array, CatchResultExt, Ctx, Function, Persistent, Value as JsValue};
 
 use super::errors::{caught_js_error, js_error};
-use crate::contract::JsEncode;
 use crate::error::VmError;
 
 /// Handler lists of one context, by event name, as the prelude hands them over: only
@@ -31,6 +30,14 @@ struct Listened {
 }
 
 impl ListenedEvents {
+    /// Whether the script has a handler for `event`, without taking its handlers.
+    pub(super) fn listens(&self, event: &str) -> bool {
+        self.0
+            .borrow()
+            .iter()
+            .any(|listened| &*listened.event == event)
+    }
+
     /// The current handlers of `event`, `None` when the context has none. The borrow
     /// ends before any JavaScript runs, so handlers may call `ctx.on` and `ctx.off`.
     pub(super) fn handlers(&self, event: &str) -> Option<Handlers> {
@@ -85,15 +92,14 @@ fn record(events: &Weak<RefCell<Vec<Listened>>>, event: String, handlers: Option
 }
 
 /// Runs every handler, even after one throws, and hands each returned value to
-/// `on_return`; returns the first error of a handler or of `on_return`. The payload
-/// is encoded once and shared by all of them.
-pub(super) fn deliver<'js, P: JsEncode + ?Sized>(
+/// `on_return`; returns the first error of a handler or of `on_return`. `payload`, the
+/// encoded event, is shared by all of them.
+pub(super) fn deliver<'js>(
     ctx: &Ctx<'js>,
     handlers: &[Persistent<Function<'static>>],
-    payload: &P,
+    payload: &JsValue<'js>,
     mut on_return: impl FnMut(JsValue<'js>) -> Result<(), VmError>,
 ) -> Result<(), VmError> {
-    let payload = payload.encode_js(ctx).map_err(js_error)?;
     let mut first_error = None;
     for handler in handlers {
         let outcome = handler

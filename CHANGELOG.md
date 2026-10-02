@@ -147,9 +147,11 @@
   `Caller` identity, `ctx.hot` state and lifecycle, and reaches them with
   `import { ctx, console, setTimeout } from "rustts:env"` (also valid in a context of
   its own); the generated declarations type that module. A group is a trust boundary:
-  its scripts share the built-ins and the global object. On a loaded development machine
-  loading 400 scripts took 90 ms instead of 383 ms and delivering an event to 1000
-  scripts 2.7 ms instead of 4.4 ms. See
+  its scripts share the built-ins and the global object. Scripts of a group that follow
+  one another in load order are served in one visit to their context, with the event
+  encoded once. On a loaded development machine loading 400 scripts took 90 ms instead
+  of 383 ms and delivering an event to 250 scripts 58 µs instead of 266 µs, to 1000
+  scripts 1.5 ms instead of 4.1 ms. See
   [Context Groups](docs/guides/engine.md#context-groups).
 
 ### Fixes

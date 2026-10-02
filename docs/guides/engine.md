@@ -458,18 +458,23 @@ whose contract has no `IMPORT_MODULE` cannot be reached. The generated declarati
 type the module.
 
 **A group is a trust boundary.** Its scripts share the built-ins and the global object:
-one can patch `Array.prototype` or set `globalThis.x` for the others, and a payload an
-event hands to several handlers is the same object. Group the scripts of one author;
+one can patch `Array.prototype` or set `globalThis.x` for the others, and the scripts
+of a group that follow one another in load order are handed one event object, encoded
+once, so a handler that mutates it is seen by the next script's. Delivery order is the
+load order whatever the groups: a group's scripts loaded one after another are served
+in a single visit to the context, which is cheaper than alternating between contexts. Group the scripts of one author;
 mods of different authors belong in different groups or in contexts of their own.
 `Engine::load_script_in` does not freeze anything. Reloading a script of a group leaves
 its previous modules in the group's context until the context drops (a context of its
 own is dropped with the script), so reloading one script many times grows memory slowly.
 
 What it buys, measured with `cargo bench --bench runtime -- 'load_many_scripts|emit'`
-on a loaded laptop, groups of 10 scripts: loading 400 scripts took 90 ms instead of
-383 ms, and delivering a `{ dt, tick }` event to a one-line handler in every script took
-0.46 ms for 500 scripts instead of 1.46 ms and 2.7 ms for 1000 instead of 4.4 ms. Up to
-250 scripts delivery costs the same; the gain there is loading time and memory.
+on a loaded laptop, groups of 10 scripts loaded one after another: loading 400 scripts
+took 90 ms instead of 383 ms, and delivering a `{ dt, tick }` event to a one-line
+handler in every script took 58 µs for 250 scripts instead of 266 µs, 0.21 ms for 500
+instead of 2.0 ms and 1.5 ms for 1000 instead of 4.1 ms. Scripts of a group loaded
+between scripts of other groups are served one visit per run, so load a group's scripts
+together.
 
 ### Garbage Collection
 
