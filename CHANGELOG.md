@@ -110,7 +110,11 @@
   300 to about 100 ns for one handler on the development machine, 15 ns above a
   raw QuickJS call): the engine keeps a snapshot of each script's handler functions,
   so delivery reads no global, no property by name and no array. The budget
-  clock starts at operation entry, including time in host functions.
+  clock starts when the operation first reaches a QuickJS interrupt check or a host
+  function, so the time of host functions counts and a short operation reads the clock
+  not at all: delivering a number to one handler went from about 230-290 to about
+  135-180 ns on the loaded development machine, and an event nobody listens to from
+  about 55-60 to about 15 ns.
 - Derived encoders look each field name's atom up once per runtime instead of on
   every field of every value: about 15 % less time to encode a small struct.
   [Per-Frame Data](docs/guides/engine.md#per-frame-data) shows how to shape payloads

@@ -6,17 +6,26 @@ use std::time::{Duration, Instant};
 /// Deadline value meaning "no operation is running, or it has no time limit".
 const NO_DEADLINE: u64 = u64::MAX;
 
+/// Deadline value meaning "an operation with a time limit runs and its clock has not
+/// started": nothing has read the time yet, which costs about as much as the rest of
+/// delivering a small event.
+const PENDING: u64 = u64::MAX - 1;
+
 /// Deadline and interrupt request read by the QuickJS interrupt handler.
 ///
-/// Starting a budget sets the deadline, in nanoseconds after `origin`, to the budget
-/// from that moment: everything the operation does counts against it, host
-/// functions included. QuickJS checks it about every ten thousand interpreter
-/// steps, so JavaScript is stopped at the first check after it passes. Only atomics
-/// are shared, so an interrupt can be requested from any thread.
+/// A budget starts when the operation first reaches a QuickJS interrupt check or a host
+/// function, whichever comes first, by setting the deadline, in nanoseconds after
+/// `origin`, to the budget from that moment: the host functions' time counts against
+/// it, and an operation that reaches neither (a short handler, a few thousand
+/// interpreter steps) never reads the clock. QuickJS checks the deadline about every
+/// ten thousand interpreter steps, so JavaScript is stopped at the first check after it
+/// passes. Only atomics are shared, so an interrupt can be requested from any thread.
 #[derive(Debug)]
 pub(crate) struct ExecutionControl {
     origin: Instant,
     deadline: AtomicU64,
+    /// The running operation's budget, in nanoseconds, while its clock is pending.
+    budget: AtomicU64,
     interrupt_requested: AtomicBool,
 }
 
@@ -25,6 +34,7 @@ impl Default for ExecutionControl {
         Self {
             origin: Instant::now(),
             deadline: AtomicU64::new(NO_DEADLINE),
+            budget: AtomicU64::new(0),
             interrupt_requested: AtomicBool::new(false),
         }
     }
@@ -32,7 +42,23 @@ impl Default for ExecutionControl {
 
 impl ExecutionControl {
     pub(crate) fn interrupted(&self) -> bool {
+        self.start_clock();
         self.interrupt_requested() || self.budget_expired()
+    }
+
+    /// Starts the clock of the running operation's budget if it has not started: from
+    /// here on its time counts. Called at every interrupt check and when a host function
+    /// is entered.
+    pub(crate) fn start_clock(&self) {
+        if self.deadline.load(Ordering::Acquire) != PENDING {
+            return;
+        }
+        let deadline = self
+            .elapsed_nanos()
+            .checked_add(self.budget.load(Ordering::Acquire))
+            .filter(|&deadline| deadline < PENDING)
+            .unwrap_or(NO_DEADLINE);
+        self.deadline.store(deadline, Ordering::Release);
     }
 
     /// Asks the running operation to stop at its next interrupt check. Starting an
@@ -47,23 +73,28 @@ impl ExecutionControl {
     }
 
     /// Whether the running operation has used up its budget. False when no
-    /// operation runs or it has no time limit.
+    /// operation runs, it has no time limit or its clock has not started.
     pub(crate) fn budget_expired(&self) -> bool {
         match self.deadline.load(Ordering::Acquire) {
-            NO_DEADLINE => false,
+            NO_DEADLINE | PENDING => false,
             deadline => self.elapsed_nanos() >= deadline,
         }
     }
 
-    /// Starts a budget of `budget` from now; it ends when the returned guard drops.
+    /// Begins an operation with a budget of `budget`, whose clock starts at its first
+    /// interrupt check or host function; it ends when the returned guard drops.
     pub(crate) fn enter(&self, budget: Duration) -> ExecutionGuard<'_> {
-        let deadline = u64::try_from(budget.as_nanos())
+        let nanos = u64::try_from(budget.as_nanos())
             .ok()
-            .and_then(|budget| self.elapsed_nanos().checked_add(budget))
-            .filter(|&deadline| deadline != NO_DEADLINE)
-            .unwrap_or(NO_DEADLINE);
+            .filter(|&nanos| nanos < PENDING);
         self.interrupt_requested.store(false, Ordering::Release);
-        self.deadline.store(deadline, Ordering::Release);
+        match nanos {
+            Some(nanos) => {
+                self.budget.store(nanos, Ordering::Release);
+                self.deadline.store(PENDING, Ordering::Release);
+            }
+            None => self.deadline.store(NO_DEADLINE, Ordering::Release),
+        }
         ExecutionGuard(self)
     }
 
@@ -89,9 +120,30 @@ mod tests {
         let control = ExecutionControl::default();
         let _guard = control.enter(Duration::ZERO);
 
-        assert!(control.budget_expired());
+        assert!(!control.budget_expired(), "the clock has not started");
         assert!(control.interrupted());
+        assert!(control.budget_expired());
         assert!(!control.interrupt_requested());
+    }
+
+    #[test]
+    fn a_host_function_starts_the_clock_and_its_time_counts() {
+        let control = ExecutionControl::default();
+        let _guard = control.enter(Duration::from_millis(5));
+
+        control.start_clock();
+        std::thread::sleep(Duration::from_millis(20));
+
+        assert!(control.budget_expired());
+    }
+
+    #[test]
+    fn an_operation_that_never_checks_never_reads_the_clock() {
+        let control = ExecutionControl::default();
+        let _guard = control.enter(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert!(!control.budget_expired());
     }
 
     #[test]

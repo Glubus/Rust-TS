@@ -39,6 +39,39 @@ fn budget_includes_synchronous_host_handler_time() {
     );
 }
 
+/// The budget's clock starts at the first interrupt check or host function, so a
+/// context whose interrupt counter is not due, a warm one, must still count the time a
+/// host function takes.
+#[test]
+fn host_time_counts_against_the_budget_in_a_warm_context() {
+    let mut engine = engine_with_timeout(Duration::from_millis(200));
+    engine
+        .registry()
+        .function_with::<Double>(|n| {
+            if n > 0.0 {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            Ok(n * 2.0)
+        })
+        .expect("register");
+    engine
+        .load_script(
+            "slow",
+            "export function invoke(n: number) { return (globalThis as any).math.double(n); }",
+        )
+        .expect("load");
+    engine
+        .call::<f64>("slow", "invoke", (0.0,))
+        .expect("a call that does not sleep warms the context");
+
+    let result = engine.call::<f64>("slow", "invoke", (1.0,));
+
+    assert!(
+        matches!(result, Err(VmError::Execution { .. })),
+        "the sleeping host call must consume the budget: {result:?}"
+    );
+}
+
 fn engine() -> Engine {
     Engine::new(&VmOptions::default()).expect("create engine")
 }

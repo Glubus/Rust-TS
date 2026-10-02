@@ -18,6 +18,7 @@ use crate::contract::{
     HostRequest, HostResolver, JsDecode, JsEncode, Schema, TsSchema,
 };
 use crate::error::VmError;
+use crate::runner::execution::ExecutionControl;
 use crate::runner::host_promises::HostPromises;
 use crate::sdk_files::{
     GeneratedSdkFiles, SdkFileNames, write_host_sdk_files, write_host_sdk_files_with_names,
@@ -219,10 +220,11 @@ impl InMemoryHostContractRegistry {
         target: &Object<'js>,
         script_id: &str,
         promises: &HostPromises,
+        execution: &Arc<ExecutionControl>,
     ) -> JsResult<()> {
         let promises = promises.downgrade();
         self.function_bindings
-            .install_native(target, script_id, &promises, |name| {
+            .install_native(target, script_id, &promises, execution, |name| {
                 self.validates_any().then(|| self.contract_validator(name))
             })
     }

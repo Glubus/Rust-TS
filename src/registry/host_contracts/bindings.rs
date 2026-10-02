@@ -13,6 +13,7 @@ use crate::contract::{
     js_value_to_json,
 };
 use crate::error::VmError;
+use crate::runner::execution::ExecutionControl;
 use crate::runner::host_promises::WeakHostPromises;
 
 type NamedBinding = (String, Binding);
@@ -33,12 +34,14 @@ enum Binding {
 /// A registered host function handler.
 trait HostFunctionBinding: Send + Sync {
     /// Sets the handler on `target` as the native function `name` of script `script_id`,
-    /// checking its values with `validator` when there is one.
+    /// checking its values with `validator` when there is one. Entering it starts the
+    /// clock of the running operation's budget in `execution`.
     fn install<'js>(
         self: Arc<Self>,
         target: &Object<'js>,
         name: &str,
         script_id: &str,
+        execution: &Arc<ExecutionControl>,
         validator: Validator,
     ) -> JsResult<()>;
 }
@@ -55,6 +58,7 @@ trait AsyncFunctionBinding: Send + Sync {
         name: &str,
         script_id: &Rc<str>,
         promises: &WeakHostPromises,
+        execution: &Arc<ExecutionControl>,
         validator: Validator,
     ) -> JsResult<()>;
 }
@@ -182,18 +186,22 @@ where
         target: &Object<'js>,
         name: &str,
         _script_id: &str,
+        execution: &Arc<ExecutionControl>,
         validator: Validator,
     ) -> JsResult<()> {
+        let execution = Arc::clone(execution);
         match validator {
             None => target.set(
                 name,
                 Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                    execution.start_clock();
                     call_native::<C>(&ctx, input_or_null(&ctx, input), &self.handler)
                 }),
             ),
             Some(validator) => target.set(
                 name,
                 Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                    execution.start_clock();
                     call_validated::<C>(
                         &ctx,
                         input_or_null(&ctx, input),
@@ -225,13 +233,16 @@ where
         target: &Object<'js>,
         name: &str,
         script_id: &str,
+        execution: &Arc<ExecutionControl>,
         validator: Validator,
     ) -> JsResult<()> {
         let script_id = Box::<str>::from(script_id);
+        let execution = Arc::clone(execution);
         match validator {
             None => target.set(
                 name,
                 Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                    execution.start_clock();
                     let caller = Caller::new(&script_id);
                     call_native::<C>(&ctx, input_or_null(&ctx, input), |input| {
                         (self.handler)(&caller, input)
@@ -241,6 +252,7 @@ where
             Some(validator) => target.set(
                 name,
                 Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                    execution.start_clock();
                     let caller = Caller::new(&script_id);
                     call_validated::<C>(&ctx, input_or_null(&ctx, input), &*validator, |input| {
                         (self.handler)(&caller, input)
@@ -274,10 +286,12 @@ where
         name: &str,
         script_id: &Rc<str>,
         promises: &WeakHostPromises,
+        execution: &Arc<ExecutionControl>,
         validator: Validator,
     ) -> JsResult<()> {
         let script_id = Rc::clone(script_id);
         let promises = promises.clone();
+        let execution = Arc::clone(execution);
         let encode: EncodeReply<C::Output> = match validator.as_ref() {
             Some(validator) if validator.checks_output() => {
                 let validator = Arc::clone(validator);
@@ -293,6 +307,7 @@ where
         target.set(
             name,
             Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
+                execution.start_clock();
                 let caller = Caller::new(&script_id);
                 promises.call(
                     &ctx,
@@ -395,16 +410,19 @@ impl FunctionBindingStore {
         target: &Object<'js>,
         script_id: &str,
         promises: &WeakHostPromises,
+        execution: &Arc<ExecutionControl>,
         validator_for: impl Fn(&str) -> Validator,
     ) -> JsResult<()> {
         let mut shared_id = None;
         for (name, binding) in self.snapshot().map_err(js_host_error)? {
             let validator = validator_for(&name);
             match binding {
-                Binding::Sync(binding) => binding.install(target, &name, script_id, validator)?,
+                Binding::Sync(binding) => {
+                    binding.install(target, &name, script_id, execution, validator)?;
+                }
                 Binding::Async(binding) => {
                     let shared_id = shared_id.get_or_insert_with(|| Rc::<str>::from(script_id));
-                    binding.install(target, &name, shared_id, promises, validator)?;
+                    binding.install(target, &name, shared_id, promises, execution, validator)?;
                 }
             }
         }
@@ -473,6 +491,7 @@ mod lock_tests {
                     &target,
                     "script",
                     &HostPromises::default().downgrade(),
+                    &Arc::default(),
                     |_| None,
                 )
                 .unwrap();

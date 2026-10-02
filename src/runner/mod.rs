@@ -4,7 +4,7 @@ mod console;
 mod engine;
 mod errors;
 mod events;
-mod execution;
+pub(crate) mod execution;
 pub(crate) mod host_promises;
 mod interrupt;
 mod memory;

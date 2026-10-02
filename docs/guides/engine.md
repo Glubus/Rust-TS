@@ -327,8 +327,10 @@ export function add(points: number): number {
 
 Every load, call, emit, request, deferred call or request, `pump`, and
 `advance_timers` runs under `VmOptions::execution_timeout` (5 seconds by
-default). The budget starts when the operation does, so time spent in Rust host
-functions counts against it; suspended time between host calls does not. QuickJS
+default). The budget starts when the operation first reaches a QuickJS check or a
+Rust host function, so time spent in host functions counts against it and an
+operation that reaches neither (a short handler) never reads the clock; suspended
+time between host calls does not count. QuickJS
 checks about every ten thousand interpreter steps: JavaScript still running at
 the first check after expiry is interrupted with `VmError::Execution`. The
 budget is cooperative: it cannot preempt a blocked Rust function, and JavaScript
