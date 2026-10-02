@@ -1,7 +1,7 @@
 //! Versioned cache keys for transpiled modules.
 
 /// Bump when the artifact layout or the transpile settings change.
-const CACHE_SCHEMA_VERSION: &str = "2";
+const CACHE_SCHEMA_VERSION: &str = "3";
 const OXC_VERSION: &str = "0.137.0";
 const COMPILER_MODULE_FORMAT: &str = "esm";
 

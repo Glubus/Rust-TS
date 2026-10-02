@@ -14,8 +14,8 @@ use criterion::{
 use mlua::{Lua, LuaSerdeExt};
 use rquickjs::{Context, Ctx, Function, Object, Runtime, Value as JsValue, prelude::Func};
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsType, VmError,
-    VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    VmError, VmOptions,
 };
 use serde_json::{Value, json};
 
@@ -92,23 +92,17 @@ impl HostContract for Inc {
     const IMPORT_MODULE: &'static str = "bench";
     const EXPORT_PATH: &'static [&'static str] = &["math", "inc"];
 
-    fn schema() -> Schema {
-        Schema::typed("IncInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for Inc {
+impl HostFunctionSignature for Inc {
     type Input = f64;
     type Output = f64;
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed("IncOutput", TsType::Number)
-    }
-
+impl HostFunction for Inc {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(input + 1.0)
     }
@@ -120,10 +114,6 @@ impl HostContract for ScoreUpdate {
     const NAME: &'static str = "score.update";
     const IMPORT_MODULE: &'static str = "bench";
     const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
-
-    fn schema() -> Schema {
-        Schema::typed("ScorePayload", TsType::Json)
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback
@@ -183,7 +173,7 @@ fn rustts_engine() -> Engine {
     let mut engine = Engine::new(&VmOptions::default()).expect("create rustts engine");
     engine
         .registry()
-        .typed_function::<Inc>()
+        .function::<Inc>()
         .and_then(|registry| registry.callback::<ScoreUpdate>())
         .expect("register bench contracts");
     engine

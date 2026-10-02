@@ -15,6 +15,7 @@ mod bytes;
 mod collections;
 pub mod derive;
 mod ecosystem;
+mod field_atoms;
 mod js_text;
 mod json;
 mod maps;
@@ -29,7 +30,7 @@ use std::fmt::{self, Display};
 
 use rquickjs::atom::PredefinedAtom;
 use rquickjs::function::Args;
-use rquickjs::{Array, Ctx, Error as JsError, Object, Result as JsResult, Value as JsValue};
+use rquickjs::{Array, Ctx, Error as JsError, Object, Result as JsResult, Value as JsValue, qjs};
 
 pub(crate) use number::exact_integer;
 
@@ -54,6 +55,16 @@ pub trait JsEncode {
     /// Fails when the value has no faithful JavaScript representation, such as an
     /// integer outside the safe range, or when QuickJS cannot allocate the result.
     fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>>;
+
+    /// The QuickJS value of `self` when it is a number or a boolean, which own no
+    /// memory: calls into a script use it to skip the reference counting of a wrapped
+    /// value. `None`, the default, for every other type, and for a number that does not
+    /// cross (an integer outside the safe range), so that [`encode_js`](Self::encode_js)
+    /// reports it.
+    #[doc(hidden)]
+    fn encode_scalar(&self) -> Option<qjs::JSValue> {
+        None
+    }
 }
 
 /// Converts a QuickJS value into a Rust value.
@@ -68,6 +79,15 @@ pub trait JsDecode: Sized {
     /// Fails when `value` does not have the shape `serde_json` would accept for
     /// `Self`, or when a number does not fit the target type exactly.
     fn decode_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> JsResult<Self>;
+
+    /// Reads `value`, a QuickJS value the caller owns, when it is a number, a boolean,
+    /// `null` or `undefined` that converts to `Self`, without wrapping it. `None`, the
+    /// default, when `Self` is not a scalar or the value does not convert: the caller
+    /// then goes through [`decode_js`](Self::decode_js), which reports why.
+    #[doc(hidden)]
+    fn decode_scalar(_value: qjs::JSValue) -> Option<Self> {
+        None
+    }
 }
 
 /// Argument list for calling a JavaScript function from Rust.
@@ -81,6 +101,14 @@ pub trait JsArgs {
     ///
     /// Fails when one argument cannot be encoded.
     fn encode_args<'js>(&self, ctx: &Ctx<'js>) -> JsResult<Args<'js>>;
+
+    /// Writes every argument to `out` as a QuickJS value and returns how many, when all
+    /// of them are scalars ([`JsEncode::encode_scalar`]) and fit in `out`. `None`, the
+    /// default, otherwise.
+    #[doc(hidden)]
+    fn encode_scalars(&self, _out: &mut [qjs::JSValue]) -> Option<usize> {
+        None
+    }
 }
 
 /// Builds a conversion error. `expected` names the Rust-side shape.

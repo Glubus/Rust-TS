@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use rustts::{
-    Engine, HostContract, HostContractKind, HostFunction, Schema, TsType, VmContractValidation,
-    VmError, VmOptions,
+    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    VmContractValidation, VmError, VmOptions,
 };
 use serde_json::json;
 
@@ -12,6 +12,133 @@ fn engine_with_timeout(timeout: Duration) -> Engine {
         ..VmOptions::default()
     })
     .expect("create engine")
+}
+
+#[test]
+fn budget_includes_synchronous_host_handler_time() {
+    let mut engine = engine_with_timeout(Duration::from_millis(200));
+    engine
+        .registry()
+        .function_with::<Double>(|n| {
+            std::thread::sleep(Duration::from_millis(400));
+            Ok(n * 2.0)
+        })
+        .expect("register");
+    engine
+        .load_script(
+            "slow",
+            "export function invoke() { return math.double(2); }",
+        )
+        .expect("load");
+    assert!(
+        matches!(
+            engine.call::<f64>("slow", "invoke", ()),
+            Err(VmError::Execution { .. })
+        ),
+        "the host handler must consume the operation budget"
+    );
+}
+
+/// The budget's clock starts at the first interrupt check or host function, so a
+/// context whose interrupt counter is not due, a warm one, must still count the time a
+/// host function takes.
+#[test]
+fn host_time_counts_against_the_budget_in_a_warm_context() {
+    let mut engine = engine_with_timeout(Duration::from_millis(200));
+    engine
+        .registry()
+        .function_with::<Double>(|n| {
+            if n > 0.0 {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            Ok(n * 2.0)
+        })
+        .expect("register");
+    engine
+        .load_script(
+            "slow",
+            "export function invoke(n: number) { return (globalThis as any).math.double(n); }",
+        )
+        .expect("load");
+    engine
+        .call::<f64>("slow", "invoke", (0.0,))
+        .expect("a call that does not sleep warms the context");
+
+    let result = engine.call::<f64>("slow", "invoke", (1.0,));
+
+    assert!(
+        matches!(result, Err(VmError::Execution { .. })),
+        "the sleeping host call must consume the budget: {result:?}"
+    );
+}
+
+/// A delivery in progress runs the handler list it took: a handler removed meanwhile
+/// still runs in it, one added meanwhile waits for the next delivery.
+#[test]
+fn a_delivery_runs_the_snapshot_it_took_even_when_handlers_change_the_list() {
+    let engine = engine_with(
+        r#"
+        const order: string[] = [];
+        const late = () => { order.push("late"); };
+        const second = (event: { n: number }) => { order.push(`second:${event.n}`); };
+        const first = (event: { n: number }) => {
+            order.push(`first:${event.n}`);
+            ctx.off("tick", second);
+            ctx.on("tick", late);
+        };
+        ctx.on("tick", first);
+        ctx.on("tick", second);
+        export function read(): string { return order.join(","); }
+        export function clear(): void { order.length = 0; }
+        "#,
+    );
+
+    engine
+        .emit("tick", &json!({ "n": 7 }))
+        .expect("first delivery");
+    let first: String = engine.call("script", "read", ()).expect("read");
+    engine.call::<()>("script", "clear", ()).expect("clear");
+    engine
+        .emit("tick", &json!({ "n": 8 }))
+        .expect("second delivery");
+    let second: String = engine.call("script", "read", ()).expect("read");
+
+    assert_eq!(
+        first, "first:7,second:7",
+        "`second` was still in the list taken"
+    );
+    assert_eq!(
+        second, "first:8,late",
+        "the next delivery sees the new list"
+    );
+}
+
+/// An export is read at every call, not remembered: a binding the module reassigns is
+/// what the next call runs, and a name that is not a function is not callable.
+#[test]
+fn a_call_reads_the_export_binding_at_the_time_of_the_call() {
+    let engine = engine_with(
+        r#"
+        export let version = (): number => 1;
+        export const answer = 42;
+        export function upgrade(): void { version = (): number => 2; }
+        "#,
+    );
+
+    let first: f64 = engine.call("script", "version", ()).expect("first version");
+    engine.call::<()>("script", "upgrade", ()).expect("upgrade");
+    let second: f64 = engine
+        .call("script", "version", ())
+        .expect("second version");
+    let not_a_function = engine.call::<f64>("script", "answer", ());
+    let missing = engine.call::<f64>("script", "absent", ());
+
+    assert_eq!((first, second), (1.0, 2.0));
+    assert!(not_a_function.is_err(), "{not_a_function:?}");
+    assert!(
+        matches!(missing, Err(VmError::FunctionNotFound { ref function_name, .. }) if function_name == "absent"),
+        "{missing:?}"
+    );
 }
 
 fn engine() -> Engine {
@@ -31,23 +158,17 @@ impl HostContract for Double {
     const IMPORT_MODULE: &'static str = "host";
     const EXPORT_PATH: &'static [&'static str] = &["math", "double"];
 
-    fn schema() -> Schema {
-        Schema::typed("DoubleInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for Double {
+impl HostFunctionSignature for Double {
     type Input = f64;
     type Output = f64;
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed("DoubleOutput", TsType::Number)
-    }
-
+impl HostFunction for Double {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(input * 2.0)
     }
@@ -58,23 +179,17 @@ struct Failing;
 impl HostContract for Failing {
     const NAME: &'static str = "host.fail";
 
-    fn schema() -> Schema {
-        Schema::typed("FailInput", TsType::Null)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for Failing {
+impl HostFunctionSignature for Failing {
     type Input = ();
     type Output = f64;
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed("FailOutput", TsType::Number)
-    }
-
+impl HostFunction for Failing {
     fn call((): Self::Input) -> Result<Self::Output, VmError> {
         Err(VmError::Execution {
             details: String::from("boom"),
@@ -150,7 +265,7 @@ fn typed_host_functions_are_reachable_by_import_and_by_global() {
     let mut engine = engine();
     engine
         .registry()
-        .typed_function::<Double>()
+        .function::<Double>()
         .expect("register host function");
     engine
         .load_script(
@@ -198,7 +313,7 @@ fn host_function_errors_are_catchable_in_scripts() {
     let mut engine = engine();
     engine
         .registry()
-        .typed_function::<Failing>()
+        .function::<Failing>()
         .expect("register host function");
     engine
         .load_script(
@@ -232,7 +347,7 @@ fn contract_validation_rejects_inputs_outside_the_schema() {
     .expect("create engine");
     engine
         .registry()
-        .typed_function::<Double>()
+        .function::<Double>()
         .expect("register host function");
     engine
         .load_script(
@@ -252,6 +367,35 @@ fn contract_validation_rejects_inputs_outside_the_schema() {
         matches!(invalid, Err(VmError::Execution { ref details }) if details.contains("validation")),
         "{invalid:?}"
     );
+}
+
+#[test]
+fn loading_scripts_past_the_memory_limit_says_the_limit_was_reached() {
+    let mut engine = Engine::new(&VmOptions {
+        memory_limit_bytes: 4 * 1024 * 1024,
+        ..VmOptions::default()
+    })
+    .expect("create engine");
+    engine
+        .load_script("first", "export function one(): number { return 1; }")
+        .expect("load first script");
+
+    let error = (0..1000)
+        .find_map(|index| {
+            engine
+                .load_script(format!("script-{index}"), "export {};")
+                .err()
+        })
+        .expect("4 MiB hold fewer than 1000 contexts");
+
+    assert!(
+        matches!(&error, VmError::Execution { details } if details.contains("out of memory") && details.contains("memory_limit_bytes")),
+        "{error:?}"
+    );
+    let one: f64 = engine
+        .call("first", "one", ())
+        .expect("engine stays usable");
+    assert_eq!(one, 1.0);
 }
 
 #[test]
@@ -371,25 +515,60 @@ fn runaway_top_level_code_fails_the_load_and_keeps_the_previous_version() {
     assert_eq!(version, 1.0);
 }
 
-/// A script controls its handler list; an absurd length must fail the emit, not
-/// panic the host (rquickjs `Array::len` panics above `i32::MAX`).
 #[test]
-fn emit_rejects_handler_list_with_oversized_length() {
-    let mut engine = Engine::new(&VmOptions::default()).expect("create engine");
+fn call_sees_an_export_the_module_reassigned() {
+    let engine = engine_with(
+        r#"export let pick = (): number => 1;
+           export function swap(): void { pick = () => 2; }"#,
+    );
+
+    let before: f64 = engine.call("script", "pick", ()).expect("first pick");
+    engine.call::<()>("script", "swap", ()).expect("swap");
+    let after: f64 = engine.call("script", "pick", ()).expect("second pick");
+
+    assert_eq!((before, after), (1.0, 2.0));
+}
+
+/// Makes `count` two-object cycles that reference counting alone cannot free.
+const CYCLES: &str = r#"
+export function makeCycles(count: number): void {
+  for (let i = 0; i < count; i++) {
+    const a: { b?: unknown } = {};
+    a.b = { a };
+  }
+}
+"#;
+
+#[test]
+fn cycles_stay_until_run_gc_when_automatic_collection_is_off() {
+    let engine = engine_with(CYCLES);
+    engine.set_gc_threshold(None);
+    let before = engine.memory_stats().object_count;
+
     engine
-        .load_script(
-            "tampered",
-            r#"
-            ctx.on("tick", () => {});
-            globalThis.__vm_handlers.tick.length = 2 ** 32 - 1;
-            export {};
-            "#,
-        )
-        .expect("load script");
+        .call::<()>("script", "makeCycles", (20_000,))
+        .expect("make cycles");
+    let kept = engine.memory_stats().object_count;
+    engine.run_gc();
+    let collected = engine.memory_stats().object_count;
 
-    let result = engine.emit("tick", &json!({ "n": 1 }));
+    assert!(kept >= before + 40_000, "{before} -> {kept}");
+    assert!(collected <= before + 100, "{before} -> {collected}");
+}
 
-    assert!(result.is_err(), "{result:?}");
+#[test]
+fn automatic_collection_resumes_once_a_threshold_is_set_again() {
+    let engine = engine_with(CYCLES);
+    engine.set_gc_threshold(None);
+    engine.set_gc_threshold(Some(64 * 1024));
+    let before = engine.memory_stats().object_count;
+
+    engine
+        .call::<()>("script", "makeCycles", (20_000,))
+        .expect("make cycles");
+    let after = engine.memory_stats().object_count;
+
+    assert!(after < before + 20_000, "{before} -> {after}");
 }
 
 #[test]

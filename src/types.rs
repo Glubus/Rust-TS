@@ -36,4 +36,7 @@ pub struct ReloadReport {
     /// Scripts whose files changed but whose reload failed; each keeps running its
     /// previous version.
     pub failed: Vec<(ScriptId, VmError)>,
+    /// Scripts reloaded, and so also listed in `reloaded`, whose previous version's
+    /// `ctx.hot.dispose` callback threw after the new version was loaded.
+    pub dispose_failed: Vec<(ScriptId, VmError)>,
 }

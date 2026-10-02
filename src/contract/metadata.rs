@@ -307,6 +307,10 @@ pub struct HostContractDescriptor {
 pub struct HostCallbackDescriptor {
     /// Payload schema metadata.
     pub payload_schema: Schema,
+    /// What each handler returns, for a [`HostRequest`](crate::HostRequest); `None` for a
+    /// plain callback, whose handlers return nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_schema: Option<Schema>,
 }
 
 /// Typing metadata specific to function contracts.
@@ -314,8 +318,13 @@ pub struct HostCallbackDescriptor {
 pub struct HostFunctionDescriptor {
     /// Input schema metadata.
     pub input_schema: Schema,
-    /// Output schema metadata.
+    /// Output schema metadata: what the function returns, or what its Promise resolves
+    /// to when [`Self::returns_promise`] is set.
     pub output_schema: Schema,
+    /// Whether scripts receive a `Promise` of the output, settled by a
+    /// [`HostResolver`](crate::HostResolver). Serialized descriptors omit it when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub returns_promise: bool,
 }
 
 /// Normalized ABI data for one host contract.
@@ -325,13 +334,19 @@ pub enum HostContractAbi {
     Function {
         /// Input schema.
         input: Schema,
-        /// Output schema.
+        /// Output schema, the value a Promise resolves to when `returns_promise` is set.
         output: Schema,
+        /// Whether the function returns a `Promise` of the output.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        returns_promise: bool,
     },
     /// Callback ABI.
     Callback {
         /// Payload schema.
         payload: Schema,
+        /// Handler reply schema of a request; `None` when handlers return nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply: Option<Schema>,
     },
     /// Context ABI.
     Context {

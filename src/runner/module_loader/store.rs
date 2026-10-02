@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use rquickjs::{Ctx, Error, Module, Result as JsResult};
 
-use crate::compiler::CompiledModule;
+use crate::compiler::{CompiledModule, ModuleOrigin};
 use crate::error::VmError;
 
 use super::graph::RuntimeModuleGraph;
@@ -35,15 +35,33 @@ impl WorkerModuleStore {
         Ok(())
     }
 
+    /// Sources of the host modules as a context group's scripts import them.
+    pub(crate) fn insert_group_host_modules(
+        &self,
+        modules: BTreeMap<String, String>,
+    ) -> std::result::Result<(), VmError> {
+        let mut guard = self.lock_store()?;
+        insertion::insert_group_host_modules(&mut guard, modules);
+        Ok(())
+    }
+
+    /// Marks graph `graph_id` as loaded into a context group; removing its modules
+    /// clears the mark.
+    pub(crate) fn mark_grouped(&self, graph_id: u64) -> std::result::Result<(), VmError> {
+        self.lock_store()?.grouped_graphs.insert(graph_id);
+        Ok(())
+    }
+
     pub(crate) fn insert_inline(
         &self,
         script_id: &str,
         source: String,
+        origin: ModuleOrigin,
         graph_id: u64,
     ) -> std::result::Result<RuntimeModuleGraph, VmError> {
         let mut guard = self.lock_store()?;
         Ok(insertion::insert_inline(
-            &mut guard, script_id, source, graph_id,
+            &mut guard, script_id, source, origin, graph_id,
         ))
     }
 
@@ -69,6 +87,13 @@ impl WorkerModuleStore {
             .lock()
             .map_err(|_| Error::new_resolving_message(base, name, "module store lock poisoned"))?;
         resolution::resolve_from_store(&guard, base, name)
+    }
+
+    /// `path:line:column` of the TypeScript behind a 1-based position in a loaded
+    /// script module; `None` for host modules and unmapped positions.
+    pub(crate) fn locate(&self, module_id: &str, line: u32, column: u32) -> Option<String> {
+        let guard = self.inner.lock().ok()?;
+        guard.origins.get(module_id)?.locate(line, column)
     }
 
     pub(super) fn load<'js>(&self, ctx: &Ctx<'js>, name: &str) -> JsResult<Module<'js>> {

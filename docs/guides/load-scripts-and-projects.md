@@ -132,8 +132,10 @@ engine.load_project("zoro-moveset", "mods/zoro_moveset/main.ts")?;
 
 The new version is transpiled, resolved and initialized before it replaces the
 old one. If any step fails, the load returns the error and the previous version
-stays loaded, with its state. A successful reload starts from fresh script state
-and keeps the script's place in event delivery order.
+stays loaded, with its state. A successful reload starts from fresh script state,
+except for what the script hands over through `ctx.hot` (see
+[Keep State Across Reloads](engine.md#keep-state-across-reloads)), and keeps the
+script's place in event delivery order.
 
 To reload projects when their files change, call `engine.reload_changed()` from
 your loop, for example once per second during development: it reloads the projects
@@ -146,8 +148,9 @@ whose files changed and reports failures, without starting a thread. See
 engine.unload_script("zoro-moveset")?;
 ```
 
-Unloading removes the script and releases its modules. Calling or unloading it
-afterwards fails with `VmError::ScriptNotFound`.
+Unloading runs the script's `ctx.hot.dispose` callbacks, then removes the script and
+releases its modules. Calling or unloading it afterwards fails with
+`VmError::ScriptNotFound`.
 
 ## Transpilation Cache
 

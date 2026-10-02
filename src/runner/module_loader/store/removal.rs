@@ -1,4 +1,5 @@
 use super::inner::ModuleStoreInner;
+use crate::runner::module_loader::graph::graph_of;
 
 /// Removes a script's module graph. Only the graph's own module ids are touched: host
 /// modules live under bare names that a script id may coincide with.
@@ -9,7 +10,11 @@ pub(super) fn remove_modules(store: &mut ModuleStoreInner, module_ids: &[String]
 }
 
 fn remove_module(store: &mut ModuleStoreInner, module_id: &str) {
+    if let Some(graph_id) = graph_of(module_id) {
+        store.grouped_graphs.remove(&graph_id);
+    }
     store.sources.remove(module_id);
+    store.origins.remove(module_id);
     store
         .resolutions
         .retain(|(base, _), resolved| base != module_id && resolved != module_id);

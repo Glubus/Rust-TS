@@ -41,13 +41,14 @@ export function lookup() {
 
 RustTS is not a server runtime and not a Node or Deno replacement:
 
-- it starts no threads and has no event loop, timers, network or filesystem API;
+- it starts no threads and has no event loop, network or filesystem API;
   scripts run only when the host calls them, and reach the outside world only
   through the host functions you register
 - an `Engine` stays on the thread that created it
 - imports must be statically discoverable; dynamic `import(...)` is rejected
-- host functions are synchronous; scripts can still use Promises and `async`
-  exports, which settle before each call returns
+- synchronous calls settle script-only Promise jobs before returning; host or
+  timer-driven async exports use `call_deferred` / `request_deferred` and
+  `pump` / `advance_timers`
 - `HostContext` is declarative metadata only
 
 Start with [Getting Started](getting-started.md), then

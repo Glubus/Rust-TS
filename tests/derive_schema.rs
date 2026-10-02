@@ -8,8 +8,9 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use rustts::{
-    Engine, HostContract, HostContractKind, HostFunction, InMemoryHostContractRegistry, Schema,
-    TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema, TsType, VmError, VmOptions,
+    Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    InMemoryHostContractRegistry, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema, TsType,
+    VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -193,27 +194,17 @@ struct CreateInvoiceOutput {
 impl HostContract for CreateInvoice {
     const NAME: &'static str = "billing.invoice.create";
 
-    fn schema() -> Schema {
-        CreateInvoiceInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for CreateInvoice {
+impl HostFunctionSignature for CreateInvoice {
     type Input = CreateInvoiceInput;
     type Output = CreateInvoiceOutput;
+}
 
-    fn input_schema() -> Schema {
-        CreateInvoiceInput::schema()
-    }
-
-    fn output_schema() -> Schema {
-        CreateInvoiceOutput::schema()
-    }
-
+impl HostFunction for CreateInvoice {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(CreateInvoiceOutput {
             invoice_id: format!("invoice:{}", input.account_id),
@@ -225,27 +216,17 @@ impl HostFunction for CreateInvoice {
 impl HostContract for FindSession {
     const NAME: &'static str = "session.find";
 
-    fn schema() -> Schema {
-        FindSessionInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for FindSession {
+impl HostFunctionSignature for FindSession {
     type Input = FindSessionInput;
     type Output = FindSessionOutput;
+}
 
-    fn input_schema() -> Schema {
-        FindSessionInput::schema()
-    }
-
-    fn output_schema() -> Schema {
-        FindSessionOutput::schema()
-    }
-
+impl HostFunction for FindSession {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(FindSessionOutput {
             token: SessionToken {
@@ -258,19 +239,17 @@ impl HostFunction for FindSession {
 impl HostContract for AutoCreateInvoice {
     const NAME: &'static str = "billing.invoice.autoCreate";
 
-    fn schema() -> Schema {
-        Schema::named("LegacyAutoCreateInvoiceSchema")
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for AutoCreateInvoice {
+impl HostFunctionSignature for AutoCreateInvoice {
     type Input = AutoCreateInvoiceInput;
     type Output = AutoCreateInvoiceOutput;
+}
 
+impl HostFunction for AutoCreateInvoice {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(AutoCreateInvoiceOutput {
             invoice_id: format!("invoice:{}", input.account_id),
@@ -281,10 +260,6 @@ impl HostFunction for AutoCreateInvoice {
 
 impl HostContract for AutoInvoiceCreated {
     const NAME: &'static str = "billing.invoice.created";
-
-    fn schema() -> Schema {
-        Schema::named("LegacyAutoInvoiceCreatedSchema")
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback
@@ -597,7 +572,7 @@ fn flattened_map_sdk_predicates_check_every_key() {
     let mut engine = Engine::new(&VmOptions::default()).expect("create engine");
     engine
         .registry()
-        .typed_function::<RecordScores>()
+        .function::<RecordScores>()
         .expect("register flattened-map host function");
     let sdk = engine.registry().sdk().expect("render SDK");
     let source = format!(
@@ -623,19 +598,17 @@ struct RecordScores;
 impl HostContract for RecordScores {
     const NAME: &'static str = "scores.record";
 
-    fn schema() -> Schema {
-        OpenScores::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for RecordScores {
+impl HostFunctionSignature for RecordScores {
     type Input = OpenScores;
     type Output = OpenEvent;
+}
 
+impl HostFunction for RecordScores {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(OpenEvent::Scores(input))
     }
@@ -645,7 +618,7 @@ impl HostFunction for RecordScores {
 fn flattened_map_declarations_typecheck() {
     let registry = InMemoryHostContractRegistry::new();
     registry
-        .typed_function::<RecordScores>()
+        .function::<RecordScores>()
         .expect("register flattened-map host function");
     let dts = registry.dts().expect("render declarations");
     let sdk = registry.sdk().expect("render SDK");
@@ -1034,7 +1007,7 @@ fn transparent_newtypes_drive_host_contract_dts() {
 fn typed_function_registration_uses_input_and_output_ts_schema() {
     let registry = InMemoryHostContractRegistry::new();
     registry
-        .typed_function::<AutoCreateInvoice>()
+        .function::<AutoCreateInvoice>()
         .expect("register typed derived-schema host function");
 
     let descriptor = registry
@@ -1062,7 +1035,7 @@ fn typed_function_registration_uses_input_and_output_ts_schema() {
 fn typed_callback_registration_uses_payload_ts_schema() {
     let registry = InMemoryHostContractRegistry::new();
     registry
-        .typed_callback::<AutoInvoiceCreated>()
+        .callback::<AutoInvoiceCreated>()
         .expect("register typed derived-schema callback");
 
     let descriptor = registry

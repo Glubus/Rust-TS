@@ -8,12 +8,14 @@ use crate::contract::{
     TsRecordKey, TsType,
 };
 
-use super::declarations::{is_unknown_schema, render_ts_type, schema_type_name};
+use super::declarations::{
+    EVENT_CONTEXT_TYPE, HOT_CONTEXT_TYPE, function_output_type, is_unknown_schema,
+    render_event_map, render_ts_type, schema_type_name,
+};
 use ident::{identifier, indent, property_name};
 use tree::{ObjectNode, ObjectTree};
 
 const HOST_HELPERS: &str = include_str!("../../../assets/sdk_host_helpers.ts");
-const EVENT_HELPERS: &str = include_str!("../../../assets/sdk_event_helpers.ts");
 
 pub(crate) fn render_typescript_sdk(descriptors: &[HostContractDescriptor]) -> String {
     let mut builder = SdkBuilder::default();
@@ -33,30 +35,44 @@ struct SdkBuilder {
     contexts: ObjectTree<SdkContext>,
     host_functions: BTreeMap<String, SdkFunctionType>,
     host_events: BTreeMap<String, String>,
+    host_replies: BTreeMap<String, String>,
     has_host_functions: bool,
 }
 
 impl SdkBuilder {
     fn push_descriptor(&mut self, descriptor: &HostContractDescriptor) {
         match &descriptor.abi {
-            HostContractAbi::Function { input, output } => {
-                self.push_function(&descriptor.name, input, output);
+            HostContractAbi::Function {
+                input,
+                output,
+                returns_promise,
+            } => {
+                self.push_function(&descriptor.name, input, output, *returns_promise);
             }
-            HostContractAbi::Callback { payload } => self.push_callback(&descriptor.name, payload),
+            HostContractAbi::Callback { payload, reply } => {
+                self.push_callback(&descriptor.name, payload, reply.as_ref());
+            }
             HostContractAbi::Context { schema } => self.push_context(&descriptor.name, schema),
             HostContractAbi::Unknown => {}
         }
     }
 
-    fn push_function(&mut self, name: &str, input: &Schema, output: &Schema) {
+    fn push_function(
+        &mut self,
+        name: &str,
+        input: &Schema,
+        output: &Schema,
+        returns_promise: bool,
+    ) {
         self.schemas.push(input);
         self.schemas.push(output);
         self.has_host_functions = true;
+        let output_type = function_output_type(output, returns_promise);
         self.host_functions.insert(
             name.to_owned(),
             SdkFunctionType {
                 input_type: schema_type_name(input),
-                output_type: schema_type_name(output),
+                output_type: output_type.clone(),
             },
         );
         self.functions.insert(
@@ -64,17 +80,21 @@ impl SdkBuilder {
             SdkFunction {
                 contract_name: name.to_owned(),
                 input_type: schema_type_name(input),
-                output_type: schema_type_name(output),
+                output_type,
                 takes_input: !matches!(input.ts_type, TsType::Void),
             },
         );
     }
 
-    fn push_callback(&mut self, name: &str, payload: &Schema) {
+    fn push_callback(&mut self, name: &str, payload: &Schema, reply: Option<&Schema>) {
         self.schemas.push(payload);
-        let payload_type = schema_type_name(payload);
         self.host_events
-            .insert(name.to_owned(), payload_type.clone());
+            .insert(name.to_owned(), schema_type_name(payload));
+        if let Some(reply) = reply {
+            self.schemas.push(reply);
+            self.host_replies
+                .insert(name.to_owned(), schema_type_name(reply));
+        }
         self.events.insert(
             name,
             SdkEvent {
@@ -99,6 +119,7 @@ impl SdkBuilder {
         let host_function_api = self.host_function_api();
         let host_event_types = self.host_event_types();
         let event_helpers = self.event_helpers();
+        let ctx_export = self.ctx_export();
         let (schema_sections, models) = self.schemas.finish();
         let mut sections = schema_sections;
         push_if_some(&mut sections, render_model_runtime_helpers(&models));
@@ -108,17 +129,16 @@ impl SdkBuilder {
         push_if_some(&mut sections, host_function_api);
         push_if_some(&mut sections, host_event_types);
         push_if_some(&mut sections, event_helpers);
+        sections.push(ctx_export);
         sections.extend(render_context_exports(&self.contexts));
         sections.extend(render_domain_exports(&self.functions, &self.events));
         push_if_some(&mut sections, render_events_export(&self.events));
-        push_if_some(
-            &mut sections,
-            render_sdk_aggregate(&self.functions, &self.events, &self.contexts, &models),
-        );
-
-        if sections.is_empty() {
-            return String::new();
-        }
+        sections.push(render_sdk_aggregate(
+            &self.functions,
+            &self.events,
+            &self.contexts,
+            &models,
+        ));
 
         let mut output = sections.join("\n\n");
         output.push('\n');
@@ -135,13 +155,16 @@ impl SdkBuilder {
             return None;
         }
 
-        let events = self
-            .host_events
-            .iter()
-            .map(|(event_name, payload_type)| format!("  {event_name:?}: {payload_type};"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        Some(format!("type HostEvents = {{\n{events}\n}};"))
+        let entries = |map: &BTreeMap<String, String>| {
+            map.iter()
+                .map(|(event_name, ty)| format!("  {event_name:?}: {ty};"))
+                .collect::<Vec<_>>()
+        };
+        Some(format!(
+            "{}\n\n{}",
+            render_event_map("HostEvents", &entries(&self.host_events)),
+            render_event_map("HostReplies", &entries(&self.host_replies)),
+        ))
     }
 
     fn host_function_api(&self) -> Option<String> {
@@ -153,7 +176,21 @@ impl SdkBuilder {
     }
 
     fn event_helpers(&self) -> Option<String> {
-        (!self.host_events.is_empty()).then(|| EVENT_HELPERS.trim().to_owned())
+        (!self.host_events.is_empty()).then(|| EVENT_CONTEXT_TYPE.trim().to_owned())
+    }
+
+    /// The `ctx` global: `ctx.hot` always, `ctx.on` and `ctx.off` once there are events
+    /// to type them.
+    fn ctx_export(&self) -> String {
+        let events = if self.host_events.is_empty() {
+            ""
+        } else {
+            "HostEventContext & "
+        };
+        format!(
+            "{}\n\ntype HostContext = {events}{{ readonly hot: HostHotContext }};\n\nconst __ctx = (globalThis as unknown as {{ ctx: HostContext }}).ctx;\n\nexport const ctx = __ctx;",
+            HOT_CONTEXT_TYPE.trim()
+        )
     }
 }
 
@@ -356,7 +393,7 @@ fn render_sdk_aggregate(
     events: &ObjectTree<SdkEvent>,
     contexts: &ObjectTree<SdkContext>,
     models: &BTreeMap<String, TsType>,
-) -> Option<String> {
+) -> String {
     let mut entries = Vec::new();
 
     if !models.is_empty() {
@@ -372,8 +409,8 @@ fn render_sdk_aggregate(
     }
     if !events.is_empty() {
         entries.push(format!("{}events,", indent(1)));
-        entries.push(format!("{}ctx,", indent(1)));
     }
+    entries.push(format!("{}ctx,", indent(1)));
     if !contexts.is_empty() {
         entries.push(format!(
             "{}contexts: {},",
@@ -382,14 +419,7 @@ fn render_sdk_aggregate(
         ));
     }
 
-    if entries.is_empty() {
-        return None;
-    }
-
-    Some(format!(
-        "export const rusttsSdk = {{\n{}\n}};",
-        entries.join("\n")
-    ))
+    format!("export const rusttsSdk = {{\n{}\n}};", entries.join("\n"))
 }
 
 fn render_model_helpers(models: &BTreeMap<String, TsType>) -> Option<String> {

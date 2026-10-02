@@ -7,6 +7,15 @@ use crate::contract::{
 
 const DEFAULT_ENUM_TAG: &str = "type";
 
+/// `HostHotContext`, the type of `ctx.hot`, shared by the declarations and the SDK.
+pub(super) const HOT_CONTEXT_TYPE: &str = include_str!("../../../assets/hot_context.ts");
+
+/// `ctx.on` / `ctx.off` and the handler types, shared by the declarations and the SDK.
+pub(super) const EVENT_CONTEXT_TYPE: &str = include_str!("../../../assets/event_context.ts");
+
+/// The `rustts:env` module, whose `ctx` has the type `__CTX__`.
+pub(super) const ENV_MODULE_TYPE: &str = include_str!("../../../assets/env_module.ts");
+
 pub(crate) fn render_typescript_declarations(descriptors: &[HostContractDescriptor]) -> String {
     let mut declarations = DeclarationBuffer::default();
 
@@ -21,16 +30,23 @@ pub(crate) fn render_typescript_declarations(descriptors: &[HostContractDescript
 struct DeclarationBuffer {
     sections: Vec<String>,
     host_events: Vec<String>,
+    host_replies: Vec<String>,
     emitted_schemas: BTreeSet<String>,
 }
 
 impl DeclarationBuffer {
     fn push_descriptor(&mut self, descriptor: &HostContractDescriptor) {
         match &descriptor.abi {
-            HostContractAbi::Function { input, output } => {
-                self.push_function(&descriptor.name, input, output);
+            HostContractAbi::Function {
+                input,
+                output,
+                returns_promise,
+            } => {
+                self.push_function(&descriptor.name, input, output, *returns_promise);
             }
-            HostContractAbi::Callback { payload } => self.push_callback(&descriptor.name, payload),
+            HostContractAbi::Callback { payload, reply } => {
+                self.push_callback(&descriptor.name, payload, reply.as_ref());
+            }
             HostContractAbi::Context { schema } => self.push_context(&descriptor.name, schema),
             HostContractAbi::Unknown => {}
         }
@@ -52,17 +68,31 @@ impl DeclarationBuffer {
         ));
     }
 
-    fn push_function(&mut self, name: &str, input: &Schema, output: &Schema) {
+    fn push_function(
+        &mut self,
+        name: &str,
+        input: &Schema,
+        output: &Schema,
+        returns_promise: bool,
+    ) {
         self.push_schema(input);
         self.push_schema(output);
-        self.sections
-            .push(render_function_declaration(name, input, output));
+        self.sections.push(render_function_declaration(
+            name,
+            input,
+            &function_output_type(output, returns_promise),
+        ));
     }
 
-    fn push_callback(&mut self, name: &str, payload: &Schema) {
+    fn push_callback(&mut self, name: &str, payload: &Schema, reply: Option<&Schema>) {
         self.push_schema(payload);
         self.host_events
             .push(format!("  {name:?}: {};", schema_type_name(payload)));
+        if let Some(reply) = reply {
+            self.push_schema(reply);
+            self.host_replies
+                .push(format!("  {name:?}: {};", schema_type_name(reply)));
+        }
     }
 
     fn push_context(&mut self, name: &str, schema: &Schema) {
@@ -75,10 +105,7 @@ impl DeclarationBuffer {
 
     fn finish(mut self) -> String {
         self.push_host_events();
-        if self.sections.is_empty() {
-            return String::new();
-        }
-
+        self.push_ctx();
         let mut output = self.sections.join("\n\n");
         output.push('\n');
         output
@@ -90,23 +117,45 @@ impl DeclarationBuffer {
         }
 
         self.host_events.sort();
-        self.sections.push(format!(
-            "type HostEvents = {{\n{}\n}};",
-            self.host_events.join("\n")
-        ));
-        self.sections.push(String::from(
-            "declare const ctx: {\n  on<K extends keyof HostEvents>(event: K, handler: (payload: HostEvents[K]) => void | Promise<void>): void;\n};",
-        ));
+        self.host_replies.sort();
+        self.sections
+            .push(render_event_map("HostEvents", &self.host_events));
+        self.sections
+            .push(render_event_map("HostReplies", &self.host_replies));
+    }
+
+    /// The `ctx` global: `ctx.hot` always, `ctx.on` and `ctx.off` once there are events
+    /// to type them.
+    fn push_ctx(&mut self) {
+        let events = if self.host_events.is_empty() {
+            ""
+        } else {
+            self.sections.push(EVENT_CONTEXT_TYPE.trim().to_owned());
+            "HostEventContext & "
+        };
+        self.sections.push(HOT_CONTEXT_TYPE.trim().to_owned());
+        let ctx_type = format!("{events}{{ readonly hot: HostHotContext }}");
+        self.sections
+            .push(format!("declare const ctx: {ctx_type};"));
+        self.sections
+            .push(ENV_MODULE_TYPE.trim().replace("__CTX__", &ctx_type));
     }
 }
 
-fn render_function_declaration(name: &str, input: &Schema, output: &Schema) -> String {
+/// `type {name} = { ... };` from `"event": Type;` entries, `{}` without any.
+pub(super) fn render_event_map(name: &str, entries: &[String]) -> String {
+    if entries.is_empty() {
+        return format!("type {name} = {{}};");
+    }
+    format!("type {name} = {{\n{}\n}};", entries.join("\n"))
+}
+
+fn render_function_declaration(name: &str, input: &Schema, output_type: &str) -> String {
     let name_parts = split_contract_name(name);
     let signature = format!(
-        "function {}(input: {}): {};",
+        "function {}(input: {}): {output_type};",
         name_parts.function_name,
         schema_type_name(input),
-        schema_type_name(output)
     );
 
     if name_parts.namespaces.is_empty() {
@@ -168,6 +217,16 @@ pub(super) fn schema_type_name(schema: &Schema) -> String {
         render_ts_type(&schema.ts_type)
     } else {
         schema.name.clone()
+    }
+}
+
+/// What a host function returns to scripts: its output, or a `Promise` of it.
+pub(super) fn function_output_type(output: &Schema, returns_promise: bool) -> String {
+    let output = schema_type_name(output);
+    if returns_promise {
+        format!("Promise<{output}>")
+    } else {
+        output
     }
 }
 

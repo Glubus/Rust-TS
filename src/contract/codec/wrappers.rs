@@ -31,6 +31,10 @@ impl<T: JsEncode + ?Sized> JsEncode for &T {
     fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>> {
         (**self).encode_js(ctx)
     }
+
+    fn encode_scalar(&self) -> Option<rquickjs::qjs::JSValue> {
+        (**self).encode_scalar()
+    }
 }
 
 macro_rules! transparent_codecs {

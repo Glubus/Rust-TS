@@ -17,13 +17,18 @@ derive = ["dep:rustts_macros"]
 uuid = ["dep:uuid"]
 chrono = ["dep:chrono"]
 glam = ["dep:glam"]
+# Builds QuickJS without its internal assertions: JavaScript runs faster, but a JavaScript
+# value the host leaks no longer aborts the process when the engine drops.
+disable-assertions = ["rquickjs/disable-assertions"]
 
 [dependencies]
 oxc = { version = "0.137.0", features = ["codegen", "full", "transformer"] }
 oxc_resolver = "11.21.3"
+oxc_sourcemap = "8.1.2"
 rquickjs = { version = "0.14.0", features = ["rust-alloc", "loader"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+rustc-hash = "2.1.3"
 thiserror = "2.0.17"
 blake3 = "1.8.2"
 indexmap = "2.14.2"
@@ -41,6 +46,7 @@ mlua = { version = "0.12.1", features = ["lua54", "vendored", "serialize"] }
 [[bench]]
 name = "runtime"
 harness = false
+required-features = ["derive"]
 
 [[bench]]
 name = "native_bridge"

@@ -14,7 +14,8 @@ for large payloads. `NativeBytes` crosses as a `Uint8Array` in both directions:
 ```rust
 use serde::Deserialize;
 use rustts::{
-    HostContract, HostContractKind, HostFunction, NativeBytes, Schema, TsSchema, VmError,
+    HostContract, HostContractKind, HostFunction, HostFunctionSignature, NativeBytes,
+    TsSchema, VmError,
 };
 
 #[derive(Deserialize, TsSchema)]
@@ -28,23 +29,17 @@ struct ReadAsset;
 impl HostContract for ReadAsset {
     const NAME: &'static str = "asset.read";
 
-    fn schema() -> Schema {
-        ReadAssetInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for ReadAsset {
+impl HostFunctionSignature for ReadAsset {
     type Input = ReadAssetInput;
     type Output = NativeBytes;
+}
 
-    fn output_schema() -> Schema {
-        NativeBytes::schema()
-    }
-
+impl HostFunction for ReadAsset {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let bytes = std::fs::read(input.path).map_err(VmError::from)?;
         Ok(NativeBytes::new(bytes))
@@ -72,9 +67,9 @@ if (bytes.byteLength >= 4) {
 
 ## Validation Caveat
 
-When contract validation is enabled, values are validated as JSON first, so
-bytes cross as number arrays on that path. Keep validation off for large
-byte payloads in production.
+When contract validation is enabled, each value is also converted to JSON for the
+check, so a large byte payload is copied into a number array on every call. Keep
+validation off for large byte payloads in production.
 
 Use this type for byte payloads. Do not use JSON arrays for large buffers unless
 you specifically need JSON compatibility.

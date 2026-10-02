@@ -1,5 +1,6 @@
 //! Engine lifecycle costs: startup, first inline/project load with and without the
-//! transpile disk cache, SDK generation, and the memory shape of many small scripts.
+//! transpile disk cache, SDK generation, the memory shape of many small scripts, and
+//! the per-frame cost of `emit` and `advance_timers` as the script count grows.
 //!
 //! Per-call and emit overhead are measured against Lua and raw QuickJS in `vs_lua`.
 
@@ -9,12 +10,12 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use criterion::{
-    BatchSize, Bencher, BenchmarkGroup, Criterion, criterion_group, criterion_main,
+    BatchSize, Bencher, BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main,
     measurement::WallTime,
 };
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, MemoryStats, Schema,
-    TsField, TsType, VmError, VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    MemoryStats, TsSchema, VmError, VmOptions,
 };
 use serde_json::json;
 
@@ -24,7 +25,40 @@ const MOD_PACK_ENTRY: &str = concat!(
     "/tests/projects/realistic_mod_pack/src/main.ts"
 );
 const MANY_SMALL_SCRIPT_COUNT: usize = 400;
+/// Scripts per context group in the grouped benches.
+const GROUP_SIZE: usize = 10;
+const GROUPED_FRAME_SCRIPT: &str = r#"
+import { ctx } from "rustts:env";
+let total = 0;
+ctx.on("frame", (event: { dt: number }) => { total += event.dt; });
+export {};
+"#;
 const MEMORY_REPORT_SCRIPT_COUNTS: &[usize] = &[100, 400, 800, 1000];
+const FRAME_SCRIPT_COUNTS: &[usize] = &[1, 50, 250, 500, 1000];
+const FRAME_DURATION: Duration = Duration::from_micros(500);
+const FRAME_SCRIPT: &str = r#"
+let total = 0;
+ctx.on("frame", (event: { dt: number }) => { total += event.dt; });
+export {};
+"#;
+/// A zero-delay interval is due on every `advance_timers` call.
+const TIMER_SCRIPT: &str = r#"
+let total = 0;
+setInterval(() => { total += 1; }, 0);
+export {};
+"#;
+/// A timer that is never due: what most frames see, since a timer rarely fires in the
+/// 500 µs of a frame.
+const IDLE_TIMER_SCRIPT: &str = r#"
+setInterval(() => {}, 1e12);
+export {};
+"#;
+const GROUPED_TIMER_SCRIPT: &str = r#"
+import { setInterval } from "rustts:env";
+let total = 0;
+setInterval(() => { total += 1; }, 0);
+export {};
+"#;
 const MANY_SCRIPTS_MEMORY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 const MEMORY_REPORT_CHILD_ENV: &str = "RUSTTS_MEMORY_REPORT_SCRIPT_COUNT";
 const BYTES_PER_KIB: f64 = 1024.0;
@@ -42,6 +76,8 @@ fn runtime_benchmarks(c: &mut Criterion) {
     bench_cold_project_load(c);
     bench_sdk_generation(c);
     bench_many_small_scripts_memory_shape(c);
+    bench_grouped_load(c);
+    bench_frame_budget(c);
 }
 
 fn bench_engine_new(c: &mut Criterion) {
@@ -49,6 +85,113 @@ fn bench_engine_new(c: &mut Criterion) {
     c.bench_function("engine_new", |b| {
         b.iter(|| black_box(Engine::new(&options).expect("create engine")));
     });
+}
+
+/// One `ctx.on("frame")` handler per script, as in the 500 µs frame (2000 fps) the
+/// scripts share with render, input and audio. Throughput is scripts per frame, so
+/// the report shows the cost per script and where it stops being linear.
+/// `advance_timers` is measured with every script's timer due on each call, and `emit`
+/// again with the scripts spread over context groups of `GROUP_SIZE` scripts.
+fn bench_frame_budget(c: &mut Criterion) {
+    let frame = json!({ "dt": 0.0005, "tick": 1 });
+    let mut group = c.benchmark_group("frame_budget");
+    configure_slow(&mut group);
+    for &script_count in FRAME_SCRIPT_COUNTS {
+        let events = scripts_engine(FRAME_SCRIPT, script_count);
+        let timers = scripts_engine(TIMER_SCRIPT, script_count);
+        let grouped = grouped_engine(GROUPED_FRAME_SCRIPT, script_count);
+        let grouped_timers = grouped_engine(GROUPED_TIMER_SCRIPT, script_count);
+        let idle_timers = scripts_engine(IDLE_TIMER_SCRIPT, script_count);
+        group.throughput(Throughput::Elements(script_count as u64));
+        group.bench_function(format!("emit_{script_count}"), |b| {
+            b.iter(|| black_box(events.emit("frame", &frame).expect("emit frame")));
+        });
+        group.bench_function(format!("emit_{script_count}_grouped"), |b| {
+            b.iter(|| black_box(grouped.emit("frame", &frame).expect("emit frame")));
+        });
+        group.bench_function(format!("pump_idle_{script_count}"), |b| {
+            b.iter(|| events.pump().expect("pump"));
+        });
+        group.bench_function(format!("advance_timers_idle_{script_count}"), |b| {
+            b.iter(|| {
+                black_box(
+                    idle_timers
+                        .advance_timers(FRAME_DURATION)
+                        .expect("advance timers"),
+                )
+            });
+        });
+        group.bench_function(format!("advance_timers_{script_count}_grouped"), |b| {
+            b.iter(|| {
+                black_box(
+                    grouped_timers
+                        .advance_timers(FRAME_DURATION)
+                        .expect("advance timers"),
+                )
+            });
+        });
+        group.bench_function(format!("advance_timers_{script_count}"), |b| {
+            b.iter(|| {
+                black_box(
+                    timers
+                        .advance_timers(FRAME_DURATION)
+                        .expect("advance timers"),
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
+fn scripts_engine(source: &str, script_count: usize) -> Engine {
+    let mut engine = Engine::new(&many_scripts_options()).expect("create engine");
+    for index in 0..script_count {
+        engine
+            .load_script(format!("script-{index}"), source)
+            .expect("load script");
+    }
+    engine
+}
+
+/// [`scripts_engine`] with the scripts loaded into context groups of `GROUP_SIZE`.
+fn grouped_engine(source: &str, script_count: usize) -> Engine {
+    let mut engine = Engine::new(&many_scripts_options()).expect("create engine");
+    for index in 0..script_count {
+        engine
+            .load_script_in(
+                &format!("group-{}", index / GROUP_SIZE),
+                format!("script-{index}"),
+                source,
+            )
+            .expect("load script");
+    }
+    engine
+}
+
+/// Loading `MANY_SMALL_SCRIPT_COUNT` scripts into a fresh engine, each in a context of
+/// its own and then in groups of `GROUP_SIZE`.
+fn bench_grouped_load(c: &mut Criterion) {
+    let mut group = c.benchmark_group("load_many_scripts");
+    configure_slow(&mut group);
+    for (label, size) in [("own_contexts", 1), ("groups", GROUP_SIZE)] {
+        group.bench_function(format!("{MANY_SMALL_SCRIPT_COUNT}_{label}"), |b| {
+            bench_fresh_engine(
+                b,
+                || Engine::new(&many_scripts_options()).expect("create engine"),
+                |engine| {
+                    for index in 0..MANY_SMALL_SCRIPT_COUNT {
+                        engine.load_script_in(
+                            &format!("group-{}", index / size),
+                            format!("script-{index}"),
+                            GROUPED_FRAME_SCRIPT,
+                        )?;
+                    }
+                    Ok(())
+                },
+            );
+        });
+    }
+    group.finish();
 }
 
 /// First load of an inline script into a fresh engine: a full transpile without a
@@ -371,6 +514,28 @@ fn format_signed_float(value: f64, unit: &str) -> String {
     format!("{value:+.2} {unit}")
 }
 
+#[derive(TsSchema)]
+#[rustts(name = "CreateInvoiceInput")]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct BenchCreateInvoiceInput {
+    account_id: String,
+    total: f64,
+}
+
+#[derive(TsSchema)]
+#[rustts(name = "CreateInvoiceOutput")]
+struct BenchCreateInvoiceOutput {
+    id: String,
+    accepted: bool,
+}
+
+#[derive(TsSchema)]
+#[rustts(name = "ScoreUpdatePayload")]
+struct BenchScoreUpdatePayload {
+    combo: f64,
+}
+
 struct BenchFindUser;
 struct BenchCreateInvoice;
 struct BenchScoreUpdate;
@@ -380,23 +545,17 @@ impl HostContract for BenchFindUser {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
-    fn schema() -> Schema {
-        Schema::typed("FindUserInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for BenchFindUser {
+impl HostFunctionSignature for BenchFindUser {
     type Input = u64;
     type Output = String;
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed("FindUserOutput", TsType::String)
-    }
-
+impl HostFunction for BenchFindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("user-{input}"))
     }
@@ -405,37 +564,22 @@ impl HostFunction for BenchFindUser {
 impl HostContract for BenchCreateInvoice {
     const NAME: &'static str = "billing.invoice.create";
 
-    fn schema() -> Schema {
-        Schema::typed(
-            "CreateInvoiceInput",
-            TsType::Object(vec![
-                TsField::required("accountId", TsType::String),
-                TsField::required("total", TsType::Number),
-            ]),
-        )
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
+impl HostFunctionSignature for BenchCreateInvoice {
+    type Input = BenchCreateInvoiceInput;
+    type Output = BenchCreateInvoiceOutput;
+}
+
 impl HostFunction for BenchCreateInvoice {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
-    fn output_schema() -> Schema {
-        Schema::typed(
-            "CreateInvoiceOutput",
-            TsType::Object(vec![
-                TsField::required("id", TsType::String),
-                TsField::required("accepted", TsType::Boolean),
-            ]),
-        )
-    }
-
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
-        Ok(json!({ "id": "invoice_1", "accepted": true }))
+        Ok(BenchCreateInvoiceOutput {
+            id: "invoice_1".to_owned(),
+            accepted: true,
+        })
     }
 }
 
@@ -444,20 +588,13 @@ impl HostContract for BenchScoreUpdate {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
 
-    fn schema() -> Schema {
-        Schema::typed(
-            "ScoreUpdatePayload",
-            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
-        )
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Callback
     }
 }
 
 impl HostCallback for BenchScoreUpdate {
-    type Payload = serde_json::Value;
+    type Payload = BenchScoreUpdatePayload;
 }
 
 /// Engine with the host contracts `realistic_mod_pack` imports from `"test"`.

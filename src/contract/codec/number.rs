@@ -3,7 +3,7 @@
 
 use std::fmt::Display;
 
-use rquickjs::{Ctx, Result as JsResult, Value as JsValue};
+use rquickjs::{Ctx, Result as JsResult, Value as JsValue, qjs};
 
 use super::stack_text::StackText;
 use super::{JsDecode, JsEncode, encode_error, mismatch};
@@ -27,6 +27,10 @@ macro_rules! integer_codecs {
                 fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>> {
                     encode_integer(ctx, *self, stringify!($ty))
                 }
+
+                fn encode_scalar(&self) -> Option<qjs::JSValue> {
+                    scalar_integer(*self)
+                }
             }
 
             impl JsDecode for $ty {
@@ -36,6 +40,10 @@ macro_rules! integer_codecs {
                         stringify!($ty),
                         concat!($expected, " in ", stringify!($ty), " range"),
                     )
+                }
+
+                fn decode_scalar(value: qjs::JSValue) -> Option<Self> {
+                    scalar_safe_integer(value).and_then(|wide| Self::try_from(wide).ok())
                 }
             }
         )+
@@ -66,6 +74,62 @@ where
     }
 }
 
+/// The QuickJS value `encode_integer` builds, without the wrapper; `None` outside the safe
+/// range.
+fn scalar_integer<T>(value: T) -> Option<qjs::JSValue>
+where
+    T: Copy,
+    i32: TryFrom<T>,
+    i64: TryFrom<T>,
+{
+    if let Ok(small) = i32::try_from(value) {
+        return Some(qjs::JS_MKVAL(qjs::JS_TAG_INT, small));
+    }
+    match i64::try_from(value) {
+        Ok(wide) if wide.unsigned_abs() <= MAX_SAFE_INTEGER => {
+            Some(qjs::JS_NewFloat64(wide as f64))
+        }
+        _ => None,
+    }
+}
+
+/// The QuickJS value `number_value` builds, without the wrapper.
+fn scalar_number(value: f64) -> qjs::JSValue {
+    let int = value as i32;
+    // Integral values become ints; `-0.0` stays a float so its sign survives.
+    #[allow(clippy::float_cmp)]
+    if value == f64::from(int) && !(value == 0.0 && value.is_sign_negative()) {
+        qjs::JS_MKVAL(qjs::JS_TAG_INT, int)
+    } else {
+        qjs::JS_NewFloat64(value)
+    }
+}
+
+/// The number in `value`, when it is an int or a float.
+fn scalar_float(value: qjs::JSValue) -> Option<f64> {
+    // SAFETY: reading the tag and payload of a value needs no context; the payload read
+    // matches the tag.
+    unsafe {
+        match qjs::JS_VALUE_GET_NORM_TAG(value) {
+            qjs::JS_TAG_INT => Some(f64::from(qjs::JS_VALUE_GET_INT(value))),
+            qjs::JS_TAG_FLOAT64 => Some(qjs::JS_VALUE_GET_FLOAT64(value)),
+            _ => None,
+        }
+    }
+}
+
+/// The integer in `value`, when it is an int or a float that is one within the safe range.
+fn scalar_safe_integer(value: qjs::JSValue) -> Option<i64> {
+    // SAFETY: as in `scalar_float`.
+    unsafe {
+        match qjs::JS_VALUE_GET_NORM_TAG(value) {
+            qjs::JS_TAG_INT => Some(i64::from(qjs::JS_VALUE_GET_INT(value))),
+            qjs::JS_TAG_FLOAT64 => exact_integer(qjs::JS_VALUE_GET_FLOAT64(value)),
+            _ => None,
+        }
+    }
+}
+
 fn decode_integer<T>(value: &JsValue<'_>, rust: &'static str, expected: &str) -> JsResult<T>
 where
     T: TryFrom<i64>,
@@ -86,11 +150,19 @@ impl JsEncode for f64 {
     fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>> {
         Ok(number_value(ctx, *self))
     }
+
+    fn encode_scalar(&self) -> Option<qjs::JSValue> {
+        Some(scalar_number(*self))
+    }
 }
 
 impl JsDecode for f64 {
     fn decode_js<'js>(_ctx: &Ctx<'js>, value: JsValue<'js>) -> JsResult<Self> {
         decode_number(&value, "f64")
+    }
+
+    fn decode_scalar(value: qjs::JSValue) -> Option<Self> {
+        scalar_float(value)
     }
 }
 
@@ -98,11 +170,19 @@ impl JsEncode for f32 {
     fn encode_js<'js>(&self, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>> {
         Ok(number_value(ctx, widen_f32(*self)))
     }
+
+    fn encode_scalar(&self) -> Option<qjs::JSValue> {
+        Some(scalar_number(widen_f32(*self)))
+    }
 }
 
 impl JsDecode for f32 {
     fn decode_js<'js>(_ctx: &Ctx<'js>, value: JsValue<'js>) -> JsResult<Self> {
         decode_number(&value, "f32").map(|number| number as f32)
+    }
+
+    fn decode_scalar(value: qjs::JSValue) -> Option<Self> {
+        scalar_float(value).map(|number| number as f32)
     }
 }
 

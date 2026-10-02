@@ -14,8 +14,8 @@ let engine = Engine::new(&options)?;
 
 engine
     .registry()
-    .typed_function::<FindUser>()?
-    .typed_callback::<UserFound>()?;
+    .function::<FindUser>()?
+    .callback::<UserFound>()?;
 ```
 
 Every registered callback appears in the declarations and the SDK.
@@ -61,10 +61,6 @@ impl HostContract for FindUser {
     const IMPORT_MODULE: &'static str = "my_sdk";
     const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
-    fn schema() -> Schema {
-        FindUserInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
@@ -92,7 +88,9 @@ The declaration file contains the public TypeScript API:
 
 - host function input and output types
 - callback payload types
-- global helpers such as `ctx.on(...)`
+- the `ctx` global: `ctx.hot` always (see
+  [Keep State Across Reloads](engine.md#keep-state-across-reloads)), and
+  `ctx.on(...)` once a callback is registered
 - generated namespaces such as `user.find(...)`
 - event maps for typed callback subscriptions
 

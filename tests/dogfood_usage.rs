@@ -3,8 +3,8 @@
 mod support;
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, Schema, TsSchema, VmError,
-    VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    TsSchema, VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 
@@ -75,19 +75,17 @@ struct DogfoodUserFound;
 impl HostContract for DogfoodFindUser {
     const NAME: &'static str = "user.find";
 
-    fn schema() -> Schema {
-        DogfoodFindUserInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for DogfoodFindUser {
+impl HostFunctionSignature for DogfoodFindUser {
     type Input = DogfoodFindUserInput;
     type Output = DogfoodFindUserOutput;
+}
 
+impl HostFunction for DogfoodFindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(DogfoodFindUserOutput {
             user_id: input.user_id,
@@ -104,10 +102,6 @@ impl HostFunction for DogfoodFindUser {
 
 impl HostContract for DogfoodUserFound {
     const NAME: &'static str = "user.found";
-
-    fn schema() -> Schema {
-        DogfoodUserFoundPayload::schema()
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback
@@ -146,8 +140,8 @@ fn dogfood_engine() -> Engine {
     let engine = Engine::new(&VmOptions::default()).expect("create engine");
     engine
         .registry()
-        .typed_function::<DogfoodFindUser>()
-        .and_then(|registry| registry.typed_callback::<DogfoodUserFound>())
+        .function::<DogfoodFindUser>()
+        .and_then(|registry| registry.callback::<DogfoodUserFound>())
         .expect("register typed dogfood contracts");
     engine
 }

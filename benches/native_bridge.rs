@@ -7,8 +7,8 @@ use rquickjs::{
     prelude::Func,
 };
 use rustts::{
-    Engine, HostContract, HostContractKind, HostContractRegistry, HostFunction, NativeBytes,
-    Schema, TsField, TsSchema, TsType, VmContractValidation, VmError, VmOptions,
+    Engine, HostContract, HostContractKind, HostContractRegistry, HostFunction,
+    HostFunctionSignature, NativeBytes, TsSchema, VmContractValidation, VmError, VmOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -297,10 +297,10 @@ impl IntegratedBridgeBench {
             .register_function::<HostLargeCopyJson>()
             .expect("register large json copy");
         registry
-            .register_typed_function::<HostSmallCopyTyped>()
+            .register_function::<HostSmallCopyTyped>()
             .expect("register small typed copy");
         registry
-            .register_typed_function::<HostLargeCopyTyped>()
+            .register_function::<HostLargeCopyTyped>()
             .expect("register large typed copy");
         registry
             .register_function::<HostGetField>()
@@ -312,7 +312,7 @@ impl IntegratedBridgeBench {
             .register_function::<HostBytesJsonArray>()
             .expect("register json array bytes");
         registry
-            .register_typed_function::<HostBytesNative>()
+            .register_function::<HostBytesNative>()
             .expect("register native bytes");
 
         engine
@@ -418,23 +418,17 @@ struct HostBytesNative;
 impl HostContract for HostSmallCopyJson {
     const NAME: &'static str = "bench.small.copyJson";
 
-    fn schema() -> Schema {
-        Schema::typed("VoidInput", TsType::Void)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for HostSmallCopyJson {
+impl HostFunctionSignature for HostSmallCopyJson {
     type Input = Value;
     type Output = Value;
+}
 
-    fn output_schema() -> Schema {
-        small_payload_schema()
-    }
-
+impl HostFunction for HostSmallCopyJson {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         let small = fixtures().small;
         Ok(json!({
@@ -448,23 +442,17 @@ impl HostFunction for HostSmallCopyJson {
 impl HostContract for HostLargeCopyJson {
     const NAME: &'static str = "bench.large.copyJson";
 
-    fn schema() -> Schema {
-        Schema::typed("VoidInput", TsType::Void)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for HostLargeCopyJson {
+impl HostFunctionSignature for HostLargeCopyJson {
     type Input = Value;
     type Output = Value;
+}
 
-    fn output_schema() -> Schema {
-        large_payload_schema()
-    }
-
+impl HostFunction for HostLargeCopyJson {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(json!({ "fields": fixtures().large_fields.as_ref() }))
     }
@@ -473,23 +461,17 @@ impl HostFunction for HostLargeCopyJson {
 impl HostContract for HostSmallCopyTyped {
     const NAME: &'static str = "bench.small.copyTyped";
 
-    fn schema() -> Schema {
-        Schema::typed("VoidInput", TsType::Void)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for HostSmallCopyTyped {
+impl HostFunctionSignature for HostSmallCopyTyped {
     type Input = EmptyInput;
     type Output = SmallPayload;
+}
 
-    fn output_schema() -> Schema {
-        SmallPayload::schema()
-    }
-
+impl HostFunction for HostSmallCopyTyped {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         let small = fixtures().small;
         Ok(SmallPayload {
@@ -503,23 +485,17 @@ impl HostFunction for HostSmallCopyTyped {
 impl HostContract for HostLargeCopyTyped {
     const NAME: &'static str = "bench.large.copyTyped";
 
-    fn schema() -> Schema {
-        Schema::typed("VoidInput", TsType::Void)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for HostLargeCopyTyped {
+impl HostFunctionSignature for HostLargeCopyTyped {
     type Input = EmptyInput;
     type Output = LargePayload;
+}
 
-    fn output_schema() -> Schema {
-        LargePayload::schema()
-    }
-
+impl HostFunction for HostLargeCopyTyped {
     fn call(_input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(LargePayload {
             fields: fixtures().large_fields.to_vec(),
@@ -530,23 +506,17 @@ impl HostFunction for HostLargeCopyTyped {
 impl HostContract for HostGetField {
     const NAME: &'static str = "bench.field.get";
 
-    fn schema() -> Schema {
-        field_read_input_schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for HostGetField {
+impl HostFunctionSignature for HostGetField {
     type Input = Value;
     type Output = u32;
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed("FieldValue", TsType::Number)
-    }
-
+impl HostFunction for HostGetField {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let input: FieldReadInput =
             serde_json::from_value(input).map_err(|error| VmError::Execution {
@@ -559,23 +529,17 @@ impl HostFunction for HostGetField {
 impl HostContract for HostReadNativeU32 {
     const NAME: &'static str = "bench.native.readU32";
 
-    fn schema() -> Schema {
-        field_read_input_schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for HostReadNativeU32 {
+impl HostFunctionSignature for HostReadNativeU32 {
     type Input = Value;
     type Output = u32;
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed("NativeU32", TsType::Number)
-    }
-
+impl HostFunction for HostReadNativeU32 {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let input: FieldReadInput =
             serde_json::from_value(input).map_err(|error| VmError::Execution {
@@ -588,23 +552,17 @@ impl HostFunction for HostReadNativeU32 {
 impl HostContract for HostBytesJsonArray {
     const NAME: &'static str = "bench.bytes.jsonArray";
 
-    fn schema() -> Schema {
-        byte_input_schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for HostBytesJsonArray {
+impl HostFunctionSignature for HostBytesJsonArray {
     type Input = Value;
     type Output = Value;
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed("ByteArray", TsType::Array(Box::new(TsType::Number)))
-    }
-
+impl HostFunction for HostBytesJsonArray {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let input = parse_byte_input(input)?;
         Ok(json!(fixtures().bytes(input.byte_count).as_ref()))
@@ -614,23 +572,17 @@ impl HostFunction for HostBytesJsonArray {
 impl HostContract for HostBytesNative {
     const NAME: &'static str = "bench.bytes.native";
 
-    fn schema() -> Schema {
-        byte_input_schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for HostBytesNative {
+impl HostFunctionSignature for HostBytesNative {
     type Input = Value;
     type Output = NativeBytes;
+}
 
-    fn output_schema() -> Schema {
-        NativeBytes::schema()
-    }
-
+impl HostFunction for HostBytesNative {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let input = parse_byte_input(input)?;
         Ok(NativeBytes::from_shared(fixtures().bytes(input.byte_count)))
@@ -641,44 +593,6 @@ fn parse_byte_input(input: Value) -> Result<ByteInput, VmError> {
     serde_json::from_value(input).map_err(|error| VmError::Execution {
         details: error.to_string(),
     })
-}
-
-fn small_payload_schema() -> Schema {
-    Schema::typed(
-        "SmallPayload",
-        TsType::Object(vec![
-            TsField::required("id", TsType::Number),
-            TsField::required("hp", TsType::Number),
-            TsField::required("mp", TsType::Number),
-        ]),
-    )
-}
-
-fn large_payload_schema() -> Schema {
-    Schema::typed(
-        "LargePayload",
-        TsType::Object(vec![TsField::required(
-            "fields",
-            TsType::Array(Box::new(TsType::Number)),
-        )]),
-    )
-}
-
-fn field_read_input_schema() -> Schema {
-    Schema::typed(
-        "FieldReadInput",
-        TsType::Object(vec![
-            TsField::required("handle", TsType::Number),
-            TsField::required("index", TsType::Number),
-        ]),
-    )
-}
-
-fn byte_input_schema() -> Schema {
-    Schema::typed(
-        "ByteInput",
-        TsType::Object(vec![TsField::required("byteCount", TsType::Number)]),
-    )
 }
 
 fn install_bridge(ctx: Ctx<'_>, _fixtures: Arc<NativeFixtures>) -> JsResult<()> {

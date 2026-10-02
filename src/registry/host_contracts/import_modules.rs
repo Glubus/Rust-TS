@@ -14,10 +14,23 @@ struct HostModuleNode {
     binding: Option<HostModuleBinding>,
 }
 
+/// Where a host import module reads its native functions and its handler registration
+/// from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostModuleStyle {
+    /// The globals of the script's own context: `globalThis.__rustts_native` and
+    /// `globalThis.__rustts_on`.
+    Globals,
+    /// The script's environment, imported from `rustts:env`: the module of a script in a
+    /// context group, whose context has no per-script globals.
+    Env,
+}
+
 /// Source of every host import module. Function exports are the native functions the
-/// engine installs in `globalThis.__rustts_native`; callback exports register handlers.
+/// engine binds to the importing script; callback exports register handlers.
 pub(crate) fn render_host_import_modules(
     descriptors: &[HostContractDescriptor],
+    style: HostModuleStyle,
 ) -> BTreeMap<String, String> {
     let mut modules = BTreeMap::<String, HostModuleNode>::new();
 
@@ -34,7 +47,7 @@ pub(crate) fn render_host_import_modules(
 
     modules
         .into_iter()
-        .map(|(module, node)| (module, render_module_source(&node)))
+        .map(|(module, node)| (module, render_module_source(&node, style)))
         .collect()
 }
 
@@ -70,31 +83,34 @@ fn insert_binding(node: &mut HostModuleNode, path: &[String], binding: HostModul
     );
 }
 
-fn render_module_source(node: &HostModuleNode) -> String {
+fn render_module_source(node: &HostModuleNode, style: HostModuleStyle) -> String {
     let mut output = String::new();
+    if style == HostModuleStyle::Env {
+        output.push_str("import { __native, __on } from \"rustts:env\";\n");
+    }
 
     for (name, child) in &node.children {
         output.push_str("export const ");
         output.push_str(&identifier(name));
         output.push_str(" = ");
-        output.push_str(&render_node(child, 0));
+        output.push_str(&render_node(child, 0, style));
         output.push_str(";\n");
     }
 
     output
 }
 
-fn render_node(node: &HostModuleNode, depth: usize) -> String {
+fn render_node(node: &HostModuleNode, depth: usize, style: HostModuleStyle) -> String {
     if let Some(binding) = &node.binding
         && node.children.is_empty()
     {
-        return render_binding(binding);
+        return render_binding(binding, style);
     }
 
-    render_object_node(node, depth)
+    render_object_node(node, depth, style)
 }
 
-fn render_object_node(node: &HostModuleNode, depth: usize) -> String {
+fn render_object_node(node: &HostModuleNode, depth: usize, style: HostModuleStyle) -> String {
     let mut entries = Vec::new();
 
     for (name, child) in &node.children {
@@ -102,7 +118,7 @@ fn render_object_node(node: &HostModuleNode, depth: usize) -> String {
             "{}{}: {}",
             indent(depth + 1),
             property_name(name),
-            render_node(child, depth + 1)
+            render_node(child, depth + 1, style)
         ));
     }
 
@@ -110,7 +126,7 @@ fn render_object_node(node: &HostModuleNode, depth: usize) -> String {
         entries.push(format!(
             "{}default: {}",
             indent(depth + 1),
-            render_binding(binding)
+            render_binding(binding, style)
         ));
     }
 
@@ -121,13 +137,19 @@ fn render_object_node(node: &HostModuleNode, depth: usize) -> String {
     format!("{{\n{}\n{}}}", entries.join(",\n"), indent(depth))
 }
 
-fn render_binding(binding: &HostModuleBinding) -> String {
-    match binding {
-        HostModuleBinding::Function { contract_name } => {
+fn render_binding(binding: &HostModuleBinding, style: HostModuleStyle) -> String {
+    match (binding, style) {
+        (HostModuleBinding::Function { contract_name }, HostModuleStyle::Globals) => {
             format!("globalThis.__rustts_native[{contract_name:?}]")
         }
-        HostModuleBinding::Callback { event_name } => {
+        (HostModuleBinding::Function { contract_name }, HostModuleStyle::Env) => {
+            format!("__native[{contract_name:?}]")
+        }
+        (HostModuleBinding::Callback { event_name }, HostModuleStyle::Globals) => {
             format!("handler => globalThis.__rustts_on({event_name:?}, handler)")
+        }
+        (HostModuleBinding::Callback { event_name }, HostModuleStyle::Env) => {
+            format!("handler => __on({event_name:?}, handler)")
         }
     }
 }

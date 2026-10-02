@@ -2,29 +2,38 @@ use std::collections::BTreeMap;
 
 use super::*;
 
+fn origin(path: &str) -> ModuleOrigin {
+    ModuleOrigin {
+        path: path.to_owned(),
+        source_map: Default::default(),
+    }
+}
+
+fn app_modules() -> Vec<CompiledModule> {
+    vec![
+        CompiledModule {
+            module_id: String::from("/app/main.ts"),
+            transpiled_js: String::from("import { value } from './dep';"),
+            origin: origin("main.ts"),
+            resolved_requests: BTreeMap::from([(
+                String::from("./dep"),
+                String::from("/app/dep.ts"),
+            )]),
+        },
+        CompiledModule {
+            module_id: String::from("/app/dep.ts"),
+            transpiled_js: String::from("export const value = 1;"),
+            origin: origin("dep.ts"),
+            resolved_requests: BTreeMap::new(),
+        },
+    ]
+}
+
 #[test]
 fn project_graph_uses_runtime_scoped_module_ids() {
     let store = WorkerModuleStore::default();
     let graph = store
-        .insert_project(
-            "/app/main.ts",
-            vec![
-                CompiledModule {
-                    module_id: String::from("/app/main.ts"),
-                    transpiled_js: String::from("import { value } from './dep';"),
-                    resolved_requests: BTreeMap::from([(
-                        String::from("./dep"),
-                        String::from("/app/dep.ts"),
-                    )]),
-                },
-                CompiledModule {
-                    module_id: String::from("/app/dep.ts"),
-                    transpiled_js: String::from("export const value = 1;"),
-                    resolved_requests: BTreeMap::new(),
-                },
-            ],
-            7,
-        )
+        .insert_project("/app/main.ts", app_modules(), 7)
         .expect("insert project graph");
 
     assert_eq!(graph.entry_module_id, "rustts://graph/7//app/main.ts");
@@ -39,25 +48,7 @@ fn project_graph_uses_runtime_scoped_module_ids() {
 fn removing_graph_clears_sources_and_resolutions() {
     let store = WorkerModuleStore::default();
     let graph = store
-        .insert_project(
-            "/app/main.ts",
-            vec![
-                CompiledModule {
-                    module_id: String::from("/app/main.ts"),
-                    transpiled_js: String::from("import { value } from './dep';"),
-                    resolved_requests: BTreeMap::from([(
-                        String::from("./dep"),
-                        String::from("/app/dep.ts"),
-                    )]),
-                },
-                CompiledModule {
-                    module_id: String::from("/app/dep.ts"),
-                    transpiled_js: String::from("export const value = 1;"),
-                    resolved_requests: BTreeMap::new(),
-                },
-            ],
-            7,
-        )
+        .insert_project("/app/main.ts", app_modules(), 7)
         .expect("insert project graph");
 
     store
@@ -80,7 +71,7 @@ fn removing_a_script_keeps_the_host_module_that_shares_its_name() {
         )]))
         .expect("insert host module");
     let graph = store
-        .insert_inline("bench", String::from("export {};"), 0)
+        .insert_inline("bench", String::from("export {};"), origin("bench.ts"), 0)
         .expect("insert script graph");
 
     store

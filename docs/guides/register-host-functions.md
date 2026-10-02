@@ -6,7 +6,7 @@ This guide shows the normal flow:
 2. Declare Rust payload structs.
 3. Derive `TsSchema`.
 4. Implement `HostFunction` or `HostCallback`.
-5. Register contracts with `typed_function` and `typed_callback`.
+5. Register contracts with `function` and `callback`.
 6. Generate declaration and SDK files for your package.
 7. Load scripts that call your functions and handle your events.
 
@@ -43,7 +43,7 @@ the generated TypeScript namespace. For example, `user.find` becomes
 ```rust
 use serde::{Deserialize, Serialize};
 use rustts::{
-    HostContract, HostContractKind, HostFunction, Schema, TsSchema, VmError,
+    HostContract, HostContractKind, HostFunction, HostFunctionSignature, TsSchema, VmError,
 };
 
 #[derive(Deserialize, TsSchema)]
@@ -67,19 +67,17 @@ struct FindUser;
 impl HostContract for FindUser {
     const NAME: &'static str = "user.find";
 
-    fn schema() -> Schema {
-        FindUserInput::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for FindUser {
+impl HostFunctionSignature for FindUser {
     type Input = FindUserInput;
     type Output = FindUserOutput;
+}
 
+impl HostFunction for FindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(FindUserOutput {
             user_id: input.user_id,
@@ -95,9 +93,92 @@ impl HostFunction for FindUser {
 }
 ```
 
-`typed_function::<FindUser>()` uses `FindUserInput::schema()` and
+`function::<FindUser>()` uses `FindUserInput::schema()` and
 `FindUserOutput::schema()` automatically, so you do not need to hand-write the
 TypeScript shape.
+
+`HostFunctionSignature` is what scripts see: the input and output types.
+`HostFunction` adds the static `call` that implements it.
+
+## Implement A Host Function With A Closure
+
+A contract that only implements `HostFunctionSignature` is registered together
+with its handler, a closure that can hold state. Here `SpawnEnemy` is declared like
+`FindUser` above, without the `HostFunction` impl, and `world` is a
+`Send + Sync` handle to game state:
+
+```rust
+engine
+    .registry()
+    .function_with::<SpawnEnemy>(move |input| world.spawn(input.kind, input.position))?;
+```
+
+The generated TypeScript is the same as for a static function. The closure must be
+`Send + Sync + 'static` because the registry is; `function_with` is the closure
+counterpart of `function`.
+
+### Return A Promise Resolved By The Game
+
+Use `async_function_with` when a host answer arrives in a later frame.
+The contract only implements `HostFunctionSignature`; its `Output` is the
+**resolved value**, and the generated TypeScript signature returns
+`Promise<Output>`. Keep the resolver in game state and settle it when the data
+arrives:
+
+```rust
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use rustts::HostResolver;
+
+let pending: Arc<Mutex<VecDeque<HostResolver<u32>>>> = Arc::new(Mutex::new(VecDeque::new()));
+let next = Arc::clone(&pending);
+engine.registry().async_function_with::<LookupScore>(
+    move |_player, resolver| {
+        next.lock().expect("score queue").push_back(resolver);
+        Ok(())
+    },
+)?;
+
+// Later, on the host's schedule (another thread may enqueue this):
+if let Some(resolver) = pending.lock().expect("score queue").pop_front() {
+    resolver.resolve(42)?;
+}
+engine.pump()?; // only now do awaiting script continuations run
+```
+
+`LookupScore` declares `Input` and `Output = u32` like `FindUser` above.
+`async_function_with` takes its schemas from `TsSchema` of `Input` and `Output`
+(`Output` must be `Send`); `async_function_with_caller` also receives a
+`Caller`. Dropping a resolver rejects the Promise; `reject(error)`
+does so explicitly. An old resolver becomes cancelled when its script reloads
+successfully or unloads, and `resolve`/`reject` then return
+`VmError::Cancelled`. No host reply automatically drives JavaScript.
+
+If an exported function awaits this reply, start it with `call_deferred`:
+the synchronous `call` cannot wait for a host reply from a later frame.
+
+### Know The Calling Script
+
+`function_with_caller` hands the handler a
+`Caller` too: `caller.script_id()` is the id the calling script was loaded under,
+kept across reloads. Use it to scope a mod's permissions, storage or logs:
+
+```rust
+engine
+    .registry()
+    .function_with_caller::<SaveSetting>(move |caller, input| {
+        settings.save(caller.script_id(), &input.key, input.value)
+    })?;
+```
+
+## Errors And Panics In A Host Function
+
+A handler that returns `Err(VmError)` throws a JavaScript error in the script, which can
+catch it. A handler that **panics** panics out of the engine call that reached it
+(`Engine::call`, `emit`, `advance_timers`, ...), after the operation's Promise jobs ran.
+The same holds for `async` handlers and for a `console` sink:
+a script's `try`/`catch` cannot swallow a Rust panic, and the engine stays usable if you
+catch the unwind. With `panic = "abort"` the process aborts, as for any Rust code.
 
 ## Declare A Callback
 
@@ -107,7 +188,7 @@ the ergonomic alias `user.onFound(...)`.
 
 ```rust
 use serde::{Deserialize, Serialize};
-use rustts::{HostCallback, HostContract, HostContractKind, Schema, TsSchema};
+use rustts::{HostCallback, HostContract, HostContractKind, TsSchema};
 
 #[derive(Deserialize, Serialize, TsSchema)]
 #[serde(rename_all = "camelCase")]
@@ -122,10 +203,6 @@ struct UserFound;
 impl HostContract for UserFound {
     const NAME: &'static str = "user.found";
 
-    fn schema() -> Schema {
-        UserFoundPayload::schema()
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Callback
     }
@@ -135,6 +212,29 @@ impl HostCallback for UserFound {
     type Payload = UserFoundPayload;
 }
 ```
+
+## Declare A Request
+
+A request is a callback whose handlers answer: `Engine::request` returns what each
+handler returned. Declare the callback like `UserFound`, here `MenuLabel` named
+`menu.label` with a `String` payload, implement `HostRequest` on top of
+`HostCallback`, and register it with `request` so the generated TypeScript
+types the handlers' return value:
+
+```rust
+use rustts::HostRequest;
+
+impl HostRequest for MenuLabel {
+    type Reply = String;
+}
+
+engine.registry().request::<MenuLabel>()?;
+
+let labels: Vec<(&str, String)> = engine.request("menu.label", "save")?;
+```
+
+Each reply comes with the id of the script that gave it. An `async` handler's
+Promise is awaited; see [Requests](engine.md#requests).
 
 ## Register Contracts In The Registry
 
@@ -146,8 +246,8 @@ let mut engine = create_engine()?;
 
 engine
     .registry()
-    .typed_function::<FindUser>()?
-    .typed_callback::<UserFound>()?;
+    .function::<FindUser>()?
+    .callback::<UserFound>()?;
 ```
 
 That registry is the source of truth for:
@@ -157,9 +257,10 @@ That registry is the source of truth for:
 - generated TypeScript SDK helpers
 - the cache key of transpiled scripts
 
-Host functions are synchronous: a script's call to `user.find(...)` runs the Rust
-`call` on the engine's thread and returns its value directly. An `Err` returned by
-the handler is thrown in the script as an exception the script can catch.
+The synchronous host functions above run on the engine's thread and return
+their value directly. An `Err` returned by the handler is thrown in the script
+as an exception the script can catch. To return a Promise instead, use
+[`async_function_with`](#return-a-promise-resolved-by-the-game).
 
 ## Generate The SDK Files
 
@@ -284,8 +385,10 @@ messages matter more than accepting loose payloads.
 ## What To Remember
 
 - Register contracts before loading scripts.
-- Prefer `typed_function` and `typed_callback` when payload types implement
-  `TsSchema`.
+- Every payload type implements `TsSchema`, `JsDecode` and `JsEncode`: derive them,
+  or use `serde_json::Value` for a free-form value. Use the `_with` variants when the
+  handler needs state, and the `_with_caller` ones when it needs to know which script
+  called.
 - Keep event names stable; they become part of the generated TypeScript API.
 - Use `user.onFound(...)`-style aliases for friendly game SDKs, and keep
-  `ctx.on("user.found", ...)` available for low-level dynamic cases.
+  `ctx.on("user.found", ...)` / `ctx.off(...)` available for low-level dynamic cases.

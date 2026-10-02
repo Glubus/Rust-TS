@@ -4,8 +4,8 @@ use std::fs;
 use std::path::Path;
 
 use rustts::{
-    Engine, HostCallback, HostContract, HostContractKind, HostFunction, NativeBytes, Schema,
-    TsField, TsSchema, TsType, VmError, VmOptions,
+    Engine, HostCallback, HostContract, HostContractKind, HostFunction, HostFunctionSignature,
+    NativeBytes, VmError, VmOptions,
 };
 use serde_json::{Value, json};
 
@@ -37,23 +37,17 @@ impl HostContract for FindUser {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["user", "find"];
 
-    fn schema() -> Schema {
-        Schema::typed("FindUserInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for FindUser {
+impl HostFunctionSignature for FindUser {
     type Input = u64;
     type Output = String;
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed("FindUserOutput", TsType::String)
-    }
-
+impl HostFunction for FindUser {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("user-{input}"))
     }
@@ -64,23 +58,17 @@ impl HostContract for FindInvoice {
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["billing", "invoice", "find"];
 
-    fn schema() -> Schema {
-        Schema::typed("FindInvoiceInput", TsType::Number)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for FindInvoice {
+impl HostFunctionSignature for FindInvoice {
     type Input = u64;
     type Output = String;
+}
 
-    fn output_schema() -> Schema {
-        Schema::typed("FindInvoiceOutput", TsType::String)
-    }
-
+impl HostFunction for FindInvoice {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         Ok(format!("invoice-{input}"))
     }
@@ -89,23 +77,17 @@ impl HostFunction for FindInvoice {
 impl HostContract for ReadNativeBytes {
     const NAME: &'static str = "bench.bytes.native";
 
-    fn schema() -> Schema {
-        Schema::typed("ReadNativeBytesInput", TsType::Json)
-    }
-
     fn kind() -> HostContractKind {
         HostContractKind::Function
     }
 }
 
-impl HostFunction for ReadNativeBytes {
+impl HostFunctionSignature for ReadNativeBytes {
     type Input = Value;
     type Output = NativeBytes;
+}
 
-    fn output_schema() -> Schema {
-        NativeBytes::schema()
-    }
-
+impl HostFunction for ReadNativeBytes {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
         let byte_count = input.get("byteCount").and_then(Value::as_u64).unwrap_or(0) as usize;
         Ok(NativeBytes::new(
@@ -120,13 +102,6 @@ impl HostContract for ScoreUpdate {
     const NAME: &'static str = "score.update";
     const IMPORT_MODULE: &'static str = "test";
     const EXPORT_PATH: &'static [&'static str] = &["score", "onUpdate"];
-
-    fn schema() -> Schema {
-        Schema::typed(
-            "ScorePayload",
-            TsType::Object(vec![TsField::required("combo", TsType::Number)]),
-        )
-    }
 
     fn kind() -> HostContractKind {
         HostContractKind::Callback
@@ -502,7 +477,7 @@ fn typed_host_function_returns_native_bytes_as_uint8array() {
     let mut engine = engine();
     engine
         .registry()
-        .typed_function::<ReadNativeBytes>()
+        .function::<ReadNativeBytes>()
         .expect("register native bytes host function");
     let declarations = engine.registry().types().expect("render declarations");
     engine

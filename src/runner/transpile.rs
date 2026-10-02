@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::{ScriptCache, module_cache_key};
 use crate::compiler::{
-    CompiledModule, CompilerService, ProjectState, WatchedFiles, discover_project,
-    extract_static_import_requests,
+    CompiledModule, CompilerService, ModuleOrigin, ProjectState, TranspiledModule, WatchedFiles,
+    discover_project, extract_static_import_requests,
 };
 use crate::error::VmError;
 
@@ -31,12 +31,13 @@ pub(crate) struct Transpiler {
 #[derive(Default)]
 struct ModuleMemo {
     imports: Option<BTreeSet<String>>,
-    js: Option<String>,
+    transpiled: Option<TranspiledModule>,
 }
 
 /// One transpiled inline script.
 pub(crate) struct TranspiledScript {
     pub(crate) js: String,
+    pub(crate) module_origin: ModuleOrigin,
     pub(crate) module_key: String,
 }
 
@@ -62,16 +63,18 @@ impl Transpiler {
     /// a rejected script (dynamic import, syntax error) fails on every load.
     pub(crate) fn inline(&mut self, id: &str, source: &str) -> Result<TranspiledScript, VmError> {
         let module_key = module_cache_key(source, INLINE_SOURCE_TYPE);
-        let js = match self.remembered_js(&module_key)? {
-            Some(js) => js,
-            None => {
-                let source_path = Path::new(id).with_extension(INLINE_SOURCE_TYPE);
-                let js = self.compiler.compile_inline(source, &source_path)?;
-                self.remember_js(&module_key, &js)?;
-                js
-            }
-        };
-        Ok(TranspiledScript { js, module_key })
+        let path = format!("{id}.{INLINE_SOURCE_TYPE}");
+        let transpiled = self.transpiled(&module_key, |compiler| {
+            compiler.compile_inline(source, Path::new(&path))
+        })?;
+        Ok(TranspiledScript {
+            js: transpiled.js,
+            module_origin: ModuleOrigin {
+                path,
+                source_map: transpiled.source_map,
+            },
+            module_key,
+        })
     }
 
     /// Resolves the project graph from `entry_path` and transpiles every module.
@@ -104,18 +107,18 @@ impl Transpiler {
         let mut modules = Vec::with_capacity(project.modules.len());
         let mut module_keys = Vec::with_capacity(project.modules.len());
         for module in project.modules {
-            let module_key = module_cache_key(&module.source, source_type(&module.path));
-            let transpiled_js = match self.remembered_js(&module_key)? {
-                Some(js) => js,
-                None => {
-                    let js = self.compiler.compile_module(&module.source, &module.path)?;
-                    self.remember_js(&module_key, &js)?;
-                    js
-                }
-            };
+            let path = Path::new(&module.display_path);
+            let module_key = module_cache_key(&module.source, source_type(path));
+            let transpiled = self.transpiled(&module_key, |compiler| {
+                compiler.compile_module(&module.source, path)
+            })?;
             modules.push(CompiledModule {
                 module_id: module.module_id,
-                transpiled_js,
+                transpiled_js: transpiled.js,
+                origin: ModuleOrigin {
+                    path: module.display_path,
+                    source_map: transpiled.source_map,
+                },
                 resolved_requests: module.resolved_requests,
             });
             module_keys.push(module_key);
@@ -136,12 +139,31 @@ impl Transpiler {
             .retain(|entry_path, _| projects.contains(entry_path.as_path()));
     }
 
-    /// Transpiled JavaScript from the memo, else from the disk cache.
-    fn remembered_js(&mut self, module_key: &str) -> Result<Option<String>, VmError> {
-        if let Some(js) = self.memo.get(module_key).and_then(|memo| memo.js.clone()) {
-            return Ok(Some(js));
+    /// The module transpiled from the memo, else from the disk cache, else by `compile`,
+    /// whose result is remembered.
+    fn transpiled(
+        &mut self,
+        module_key: &str,
+        compile: impl FnOnce(&mut CompilerService) -> Result<TranspiledModule, VmError>,
+    ) -> Result<TranspiledModule, VmError> {
+        if let Some(transpiled) = self.remembered(module_key)? {
+            return Ok(transpiled);
         }
-        let Some(js) = self
+        let transpiled = compile(&mut self.compiler)?;
+        self.remember(module_key, &transpiled)?;
+        Ok(transpiled)
+    }
+
+    /// Transpiled module from the memo, else from the disk cache.
+    fn remembered(&mut self, module_key: &str) -> Result<Option<TranspiledModule>, VmError> {
+        if let Some(transpiled) = self
+            .memo
+            .get(module_key)
+            .and_then(|memo| memo.transpiled.clone())
+        {
+            return Ok(Some(transpiled));
+        }
+        let Some(transpiled) = self
             .cache
             .as_ref()
             .map(|cache| cache.load(module_key))
@@ -150,15 +172,21 @@ impl Transpiler {
         else {
             return Ok(None);
         };
-        self.memo.entry(module_key.to_owned()).or_default().js = Some(js.clone());
-        Ok(Some(js))
+        self.memo
+            .entry(module_key.to_owned())
+            .or_default()
+            .transpiled = Some(transpiled.clone());
+        Ok(Some(transpiled))
     }
 
-    fn remember_js(&mut self, module_key: &str, js: &str) -> Result<(), VmError> {
+    fn remember(&mut self, module_key: &str, transpiled: &TranspiledModule) -> Result<(), VmError> {
         if let Some(cache) = &self.cache {
-            cache.store(module_key, js)?;
+            cache.store(module_key, transpiled)?;
         }
-        self.memo.entry(module_key.to_owned()).or_default().js = Some(js.to_owned());
+        self.memo
+            .entry(module_key.to_owned())
+            .or_default()
+            .transpiled = Some(transpiled.clone());
         Ok(())
     }
 }

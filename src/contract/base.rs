@@ -16,9 +16,6 @@ pub trait HostContract {
     /// Export path inside [`Self::IMPORT_MODULE`].
     const EXPORT_PATH: &'static [&'static str] = &[];
 
-    /// Returns the schema metadata of this contract.
-    fn schema() -> Schema;
-
     /// Returns additional host metadata.
     fn metadata() -> HostMetadata {
         HostMetadata {
@@ -30,12 +27,14 @@ pub trait HostContract {
     /// Returns the category of this contract.
     fn kind() -> HostContractKind;
 
-    /// Builds the base descriptor stored in registries.
+    /// Builds the base descriptor stored in registries. Its schema is a placeholder:
+    /// registration fills it from the contract's types (`TsSchema`), or from
+    /// [`HostContext::schema`](crate::HostContext::schema) for a context.
     fn descriptor() -> HostContractDescriptor {
         HostContractDescriptor {
             name: Self::NAME.to_owned(),
             kind: Self::kind(),
-            schema: Self::schema(),
+            schema: Schema::named("unknown"),
             metadata: Self::metadata(),
             import: HostImportBinding {
                 module: Self::IMPORT_MODULE.to_owned(),
@@ -54,7 +53,7 @@ pub trait HostContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{HostContractKind, Schema};
+    use crate::contract::HostContractKind;
 
     struct DemoContract;
 
@@ -62,10 +61,6 @@ mod tests {
         const NAME: &'static str = "demo.contract";
         const IMPORT_MODULE: &'static str = "demo";
         const EXPORT_PATH: &'static [&'static str] = &["contract"];
-
-        fn schema() -> Schema {
-            Schema::named("DemoSchema")
-        }
 
         fn kind() -> HostContractKind {
             HostContractKind::Function
@@ -78,6 +73,5 @@ mod tests {
 
         assert_eq!(descriptor.name, "demo.contract");
         assert_eq!(descriptor.kind, HostContractKind::Function);
-        assert_eq!(descriptor.schema.name, "DemoSchema");
     }
 }
