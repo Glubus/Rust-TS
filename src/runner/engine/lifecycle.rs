@@ -19,6 +19,7 @@ use super::super::errors::{caught_js_error, js_error};
 use super::super::host_fn::HostFnClass;
 use super::super::host_promises::HostPromises;
 use super::super::module_loader::{ENV_SPECIFIER, RuntimeModuleGraph};
+use super::super::retained::Retained;
 use super::super::timers::timer_hooks;
 use super::{
     Disposed, Engine, EngineScript, HotData, Prelude, ProjectFiles, ScriptGroup, ScriptHooks,
@@ -53,7 +54,7 @@ struct Target {
 /// What mounting a script produced.
 struct Mounted {
     context: Context,
-    exports: Persistent<Object<'static>>,
+    exports: Retained,
     signals: ScriptSignals,
     host_promises: HostPromises,
     hooks: ScriptHooks,
@@ -594,15 +595,12 @@ impl Engine {
     }
 }
 
-fn import_exports(
-    ctx: &Ctx<'_>,
-    entry_module_id: &str,
-) -> Result<Persistent<Object<'static>>, VmError> {
+fn import_exports(ctx: &Ctx<'_>, entry_module_id: &str) -> Result<Retained, VmError> {
     let exports = Module::import(ctx, entry_module_id)
         .and_then(|promise| promise.finish::<Object<'_>>())
         .catch(ctx)
         .map_err(caught_js_error)?;
-    Ok(Persistent::save(ctx, exports))
+    Ok(Retained::new(exports.as_value()))
 }
 
 /// Calls one of the hooks of a script's `ctx.hot`.

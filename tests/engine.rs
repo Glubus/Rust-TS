@@ -113,6 +113,34 @@ fn a_delivery_runs_the_snapshot_it_took_even_when_handlers_change_the_list() {
     );
 }
 
+/// An export is read at every call, not remembered: a binding the module reassigns is
+/// what the next call runs, and a name that is not a function is not callable.
+#[test]
+fn a_call_reads_the_export_binding_at_the_time_of_the_call() {
+    let engine = engine_with(
+        r#"
+        export let version = (): number => 1;
+        export const answer = 42;
+        export function upgrade(): void { version = (): number => 2; }
+        "#,
+    );
+
+    let first: f64 = engine.call("script", "version", ()).expect("first version");
+    engine.call::<()>("script", "upgrade", ()).expect("upgrade");
+    let second: f64 = engine
+        .call("script", "version", ())
+        .expect("second version");
+    let not_a_function = engine.call::<f64>("script", "answer", ());
+    let missing = engine.call::<f64>("script", "absent", ());
+
+    assert_eq!((first, second), (1.0, 2.0));
+    assert!(not_a_function.is_err(), "{not_a_function:?}");
+    assert!(
+        matches!(missing, Err(VmError::FunctionNotFound { ref function_name, .. }) if function_name == "absent"),
+        "{missing:?}"
+    );
+}
+
 fn engine() -> Engine {
     Engine::new(&VmOptions::default()).expect("create engine")
 }

@@ -9,7 +9,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use indexmap::IndexMap;
-use rquickjs::{Context, Ctx, Function, Object, Persistent, Runtime, Value as JsValue};
+use rquickjs::{
+    CatchResultExt, Context, Ctx, Function, Persistent, Runtime, Value, Value as JsValue, qjs,
+};
 use rustc_hash::FxBuildHasher;
 
 use crate::compiler::WatchedFiles;
@@ -19,7 +21,7 @@ use crate::registry::InMemoryHostContractRegistry;
 use crate::types::{MemoryStats, ScriptId};
 
 use super::console::{ConsoleLevel, ConsoleSink};
-use super::errors::js_error;
+use super::errors::{caught_js_error, js_error};
 use super::events::ListenedEvents;
 use super::execution::{ExecutionControl, ExecutionGuard};
 use super::host_fn::HostFnClass;
@@ -30,6 +32,7 @@ use super::module_loader::{
     MemoryModuleLoader, MemoryModuleResolver, ScriptEnvs, WorkerModuleStore,
 };
 use super::promise_rejections::UnhandledRejections;
+use super::retained::{KeptAtoms, Retained};
 use super::tasks::{RequestGuard, ScriptTask};
 use super::timers::{EarliestDue, NextTimer, TimerClock};
 use super::transpile::Transpiler;
@@ -91,6 +94,8 @@ pub struct Engine {
     prelude: OnceCell<Box<[u8]>>,
     /// The callable class of host functions, registered by the first script that mounts.
     host_class: OnceCell<HostFnClass>,
+    /// The atoms of the export names the host calls.
+    export_atoms: KeptAtoms,
     /// Contexts shared by scripts, by group name.
     groups: HashMap<Box<str>, ScriptGroup, FxBuildHasher>,
     /// The environment of every script loaded into a group, for its `rustts:env` module.
@@ -107,7 +112,8 @@ struct EngineScript {
     group: Option<Box<str>>,
     graph_id: u64,
     hooks: ScriptHooks,
-    exports: Persistent<Object<'static>>,
+    /// The module namespace object, read for the export a call names.
+    exports: Retained,
     host_promises: HostPromises,
     tasks: RefCell<Vec<ScriptTask>>,
     request_guards: RefCell<Vec<RequestGuard>>,
@@ -204,6 +210,7 @@ impl Engine {
             builtins: options.builtins,
             prelude: OnceCell::new(),
             host_class: OnceCell::new(),
+            export_atoms: KeptAtoms::default(),
             groups: HashMap::default(),
             envs,
             rejections: UnhandledRejections::install(&runtime),
@@ -271,16 +278,38 @@ impl Engine {
 }
 
 impl EngineScript {
+    /// The function the script exports as `name`, read now: a binding the module
+    /// reassigns is what the next call finds. The module's namespace is read through the C
+    /// API with the name's kept atom, which takes no reference to the namespace or its
+    /// context.
     fn export<'js>(
         &self,
+        atoms: &KeptAtoms,
         ctx: &Ctx<'js>,
         script_id: &str,
         name: &str,
     ) -> Result<Function<'js>, VmError> {
-        let exports = self.exports.clone().restore(ctx).map_err(js_error)?;
-        exports
-            .get::<_, Option<Function<'js>>>(name)
-            .map_err(js_error)?
+        let raw = ctx.as_raw().as_ptr();
+        // SAFETY: `raw` is the live context of `ctx` and the namespace a value of it; the
+        // atom is valid for the call, and the value `JS_GetProperty` returns is owned.
+        let value = atoms
+            .with(ctx, name, |atom| unsafe {
+                qjs::JS_GetProperty(raw, self.exports.raw(), atom)
+            })
+            .ok_or(rquickjs::Error::Allocation)
+            .map_err(js_error)?;
+        // SAFETY: `value` is an owned value of `ctx`, which the wrapper releases.
+        let value = unsafe {
+            if qjs::JS_IsException(value) {
+                return Err(Err::<(), _>(rquickjs::Error::Exception)
+                    .catch(ctx)
+                    .map_err(caught_js_error)
+                    .unwrap_err());
+            }
+            Value::from_raw(ctx.clone(), value)
+        };
+        value
+            .into_function()
             .ok_or_else(|| VmError::FunctionNotFound {
                 script_id: script_id.to_owned(),
                 function_name: name.to_owned(),

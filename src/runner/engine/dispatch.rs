@@ -30,7 +30,7 @@ impl Engine {
         let script = self.script(script_id)?;
         let _budget = self.budget();
         let result = script.context.with(|ctx| {
-            let export = script.export(&ctx, script_id, function)?;
+            let export = script.export(&self.export_atoms, &ctx, script_id, function)?;
             let args = args.encode_args(&ctx).map_err(js_error)?;
             let returned = export
                 .call_arg::<JsValue<'_>>(args)

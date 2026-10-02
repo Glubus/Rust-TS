@@ -6,6 +6,7 @@ use std::rc::{Rc, Weak};
 use rquickjs::{Array, CatchResultExt, Ctx, Function, Value as JsValue, qjs};
 
 use super::errors::{caught_js_error, js_error};
+use super::retained::Retained;
 use crate::error::VmError;
 
 /// Handler lists of one context, by event name, as the prelude hands them over: only
@@ -22,45 +23,7 @@ use crate::error::VmError;
 pub(super) struct ListenedEvents(Rc<RefCell<Vec<Listened>>>);
 
 /// The handlers of one event, in registration order.
-pub(super) type Handlers = Rc<[RawFunction]>;
-
-/// A JavaScript function the engine keeps and calls without cloning anything.
-///
-/// A `Persistent<Function>` has to be cloned and restored to be called, which takes and
-/// gives back two references (the function and its context) per call. This holds one
-/// reference to the function and calls it through the C API with borrowed values. It
-/// does not keep its context alive: a QuickJS function holds its own realm.
-///
-/// Like a `Persistent`, it must be dropped before the runtime it belongs to, on the
-/// thread that owns the runtime; it is neither `Send` nor `Sync`, and a function leaked
-/// past the runtime aborts it when it drops, as a leaked `Persistent` does.
-pub(super) struct RawFunction {
-    rt: *mut qjs::JSRuntime,
-    value: qjs::JSValue,
-}
-
-impl RawFunction {
-    fn new(function: &Function<'_>) -> Self {
-        let value = function.as_value();
-        let ctx = value.ctx().as_raw().as_ptr();
-        // SAFETY: `ctx` is the live context `function` belongs to, and `as_raw` is a
-        // value of it: the duplicate this takes is the reference `Drop` gives back.
-        unsafe {
-            Self {
-                rt: qjs::JS_GetRuntime(ctx),
-                value: qjs::JS_DupValue(ctx, value.as_raw()),
-            }
-        }
-    }
-}
-
-impl Drop for RawFunction {
-    fn drop(&mut self) {
-        // SAFETY: `value` holds the reference `new` took, and the runtime is alive: see
-        // the type's contract.
-        unsafe { qjs::JS_FreeValueRT(self.rt, self.value) }
-    }
-}
+pub(super) type Handlers = Rc<[Retained]>;
 
 struct Listened {
     event: Box<str>,
@@ -105,7 +68,7 @@ impl ListenedEvents {
 /// The functions of a handler list the prelude built; it only holds functions.
 fn snapshot(list: &Array<'_>) -> rquickjs::Result<Handlers> {
     list.iter::<Function<'_>>()
-        .map(|handler| handler.map(|handler| RawFunction::new(&handler)))
+        .map(|handler| handler.map(|handler| Retained::new(handler.as_value())))
         .collect()
 }
 
@@ -138,7 +101,7 @@ fn record(events: &Weak<RefCell<Vec<Listened>>>, event: String, handlers: Option
 /// takes no reference, where `Function::call` would take and release several.
 pub(super) fn deliver<'js>(
     ctx: &Ctx<'js>,
-    handlers: &[RawFunction],
+    handlers: &[Retained],
     payload: &JsValue<'js>,
     keep_results: bool,
     mut on_return: impl FnMut(JsValue<'js>) -> Result<(), VmError>,
@@ -152,7 +115,7 @@ pub(super) fn deliver<'js>(
         let returned = unsafe {
             qjs::JS_Call(
                 ctx.as_raw().as_ptr(),
-                handler.value,
+                handler.raw(),
                 qjs::JS_UNDEFINED,
                 1,
                 arguments.as_mut_ptr(),

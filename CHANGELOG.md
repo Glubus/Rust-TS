@@ -195,6 +195,15 @@
   alone is 50), 19.6 to 15.3 billion instructions for 20 million calls. `async` host
   functions keep the rquickjs path.
 
+- `Engine::call` and `call_deferred` are 15 to 25 % cheaper: the module's namespace is
+  kept as a raw reference instead of a `Persistent` cloned and restored at each call, the
+  export name's atom is kept (the property is still read at each call, so a binding a
+  module reassigns is seen) and the result is checked with one `JS_IsFunction` instead of
+  a full type probe. A call with no argument went from 1237 to 1006 instructions
+  (203 to 163 ns on the loaded development machine), one with two numbers from 1715 to
+  1482. A name that is not a function (`export const answer = 42`) is now
+  `VmError::FunctionNotFound`, where it was a conversion error.
+
 ### Fixes
 
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
