@@ -220,6 +220,41 @@ fn typed_async_functions_resolve_natively_and_when_validating() {
     }
 }
 
+/// A panic in an async handler panics out of the call that reached it, as for a
+/// synchronous one: a script's `try`/`catch` cannot swallow it.
+#[test]
+fn a_panicking_async_handler_panics_out_of_the_call_and_leaves_the_engine_usable() {
+    let mut engine = Engine::new(&VmOptions::default()).expect("create engine");
+    engine
+        .registry()
+        .async_function_with::<Score>(|_name, _resolver| panic!("async handler panicked"))
+        .expect("register");
+    engine
+        .load_script(
+            "game",
+            r#"
+            export function swallowed(): unknown {
+                try { scores.lookup("ada"); return "returned"; } catch { return "caught"; }
+            }
+            export function fine(): number { return 1; }
+            "#,
+        )
+        .expect("load script");
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.call::<String>("game", "swallowed", ())
+    }));
+    let fine: f64 = engine
+        .call("game", "fine", ())
+        .expect("engine stays usable");
+
+    assert!(
+        outcome.is_err(),
+        "the panic must reach the host: {outcome:?}"
+    );
+    assert_eq!(fine, 1.0);
+}
+
 /// Starts `who()` in `alpha` and `beta`, settled synchronously by the handler, and
 /// returns what each resolves to after one pump.
 fn ids_resolved_by(engine: &mut Engine) -> [String; 2] {

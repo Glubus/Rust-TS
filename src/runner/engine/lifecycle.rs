@@ -12,7 +12,7 @@ use rquickjs::{
 
 use crate::config::ScriptBuiltins;
 use crate::error::VmError;
-use crate::registry::HostModuleStyle;
+use crate::registry::{HostModuleStyle, NativeContext};
 use crate::types::{ReloadReport, ScriptId};
 
 use super::super::errors::{caught_js_error, js_error};
@@ -469,7 +469,15 @@ impl Engine {
             }
         };
         self.registry
-            .install_native_functions(&functions, script_id, host_promises, &self.execution, class)
+            .install_native_functions(
+                &functions,
+                script_id,
+                host_promises,
+                &NativeContext {
+                    execution: Arc::clone(&self.execution),
+                    class,
+                },
+            )
             .map_err(js_error)?;
         // rquickjs gives every native function the `Function.prototype` of the first
         // context that created one, for the whole runtime: left alone, a script that

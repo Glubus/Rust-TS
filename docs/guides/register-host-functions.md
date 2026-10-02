@@ -175,7 +175,8 @@ engine
 
 A handler that returns `Err(VmError)` throws a JavaScript error in the script, which can
 catch it. A handler that **panics** panics out of the engine call that reached it
-(`Engine::call`, `emit`, `advance_timers`, ...), after the operation's Promise jobs ran:
+(`Engine::call`, `emit`, `advance_timers`, ...), after the operation's Promise jobs ran.
+The same holds for `async` handlers and for a `console` sink:
 a script's `try`/`catch` cannot swallow a Rust panic, and the engine stays usable if you
 catch the unwind. With `panic = "abort"` the process aborts, as for any Rust code.
 

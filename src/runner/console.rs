@@ -7,6 +7,7 @@ use std::rc::Rc;
 use rquickjs::{Ctx, Function};
 
 use super::errors::{js_error, locations_in_typescript};
+use super::host_fn;
 use super::module_loader::WorkerModuleStore;
 use crate::error::VmError;
 
@@ -86,7 +87,9 @@ impl ConsoleSink {
         let modules = modules.clone();
         Function::new(ctx.clone(), move |method: String, message: String| {
             let message = locations_in_typescript(&message, &modules);
-            (sink.borrow())(ConsoleLevel::from_method(&method), &script_id, &message);
+            host_fn::guarded(|| {
+                (sink.borrow())(ConsoleLevel::from_method(&method), &script_id, &message);
+            })
         })
         .map_err(js_error)
     }

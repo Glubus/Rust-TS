@@ -193,7 +193,7 @@
   and the arguments about seven times per call and dispatches through a table. A script
   looping over a one-argument host call went from 205 to 138 ns per iteration (the loop
   alone is 50), 19.6 to 15.3 billion instructions for 20 million calls. `async` host
-  functions keep the rquickjs path.
+  functions use the same objects.
 
 - `Engine::call` and `call_deferred` are 15 to 25 % cheaper: the module's namespace is
   kept as a raw reference instead of a `Persistent` cloned and restored at each call, the
@@ -210,7 +210,8 @@
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an
   unrelated call or never. It now waits until the operation ends and panics out of the
-  call that reached the handler. See [Errors And Panics In A Host
+  call that reached the handler. The same holds for `async` host functions and for a
+  `console` sink that panics (both returned normally with `"caught"` before). See [Errors And Panics In A Host
   Function](docs/guides/register-host-functions.md#errors-and-panics-in-a-host-function).
 - A load that ran out of memory failed with `non-error exception: Null`. It now says
   `out of memory` and names `VmOptions::memory_limit_bytes`. The default 16 MiB holds

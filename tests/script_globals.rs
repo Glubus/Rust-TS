@@ -122,6 +122,36 @@ fn recording(engine: &mut Engine) -> Lines {
     lines
 }
 
+/// A console sink that panics panics out of the call that logged, whatever the script's
+/// `try`/`catch` does.
+#[test]
+fn a_panicking_console_sink_panics_out_of_the_call_that_logged() {
+    let mut engine = engine();
+    engine.set_console(|_level, _script, _message| panic!("sink broke"));
+    engine
+        .load_script(
+            "script",
+            r#"export function log(): string {
+                try { console.log("x"); return "returned"; } catch { return "caught"; }
+            }
+            export function quiet(): number { return 1; }"#,
+        )
+        .expect("load script");
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.call::<String>("script", "log", ())
+    }));
+    let quiet: f64 = engine
+        .call("script", "quiet", ())
+        .expect("engine stays usable");
+
+    assert!(
+        outcome.is_err(),
+        "the panic must reach the host: {outcome:?}"
+    );
+    assert_eq!(quiet, 1.0);
+}
+
 #[test]
 fn console_calls_reach_the_sink_with_their_level_and_script() {
     let mut engine = engine();

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use rquickjs::{Object, Result as JsResult};
 use serde_json::Value;
 
-use super::bindings::{ContractValidator, FunctionBindingStore};
+use super::bindings::{ContractValidator, FunctionBindingStore, NativeContext};
 use super::declarations::render_typescript_declarations;
 use super::import_modules::{HostModuleStyle, render_host_import_modules};
 use super::interface::HostContractRegistry;
@@ -18,8 +18,6 @@ use crate::contract::{
     HostRequest, HostResolver, JsDecode, JsEncode, Schema, TsSchema,
 };
 use crate::error::VmError;
-use crate::runner::execution::ExecutionControl;
-use crate::runner::host_fn::HostFnClass;
 use crate::runner::host_promises::HostPromises;
 use crate::sdk_files::{
     GeneratedSdkFiles, SdkFileNames, write_host_sdk_files, write_host_sdk_files_with_names,
@@ -221,18 +219,13 @@ impl InMemoryHostContractRegistry {
         target: &Object<'js>,
         script_id: &str,
         promises: &HostPromises,
-        execution: &Arc<ExecutionControl>,
-        class: HostFnClass,
+        native: &NativeContext,
     ) -> JsResult<()> {
         let promises = promises.downgrade();
-        self.function_bindings.install_native(
-            target,
-            script_id,
-            &promises,
-            execution,
-            class,
-            |name| self.validates_any().then(|| self.contract_validator(name)),
-        )
+        self.function_bindings
+            .install_native(target, script_id, &promises, native, |name| {
+                self.validates_any().then(|| self.contract_validator(name))
+            })
     }
 
     fn validates_any(&self) -> bool {

@@ -46,6 +46,22 @@ pub(crate) fn resume_panic() {
     }
 }
 
+/// Runs host code a script can reach through an rquickjs function, parking a panic of it
+/// for [`resume_panic`] and returning an error, which the script sees as an exception it
+/// can catch, instead of unwinding through QuickJS.
+pub(crate) fn guarded<R>(host: impl FnOnce() -> R) -> JsResult<R> {
+    catch_unwind(AssertUnwindSafe(host)).map_err(|payload| {
+        park(payload);
+        Error::new_from_js_message("host", "function", "a host function panicked")
+    })
+}
+
+fn park(payload: Box<dyn Any + Send>) {
+    PANIC.with(|slot| {
+        slot.borrow_mut().get_or_insert(payload);
+    });
+}
+
 impl HostFnClass {
     /// Registers the class on the runtime `ctx` belongs to.
     ///
@@ -122,9 +138,7 @@ unsafe extern "C" fn call(
     match catch_unwind(AssertUnwindSafe(|| unsafe { run(host, ctx, argc, argv) })) {
         Ok(value) => value,
         Err(payload) => {
-            PANIC.with(|slot| {
-                slot.borrow_mut().get_or_insert(payload);
-            });
+            park(payload);
             // SAFETY: `ctx` is live; the message is a constant.
             unsafe {
                 qjs::JS_ThrowInternalError(

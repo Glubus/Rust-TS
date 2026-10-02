@@ -3,8 +3,6 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use rquickjs::function::Opt;
-use rquickjs::prelude::Func;
 use rquickjs::{Ctx, Exception, Object, Result as JsResult, Value as JsValue};
 use serde_json::Value;
 
@@ -32,18 +30,25 @@ enum Binding {
     Async(Arc<dyn AsyncFunctionBinding>),
 }
 
+/// What installing a native host function needs from the engine, besides the function.
+pub struct NativeContext {
+    /// The budget of the running operation, whose clock a call to the function starts.
+    pub execution: Arc<ExecutionControl>,
+    /// The callable class the function is an instance of.
+    pub class: HostFnClass,
+}
+
 /// A registered host function handler.
 trait HostFunctionBinding: Send + Sync {
     /// Sets the handler on `target` as the native function `name` of script `script_id`,
     /// checking its values with `validator` when there is one. Entering it starts the
-    /// clock of the running operation's budget in `execution`.
+    /// clock of the running operation's budget in `native`.
     fn install<'js>(
         self: Arc<Self>,
         target: &Object<'js>,
         name: &str,
         script_id: &str,
-        execution: &Arc<ExecutionControl>,
-        class: HostFnClass,
+        native: &NativeContext,
         validator: Validator,
     ) -> JsResult<()>;
 }
@@ -60,7 +65,7 @@ trait AsyncFunctionBinding: Send + Sync {
         name: &str,
         script_id: &Rc<str>,
         promises: &WeakHostPromises,
-        execution: &Arc<ExecutionControl>,
+        native: &NativeContext,
         validator: Validator,
     ) -> JsResult<()>;
 }
@@ -188,11 +193,11 @@ where
         target: &Object<'js>,
         name: &str,
         _script_id: &str,
-        execution: &Arc<ExecutionControl>,
-        class: HostFnClass,
+        native: &NativeContext,
         validator: Validator,
     ) -> JsResult<()> {
-        let execution = Arc::clone(execution);
+        let execution = Arc::clone(&native.execution);
+        let class = native.class;
         let call: HostCall = match validator {
             None => Box::new(move |ctx, input| {
                 execution.start_clock();
@@ -226,12 +231,12 @@ where
         target: &Object<'js>,
         name: &str,
         script_id: &str,
-        execution: &Arc<ExecutionControl>,
-        class: HostFnClass,
+        native: &NativeContext,
         validator: Validator,
     ) -> JsResult<()> {
         let script_id = Box::<str>::from(script_id);
-        let execution = Arc::clone(execution);
+        let execution = Arc::clone(&native.execution);
+        let class = native.class;
         let call: HostCall = match validator {
             None => Box::new(move |ctx, input| {
                 execution.start_clock();
@@ -273,12 +278,13 @@ where
         name: &str,
         script_id: &Rc<str>,
         promises: &WeakHostPromises,
-        execution: &Arc<ExecutionControl>,
+        native: &NativeContext,
         validator: Validator,
     ) -> JsResult<()> {
         let script_id = Rc::clone(script_id);
         let promises = promises.clone();
-        let execution = Arc::clone(execution);
+        let execution = Arc::clone(&native.execution);
+        let class = native.class;
         let encode: EncodeReply<C::Output> = match validator.as_ref() {
             Some(validator) if validator.checks_output() => {
                 let validator = Arc::clone(validator);
@@ -291,24 +297,21 @@ where
             }
             _ => Arc::clone(&self.encode),
         };
-        target.set(
-            name,
-            Func::from(move |ctx: Ctx<'js>, input: Opt<JsValue<'js>>| {
-                execution.start_clock();
-                let caller = Caller::new(&script_id);
-                promises.call(
-                    &ctx,
-                    C::NAME,
-                    &encode,
-                    || {
-                        let input = input_or_null(&ctx, input);
-                        check_input(&ctx, validator.as_deref(), &input)?;
-                        C::Input::decode_js(&ctx, input)
-                    },
-                    |input, resolver| (self.handler)(&caller, input, resolver),
-                )
-            }),
-        )
+        let call: HostCall = Box::new(move |ctx, input| {
+            execution.start_clock();
+            let caller = Caller::new(&script_id);
+            promises.call(
+                ctx,
+                C::NAME,
+                &encode,
+                || {
+                    check_input(ctx, validator.as_deref(), &input)?;
+                    C::Input::decode_js(ctx, input)
+                },
+                |input, resolver| (self.handler)(&caller, input, resolver),
+            )
+        });
+        target.set(name, class.function(target.ctx(), call)?)
     }
 }
 
@@ -397,8 +400,7 @@ impl FunctionBindingStore {
         target: &Object<'js>,
         script_id: &str,
         promises: &WeakHostPromises,
-        execution: &Arc<ExecutionControl>,
-        class: HostFnClass,
+        native: &NativeContext,
         validator_for: impl Fn(&str) -> Validator,
     ) -> JsResult<()> {
         let mut shared_id = None;
@@ -406,11 +408,11 @@ impl FunctionBindingStore {
             let validator = validator_for(&name);
             match binding {
                 Binding::Sync(binding) => {
-                    binding.install(target, &name, script_id, execution, class, validator)?;
+                    binding.install(target, &name, script_id, native, validator)?;
                 }
                 Binding::Async(binding) => {
                     let shared_id = shared_id.get_or_insert_with(|| Rc::<str>::from(script_id));
-                    binding.install(target, &name, shared_id, promises, execution, validator)?;
+                    binding.install(target, &name, shared_id, promises, native, validator)?;
                 }
             }
         }
@@ -424,11 +426,6 @@ impl FunctionBindingStore {
             .map(|(name, binding)| (name.clone(), binding.clone()))
             .collect())
     }
-}
-
-/// A host function called without an argument receives `null`.
-pub(super) fn input_or_null<'js>(ctx: &Ctx<'js>, input: Opt<JsValue<'js>>) -> JsValue<'js> {
-    input.0.unwrap_or_else(|| JsValue::new_null(ctx.clone()))
 }
 
 #[cfg(test)]
@@ -479,8 +476,10 @@ mod lock_tests {
                     &target,
                     "script",
                     &HostPromises::default().downgrade(),
-                    &Arc::default(),
-                    HostFnClass::register(&ctx).unwrap(),
+                    &NativeContext {
+                        execution: Arc::default(),
+                        class: HostFnClass::register(&ctx).unwrap(),
+                    },
                     |_| None,
                 )
                 .unwrap();

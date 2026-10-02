@@ -2,7 +2,7 @@
 
 mod host_contracts;
 
-pub(crate) use host_contracts::HostModuleStyle;
+pub(crate) use host_contracts::{HostModuleStyle, NativeContext};
 
 pub use host_contracts::{
     HostContractRegistry, InMemoryHostContractRegistry,
