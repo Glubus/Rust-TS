@@ -268,6 +268,35 @@ fn contract_validation_rejects_inputs_outside_the_schema() {
 }
 
 #[test]
+fn loading_scripts_past_the_memory_limit_says_the_limit_was_reached() {
+    let mut engine = Engine::new(&VmOptions {
+        memory_limit_bytes: 4 * 1024 * 1024,
+        ..VmOptions::default()
+    })
+    .expect("create engine");
+    engine
+        .load_script("first", "export function one(): number { return 1; }")
+        .expect("load first script");
+
+    let error = (0..1000)
+        .find_map(|index| {
+            engine
+                .load_script(format!("script-{index}"), "export {};")
+                .err()
+        })
+        .expect("4 MiB hold fewer than 1000 contexts");
+
+    assert!(
+        matches!(&error, VmError::Execution { details } if details.contains("out of memory") && details.contains("memory_limit_bytes")),
+        "{error:?}"
+    );
+    let one: f64 = engine
+        .call("first", "one", ())
+        .expect("engine stays usable");
+    assert_eq!(one, 1.0);
+}
+
+#[test]
 fn exceeding_the_memory_limit_fails_the_call_and_the_engine_stays_usable() {
     let mut engine = Engine::new(&VmOptions {
         memory_limit_bytes: 8 * 1024 * 1024,

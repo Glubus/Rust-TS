@@ -388,6 +388,42 @@ unchanged module.
 values (`memory_used_bytes`), and allocation, atom, string, object and function
 counts. A call that exceeds the memory limit fails, and the engine stays usable.
 
+Each loaded script owns a QuickJS context, about 65 to 85 KiB with every built-in on
+(measured on an empty script), so the default 16 MiB limit holds roughly 200 scripts:
+raise `memory_limit_bytes` for more. A load that hits the limit fails with an error
+saying so (`out of memory: ... memory_limit_bytes`) and keeps the scripts already
+loaded.
+
+### Script Built-ins
+
+Creating a context is the main cost of loading a script. By default a context has
+every QuickJS built-in; `VmOptions::builtins` (`ScriptBuiltins`) turns off the
+optional ones a game's scripts do not use: `RegExp`, `Date`, `Proxy`, typed arrays,
+`WeakRef` and `FinalizationRegistry`, and `atob`, `btoa` and `performance`.
+
+```rust
+use rustts::{ScriptBuiltins, VmOptions};
+
+let options = VmOptions {
+    // Scripts parse no text and keep no clock: they get the cheapest context.
+    builtins: ScriptBuiltins::NONE,
+    ..VmOptions::default()
+};
+// Or keep what the scripts use.
+let options = VmOptions {
+    builtins: ScriptBuiltins { regexp: true, ..ScriptBuiltins::NONE },
+    ..VmOptions::default()
+};
+```
+
+`ScriptBuiltins::NONE` creates a context in roughly half the time and a quarter less
+memory (on a loaded laptop, an empty script loaded in about 480 to 590 µs instead of
+660 to 960 µs, and 66 instead of 86 KiB). The core language, `JSON`, `Map`, `Set` and
+`Promise` stay on, and so do `ctx`, `console` and the timers. A script that uses a
+disabled built-in fails with a `ReferenceError` where it runs, never at load, so test
+your scripts with the options you ship. Keep `typed_arrays` on when host functions use
+`NativeBytes`.
+
 ### Garbage Collection
 
 QuickJS frees a value as soon as nothing references it. Only objects that reference

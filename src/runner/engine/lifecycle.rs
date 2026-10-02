@@ -5,9 +5,11 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use rquickjs::{
-    CatchResultExt, Context, Ctx, Function, Module, Object, Persistent, Value as JsValue,
+    CatchResultExt, Context, Ctx, Function, Module, Object, Persistent, Runtime, Value as JsValue,
+    WriteOptions, qjs,
 };
 
+use crate::config::ScriptBuiltins;
 use crate::error::VmError;
 use crate::types::{ReloadReport, ScriptId};
 
@@ -31,7 +33,9 @@ const HOT_DATA_GLOBAL: &str = "__rustts_hot_data";
 
 /// Installs `ctx.on` / `ctx.off` and their handler lists, `ctx.hot`, `console`, the
 /// timer functions, `__host` and the namespaced host globals on top of the native hooks.
+/// A module, so that its compiled form can be kept and loaded into every context.
 const CONTEXT_PRELUDE: &str = include_str!("../../../assets/context_prelude.js");
+const PRELUDE_MODULE: &str = "rustts:prelude";
 
 impl Engine {
     /// Loads or replaces one TypeScript script. It may import host modules, not other
@@ -242,17 +246,43 @@ impl Engine {
         VmError,
     > {
         let _budget = self.budget();
-        let context = Context::full(&self.runtime).map_err(js_error)?;
+        let context = new_context(&self.runtime, self.builtins)?;
         let signals = ScriptSignals::default();
         let host_promises = HostPromises::default();
         let exports = context.with(|ctx| {
             self.install_native_functions(&ctx, &signals, script_id, &host_promises)?;
             install_hot_data(&ctx, hot_data)?;
-            evaluate_script(&ctx, CONTEXT_PRELUDE)?;
+            self.run_prelude(&ctx)?;
             import_exports(&ctx, entry_module_id)
         });
         let exports = self.attribute_interrupt(self.settle(exports))?;
         Ok((context, exports, signals, host_promises))
+    }
+
+    /// Runs the context prelude in `ctx`. The first call compiles it and keeps the
+    /// bytecode; every later context loads that instead of parsing and compiling the
+    /// source again, which was most of the cost of mounting a script.
+    fn run_prelude(&self, ctx: &Ctx<'_>) -> Result<(), VmError> {
+        let declared =
+            match self.prelude.get() {
+                // SAFETY: QuickJS does not verify bytecode. These bytes were written by this
+                // process, from the crate's own prelude, by the same QuickJS build.
+                Some(bytecode) => unsafe { Module::load(ctx.clone(), bytecode) },
+                None => {
+                    let declared = Module::declare(ctx.clone(), PRELUDE_MODULE, CONTEXT_PRELUDE);
+                    if let Ok(bytecode) = declared.as_ref().map_err(|_| ()).and_then(|declared| {
+                        declared.write(WriteOptions::default()).map_err(|_| ())
+                    }) {
+                        // Only this thread sets it, once: the first mount.
+                        let _ = self.prelude.set(bytecode.into_boxed_slice());
+                    }
+                    declared
+                }
+            }
+            .catch(ctx)
+            .map_err(caught_js_error)?;
+        let (_, evaluated) = declared.eval().catch(ctx).map_err(caught_js_error)?;
+        evaluated.finish::<()>().catch(ctx).map_err(caught_js_error)
     }
 
     /// Installs the host functions and the `console` hook, bound to `script_id`, and the
@@ -335,12 +365,6 @@ impl Engine {
     }
 }
 
-fn evaluate_script(ctx: &Ctx<'_>, source: &str) -> Result<(), VmError> {
-    ctx.eval::<(), _>(source)
-        .catch(ctx)
-        .map_err(caught_js_error)
-}
-
 fn import_exports(
     ctx: &Ctx<'_>,
     entry_module_id: &str,
@@ -385,5 +409,43 @@ fn hot_hook_error(error: VmError, outcome: &str) -> VmError {
     };
     VmError::Execution {
         details: format!("{outcome}: {details}"),
+    }
+}
+
+/// A context with the core, the built-ins RustTS needs and the optional ones `builtins`
+/// asks for. All of them is `Context::full`; fewer adds the same intrinsics one by one,
+/// in the order QuickJS's `JS_NewContext` does.
+fn new_context(runtime: &Runtime, builtins: ScriptBuiltins) -> Result<Context, VmError> {
+    if builtins == ScriptBuiltins::ALL {
+        return Context::full(runtime).map_err(js_error);
+    }
+    let context = Context::custom::<()>(runtime).map_err(js_error)?;
+    let failed = context.with(|ctx| {
+        let raw = ctx.as_raw().as_ptr();
+        let failures = |enabled: bool, add: unsafe extern "C" fn(*mut qjs::JSContext) -> i32| {
+            // SAFETY: `raw` is the live context `ctx` wraps. Each intrinsic is added once,
+            // right after creation and before any script runs, as `JS_NewContext` does.
+            enabled && unsafe { add(raw) } != 0
+        };
+        // `eval` compiles modules and the prelude, JSON backs `console`, `Map` backs the
+        // prelude and `Promise` backs `async`: always on.
+        failures(builtins.date, qjs::JS_AddIntrinsicDate)
+            || failures(true, qjs::JS_AddIntrinsicEval)
+            || failures(builtins.regexp, qjs::JS_AddIntrinsicRegExp)
+            || failures(true, qjs::JS_AddIntrinsicJSON)
+            || failures(builtins.proxy, qjs::JS_AddIntrinsicProxy)
+            || failures(true, qjs::JS_AddIntrinsicMapSet)
+            || failures(builtins.typed_arrays, qjs::JS_AddIntrinsicTypedArrays)
+            || failures(true, qjs::JS_AddIntrinsicPromise)
+            || failures(builtins.weak_ref, qjs::JS_AddIntrinsicWeakRef)
+            || failures(builtins.web, qjs::JS_AddIntrinsicAToB)
+            || failures(builtins.web, qjs::JS_AddPerformance)
+    });
+    if failed {
+        Err(VmError::Execution {
+            details: String::from("out of memory while creating a script context"),
+        })
+    } else {
+        Ok(context)
     }
 }

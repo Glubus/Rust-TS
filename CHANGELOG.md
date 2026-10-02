@@ -61,6 +61,8 @@
   `returns_promise: bool` field; add it to literals and exhaustive patterns.
   It is omitted from serialized synchronous descriptors, but async host
   functions render `Promise<Output>` in generated declarations and SDK.
+- `VmOptions` has a new `builtins` field; add it to struct literals that list every
+  field (`..VmOptions::default()` keeps working).
 - Derived encoders (`#[derive(TsSchema)]`) define each field as an own data
   property, as `JSON.parse` does, instead of assigning it: a setter a script put on
   `Object.prototype` no longer runs, and a field named `__proto__` becomes an own
@@ -129,6 +131,21 @@
   `advance_timers` with one due script went from about 4.4 to 2.6 µs on the loaded
   development machine. `cargo bench --bench runtime -- frame_budget` now keeps the
   per-frame cost of `emit` and `advance_timers` from 1 to 1000 scripts.
+- Loading a script costs about half as much: the context prelude is compiled once per
+  `Engine` and every context loads its bytecode instead of parsing and compiling the
+  source (an empty script went from about 1.5 ms to about 0.8 ms on the loaded
+  development machine, where compiling the prelude took about 0.45 ms of it).
+- `VmOptions::builtins` (`ScriptBuiltins`) chooses the optional JavaScript built-ins of
+  each script context: `RegExp`, `Date`, `Proxy`, typed arrays, `WeakRef` and `atob` /
+  `btoa` / `performance`. `ScriptBuiltins::NONE` loads a script in about half the time
+  and a quarter less memory. See
+  [Script Built-ins](docs/guides/engine.md#script-built-ins).
+
+### Fixes
+
+- A load that ran out of memory failed with `non-error exception: Null`. It now says
+  `out of memory` and names `VmOptions::memory_limit_bytes`. The default 16 MiB holds
+  about 200 scripts.
 
 ## 0.3.0 — 2026-09-25
 

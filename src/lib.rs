@@ -24,7 +24,7 @@ mod types;
 #[doc(hidden)]
 pub use serde as __serde;
 
-pub use config::{VmContractValidation, VmOptions, VmUnknownFieldValidation};
+pub use config::{ScriptBuiltins, VmContractValidation, VmOptions, VmUnknownFieldValidation};
 pub use contract::{
     Caller, HostFunctionSignature, HostRequest, HostResolver, JsArgs, JsDecode, JsEncode,
 };

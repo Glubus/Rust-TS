@@ -41,6 +41,59 @@ impl VmUnknownFieldValidation {
     }
 }
 
+/// The optional JavaScript built-ins each script context gets, chosen with
+/// [`VmOptions::builtins`].
+///
+/// Every context has ECMAScript's core (`Object`, `Array`, `String`, `Number`, `Math`,
+/// `Symbol`, `BigInt`, `Reflect`, errors, ...), module support, `JSON`, `Map` and
+/// `Set`, and `Promise`: RustTS itself needs them. The others cost time and memory in
+/// every context, which adds up for a game with hundreds of scripts: about half of the
+/// time to create a context and a third of its memory. A script that uses a built-in
+/// that is off fails with a `ReferenceError` when it runs; there is no static check, so
+/// run your scripts under the options you ship.
+///
+/// The default enables everything, as a plain QuickJS context does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptBuiltins {
+    /// `RegExp`, regular expression literals, and the string methods that take them.
+    pub regexp: bool,
+    /// `Date`.
+    pub date: bool,
+    /// `Proxy`.
+    pub proxy: bool,
+    /// `ArrayBuffer`, the typed arrays and `DataView`. Keep it on when host functions
+    /// use [`NativeBytes`](crate::NativeBytes), which crosses as a `Uint8Array`.
+    pub typed_arrays: bool,
+    /// `WeakRef` and `FinalizationRegistry`.
+    pub weak_ref: bool,
+    /// `atob`, `btoa` and `performance.now()`.
+    pub web: bool,
+}
+
+impl ScriptBuiltins {
+    /// Every optional built-in: the default.
+    pub const ALL: Self = Self::all(true);
+    /// None of the optional built-ins: the cheapest context.
+    pub const NONE: Self = Self::all(false);
+
+    const fn all(enabled: bool) -> Self {
+        Self {
+            regexp: enabled,
+            date: enabled,
+            proxy: enabled,
+            typed_arrays: enabled,
+            weak_ref: enabled,
+            web: enabled,
+        }
+    }
+}
+
+impl Default for ScriptBuiltins {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
 /// Configuration for [`crate::Engine`].
 #[derive(Debug, Clone)]
 pub struct VmOptions {
@@ -59,6 +112,8 @@ pub struct VmOptions {
     pub contract_validation: VmContractValidation,
     /// Unknown object field validation policy for schema-backed host contracts.
     pub unknown_field_validation: VmUnknownFieldValidation,
+    /// Optional JavaScript built-ins of every script context.
+    pub builtins: ScriptBuiltins,
 }
 
 impl Default for VmOptions {
@@ -70,6 +125,7 @@ impl Default for VmOptions {
             max_stack_size_bytes: 512 * 1024,
             contract_validation: VmContractValidation::Disabled,
             unknown_field_validation: VmUnknownFieldValidation::Allow,
+            builtins: ScriptBuiltins::ALL,
         }
     }
 }

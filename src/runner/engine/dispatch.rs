@@ -10,6 +10,10 @@ use super::super::errors::{caught_js_error, in_typescript, js_error};
 use super::super::events::deliver;
 use super::Engine;
 
+/// How a thrown `null` is described: QuickJS throws it when it runs out of memory while
+/// already handling an out of memory.
+const NULL_EXCEPTION: &str = "non-error exception: Null";
+
 impl Engine {
     /// Calls one exported function. Arguments encode through [`JsArgs`] (a tuple, a
     /// `Vec` or a slice) and the result decodes through [`JsDecode`], natively on both
@@ -161,10 +165,33 @@ impl Engine {
                 details: "execution budget exceeded".to_owned(),
             });
         }
-        let value = result.map_err(|error| in_typescript(error, &self.module_store))?;
+        let value = result.map_err(|error| self.reported(error))?;
         match job_error.or(unhandled) {
-            Some(error) => Err(in_typescript(error, &self.module_store)),
+            Some(error) => Err(self.reported(error)),
             None => Ok(value),
+        }
+    }
+
+    /// An error as the host sees it: TypeScript locations, and an out of memory that
+    /// QuickJS could only report as a thrown `null` said as such.
+    fn reported(&self, error: VmError) -> VmError {
+        match in_typescript(error, &self.module_store) {
+            VmError::Execution { details } if details.starts_with(NULL_EXCEPTION) => {
+                let stats = self.memory_stats();
+                if stats.malloc_limit_bytes != 0
+                    && stats.malloc_size_bytes * 10 >= stats.malloc_limit_bytes * 9
+                {
+                    return VmError::Execution {
+                        details: format!(
+                            "out of memory: {} of {} bytes allocated, the limit \
+                             `VmOptions::memory_limit_bytes`; raise it or load fewer scripts",
+                            stats.malloc_size_bytes, stats.malloc_limit_bytes
+                        ),
+                    };
+                }
+                VmError::Execution { details }
+            }
+            error => error,
         }
     }
 

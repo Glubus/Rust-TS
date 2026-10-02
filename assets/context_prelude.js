@@ -2,8 +2,8 @@
 // native host functions, `__rustts_handlers` keeps the engine's copy of each event's
 // handler list and, on a reload, `__rustts_hot_data` holds the previous version's
 // saved state.
-// One script instead of two: each evaluation in a fresh context pays its own parse
-// and compile.
+// One module instead of two scripts: the engine compiles it once and loads its bytecode
+// into every context, so a context does not pay for a parse and a compile.
 (() => {
   // Hot reload: `ctx.hot.data` is what the previous version's `save` returned, which
   // the engine hands over in `__rustts_hot_data`. The engine only reads the locked
@@ -270,3 +270,4 @@
     parent[leaf] = native[name];
   }
 })();
+export {};

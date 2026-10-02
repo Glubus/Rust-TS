@@ -161,6 +161,12 @@ check behave as before.
   `JSON.parse` does: a setter a script put on `Object.prototype` no longer runs, and
   a field named `__proto__` becomes an own property.
 
+## 9. Options
+
+`VmOptions` has a new `builtins` field (see [Script
+Built-ins](engine.md#script-built-ins)); add it to struct literals that list every
+field. The default keeps every built-in on, as before.
+
 ## Check Your Migration
 
 1. `cargo build` with the `derive` feature; fix the errors in the order above.

@@ -1,7 +1,7 @@
 //! Single-thread engine: the owning thread runs QuickJS, and every call crosses the
 //! Rust/JS boundary natively, without generated source or JSON text.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +11,7 @@ use rquickjs::{Context, Ctx, Function, Object, Persistent, Runtime, Value as JsV
 use rustc_hash::FxBuildHasher;
 
 use crate::compiler::WatchedFiles;
-use crate::config::VmOptions;
+use crate::config::{ScriptBuiltins, VmOptions};
 use crate::error::VmError;
 use crate::registry::InMemoryHostContractRegistry;
 use crate::types::{MemoryStats, ScriptId};
@@ -77,6 +77,9 @@ pub struct Engine {
     execution_timeout: Duration,
     console: ConsoleSink,
     timer_clock: TimerClock,
+    builtins: ScriptBuiltins,
+    /// Bytecode of the context prelude, compiled by the first script that mounts.
+    prelude: OnceCell<Box<[u8]>>,
     // Declared last: contexts and persistent values must drop before their runtime.
     rejections: UnhandledRejections,
     runtime: Runtime,
@@ -144,6 +147,8 @@ impl Engine {
             execution_timeout: options.execution_timeout,
             console: ConsoleSink::default(),
             timer_clock: TimerClock::default(),
+            builtins: options.builtins,
+            prelude: OnceCell::new(),
             rejections: UnhandledRejections::install(&runtime),
             runtime,
         })
