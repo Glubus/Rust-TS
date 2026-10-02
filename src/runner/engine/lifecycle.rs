@@ -298,6 +298,18 @@ impl Engine {
         self.registry
             .install_native_functions(&functions, script_id, host_promises)
             .map_err(js_error)?;
+        // rquickjs gives every native function the `Function.prototype` of the first
+        // context that created one, for the whole runtime: left alone, a script that
+        // patches its `Function.prototype` would change the host functions of every
+        // other script, and `hostFunction instanceof Function` would be false in all
+        // but that first script.
+        let function_prototype = Function::prototype(ctx.clone());
+        for entry in functions.props::<String, Function>() {
+            let (_, function) = entry.map_err(js_error)?;
+            function
+                .set_prototype(Some(&function_prototype))
+                .map_err(js_error)?;
+        }
         let globals = ctx.globals();
         globals
             .set(NATIVE_FUNCTIONS_GLOBAL, functions)

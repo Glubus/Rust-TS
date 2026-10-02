@@ -146,6 +146,11 @@
 - A load that ran out of memory failed with `non-error exception: Null`. It now says
   `out of memory` and names `VmOptions::memory_limit_bytes`. The default 16 MiB holds
   about 200 scripts.
+- Host functions took the `Function.prototype` of the first script loaded, in every
+  script (an rquickjs behavior). A script that patched its own `Function.prototype`
+  changed the host functions every other script saw, and `hostFunction instanceof
+  Function` was false in all but that first script. Each host function now has its own
+  script's `Function.prototype`.
 
 ## 0.3.0 — 2026-09-25
 
