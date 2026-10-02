@@ -35,6 +35,23 @@ impl WorkerModuleStore {
         Ok(())
     }
 
+    /// Sources of the host modules as a context group's scripts import them.
+    pub(crate) fn insert_group_host_modules(
+        &self,
+        modules: BTreeMap<String, String>,
+    ) -> std::result::Result<(), VmError> {
+        let mut guard = self.lock_store()?;
+        insertion::insert_group_host_modules(&mut guard, modules);
+        Ok(())
+    }
+
+    /// Marks graph `graph_id` as loaded into a context group; removing its modules
+    /// clears the mark.
+    pub(crate) fn mark_grouped(&self, graph_id: u64) -> std::result::Result<(), VmError> {
+        self.lock_store()?.grouped_graphs.insert(graph_id);
+        Ok(())
+    }
+
     pub(crate) fn insert_inline(
         &self,
         script_id: &str,

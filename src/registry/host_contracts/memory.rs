@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::bindings::{ContractValidator, FunctionBindingStore};
 use super::declarations::render_typescript_declarations;
-use super::import_modules::render_host_import_modules;
+use super::import_modules::{HostModuleStyle, render_host_import_modules};
 use super::interface::HostContractRegistry;
 use super::sdk::render_typescript_sdk;
 use crate::config::{VmContractValidation, VmUnknownFieldValidation};
@@ -202,9 +202,13 @@ impl InMemoryHostContractRegistry {
             .collect())
     }
 
-    /// Source of every host import module, keyed by module name.
-    pub(crate) fn import_modules(&self) -> Result<BTreeMap<String, String>, VmError> {
-        Ok(render_host_import_modules(&self.descriptors()?))
+    /// Source of every host import module, keyed by module name, as the script of a
+    /// context of its own or of a context group imports it.
+    pub(crate) fn import_modules(
+        &self,
+        style: HostModuleStyle,
+    ) -> Result<BTreeMap<String, String>, VmError> {
+        Ok(render_host_import_modules(&self.descriptors()?, style))
     }
 
     /// Installs every host function of script `script_id` on `target` as a native

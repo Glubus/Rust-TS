@@ -13,6 +13,9 @@ pub(super) const HOT_CONTEXT_TYPE: &str = include_str!("../../../assets/hot_cont
 /// `ctx.on` / `ctx.off` and the handler types, shared by the declarations and the SDK.
 pub(super) const EVENT_CONTEXT_TYPE: &str = include_str!("../../../assets/event_context.ts");
 
+/// The `rustts:env` module, whose `ctx` has the type `__CTX__`.
+pub(super) const ENV_MODULE_TYPE: &str = include_str!("../../../assets/env_module.ts");
+
 pub(crate) fn render_typescript_declarations(descriptors: &[HostContractDescriptor]) -> String {
     let mut declarations = DeclarationBuffer::default();
 
@@ -131,9 +134,11 @@ impl DeclarationBuffer {
             "HostEventContext & "
         };
         self.sections.push(HOT_CONTEXT_TYPE.trim().to_owned());
-        self.sections.push(format!(
-            "declare const ctx: {events}{{ readonly hot: HostHotContext }};"
-        ));
+        let ctx_type = format!("{events}{{ readonly hot: HostHotContext }}");
+        self.sections
+            .push(format!("declare const ctx: {ctx_type};"));
+        self.sections
+            .push(ENV_MODULE_TYPE.trim().replace("__CTX__", &ctx_type));
     }
 }
 

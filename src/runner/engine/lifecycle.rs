@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Arc;
 
 use rquickjs::{
     CatchResultExt, Context, Ctx, Function, Module, Object, Persistent, Runtime, Value as JsValue,
@@ -11,38 +12,92 @@ use rquickjs::{
 
 use crate::config::ScriptBuiltins;
 use crate::error::VmError;
+use crate::registry::HostModuleStyle;
 use crate::types::{ReloadReport, ScriptId};
 
 use super::super::errors::{caught_js_error, js_error};
 use super::super::host_promises::HostPromises;
-use super::super::module_loader::RuntimeModuleGraph;
-use super::super::timers::install_timer_hooks;
+use super::super::module_loader::{ENV_SPECIFIER, RuntimeModuleGraph};
+use super::super::timers::timer_hooks;
 use super::{
-    Disposed, Engine, EngineScript, HotData, ProjectFiles, ScriptOrigin, ScriptSignals,
-    script_not_found,
+    Disposed, Engine, EngineScript, HotData, Prelude, ProjectFiles, ScriptGroup, ScriptHooks,
+    ScriptOrigin, ScriptSignals, script_not_found,
 };
 
-const NATIVE_FUNCTIONS_GLOBAL: &str = "__rustts_native";
-/// Frozen `{ save, dispose }` hooks the prelude installs behind `ctx.hot`.
-const HOT_GLOBAL: &str = "__rustts_hot";
-const HOT_SAVE: &str = "save";
-const HOT_DISPOSE: &str = "dispose";
-/// Carries the previous version's saved state into the prelude, which moves it to
-/// `ctx.hot.data`.
-const HOT_DATA_GLOBAL: &str = "__rustts_hot_data";
-
-/// Installs `ctx.on` / `ctx.off` and their handler lists, `ctx.hot`, `console`, the
-/// timer functions, `__host` and the namespaced host globals on top of the native hooks.
-/// A module, so that its compiled form can be kept and loaded into every context.
+/// Builds `ctx.on` / `ctx.off` and their handler lists, `ctx.hot`, `console` and the timer
+/// functions of one script, and can expose them, with `__host` and the namespaced host
+/// globals, as globals. A module, so that its compiled form can be kept and loaded into
+/// every context.
 const CONTEXT_PRELUDE: &str = include_str!("../../../assets/context_prelude.js");
 const PRELUDE_MODULE: &str = "rustts:prelude";
+
+/// What `import ... from "rustts:env"` reads in a context of its own: the globals the
+/// prelude exposed. A script in a group gets its own environment module instead.
+const LEGACY_ENV_MODULE: &str = r#"
+export const ctx = globalThis.ctx;
+export const console = globalThis.console;
+export const setTimeout = globalThis.setTimeout;
+export const setInterval = globalThis.setInterval;
+export const clearTimeout = globalThis.clearTimeout;
+export const clearInterval = globalThis.clearInterval;
+"#;
+
+/// The context a script mounts into, with the prelude's functions to build its
+/// environment.
+struct Target {
+    context: Context,
+    prelude: Prelude,
+}
+
+/// What mounting a script produced.
+struct Mounted {
+    context: Context,
+    exports: Persistent<Object<'static>>,
+    signals: ScriptSignals,
+    host_promises: HostPromises,
+    hooks: ScriptHooks,
+}
 
 impl Engine {
     /// Loads or replaces one TypeScript script. It may import host modules, not other
     /// files; use [`Engine::load_project`] for those. A failed load keeps the previous
     /// version; see [`Engine`] for the `ctx.hot` state a replaced version hands over.
     pub fn load_script(&mut self, id: impl Into<ScriptId>, source: &str) -> Result<(), VmError> {
-        let id = id.into();
+        self.mount_inline(None, id.into(), source)?
+    }
+
+    /// [`Engine::load_script`] into context group `group`: the scripts loaded under one
+    /// group name share a QuickJS context, which makes them cheaper to load, smaller and,
+    /// from a few hundred scripts on, faster to deliver events to. Each keeps its own
+    /// events, timers, `console`, host-function identity ([`Caller`](crate::Caller)),
+    /// `ctx.hot` state and lifecycle, and reaches them with
+    /// `import { ctx, console, setTimeout } from "rustts:env"`: a shared context has no
+    /// per-script globals, so a script of a group has none of `ctx`, `console`, the timers
+    /// or the namespaced host globals as globals, and reaches host functions through
+    /// host module imports.
+    ///
+    /// A group is a trust boundary: its scripts share the built-ins and the global
+    /// object, so one can patch `Array.prototype` or set `globalThis.x` for the others.
+    /// Put scripts of one author in one group, and mods of different authors in
+    /// different groups, or load them with [`Engine::load_script`]. Reloading a script of
+    /// a group leaves its previous modules in the group's context until the context
+    /// drops, so a development loop that reloads one script many times grows memory
+    /// slowly. Unloading a group's last script drops its context.
+    pub fn load_script_in(
+        &mut self,
+        group: &str,
+        id: impl Into<ScriptId>,
+        source: &str,
+    ) -> Result<(), VmError> {
+        self.mount_inline(Some(group), id.into(), source)?
+    }
+
+    fn mount_inline(
+        &mut self,
+        group: Option<&str>,
+        id: ScriptId,
+        source: &str,
+    ) -> Result<Disposed, VmError> {
         let script = self.transpiler.inline(&id, source)?;
         self.install_host_modules()?;
         let graph_id = self.next_graph_id();
@@ -53,7 +108,7 @@ impl Engine {
             module_keys: vec![script.module_key],
             project: None,
         };
-        self.mount_graph(id, graph, origin)?
+        self.mount_graph(id, graph, origin, group)
     }
 
     /// Loads or replaces one multi-file TypeScript project from its entry file.
@@ -69,13 +124,30 @@ impl Engine {
         id: impl Into<ScriptId>,
         entry_path: impl AsRef<Path>,
     ) -> Result<(), VmError> {
-        self.mount_project(id.into(), entry_path.as_ref())?
+        self.mount_project(None, id.into(), entry_path.as_ref())?
+    }
+
+    /// [`Engine::load_project`] into context group `group`; see
+    /// [`Engine::load_script_in`] for what a group shares and what it keeps apart.
+    pub fn load_project_in(
+        &mut self,
+        group: &str,
+        id: impl Into<ScriptId>,
+        entry_path: impl AsRef<Path>,
+    ) -> Result<(), VmError> {
+        self.mount_project(Some(group), id.into(), entry_path.as_ref())?
     }
 
     /// [`Engine::load_project`], keeping a failed load apart from a failed `dispose` of
     /// the version it replaced.
-    fn mount_project(&mut self, id: ScriptId, entry_path: &Path) -> Result<Disposed, VmError> {
-        let external_modules = self.registry.import_module_names()?;
+    fn mount_project(
+        &mut self,
+        group: Option<&str>,
+        id: ScriptId,
+        entry_path: &Path,
+    ) -> Result<Disposed, VmError> {
+        let mut external_modules = self.registry.import_module_names()?;
+        external_modules.insert(ENV_SPECIFIER.to_owned());
         let project = self.transpiler.project(entry_path, &external_modules)?;
         self.install_host_modules()?;
         let graph_id = self.next_graph_id();
@@ -91,7 +163,7 @@ impl Engine {
                 watched: project.watched,
             }),
         };
-        self.mount_graph(id, graph, origin)
+        self.mount_graph(id, graph, origin, group)
     }
 
     /// Reloads, in load order, every project whose files changed since it was loaded,
@@ -115,13 +187,13 @@ impl Engine {
                 project
                     .watched
                     .changed()
-                    .then(|| (id.clone(), project.entry_path.clone()))
+                    .then(|| (id.clone(), project.entry_path.clone(), script.group.clone()))
             })
             .collect::<Vec<_>>();
 
         let mut report = ReloadReport::default();
-        for (id, entry_path) in changed {
-            match self.mount_project(id.clone(), &entry_path) {
+        for (id, entry_path, group) in changed {
+            match self.mount_project(group.as_deref(), id.clone(), &entry_path) {
                 Ok(disposed) => {
                     if let Err(error) = disposed {
                         report.dispose_failed.push((id.clone(), error));
@@ -166,8 +238,11 @@ impl Engine {
     }
 
     fn install_host_modules(&self) -> Result<(), VmError> {
+        let mut modules = self.registry.import_modules(HostModuleStyle::Globals)?;
+        modules.insert(ENV_SPECIFIER.to_owned(), LEGACY_ENV_MODULE.to_owned());
+        self.module_store.insert_host_modules(modules)?;
         self.module_store
-            .insert_host_modules(self.registry.import_modules()?)
+            .insert_group_host_modules(self.registry.import_modules(HostModuleStyle::Env)?)
     }
 
     fn next_graph_id(&mut self) -> u64 {
@@ -184,24 +259,33 @@ impl Engine {
         id: ScriptId,
         graph: RuntimeModuleGraph,
         origin: ScriptOrigin,
+        group: Option<&str>,
     ) -> Result<Disposed, VmError> {
         let mounted = self
             .save_hot_data(&id)
-            .and_then(|hot_data| self.mount(&id, &graph.entry_module_id, hot_data));
+            .and_then(|hot_data| self.mount(&id, &graph, hot_data, group));
         match mounted {
-            Ok((context, exports, signals, host_promises)) => self.replace_script(
-                id,
-                EngineScript {
-                    context,
-                    tasks: RefCell::new(Vec::new()),
-                    request_guards: RefCell::new(Vec::new()),
-                    exports,
-                    signals,
-                    host_promises,
-                    module_ids: graph.module_ids,
-                    origin,
-                },
-            ),
+            Ok(mounted) => {
+                if let Some(group) = group.and_then(|name| self.groups.get_mut(name)) {
+                    group.scripts += 1;
+                }
+                self.replace_script(
+                    id,
+                    EngineScript {
+                        context: mounted.context,
+                        group: group.map(Box::from),
+                        graph_id: graph.graph_id,
+                        hooks: mounted.hooks,
+                        tasks: RefCell::new(Vec::new()),
+                        request_guards: RefCell::new(Vec::new()),
+                        exports: mounted.exports,
+                        signals: mounted.signals,
+                        host_promises: mounted.host_promises,
+                        module_ids: graph.module_ids,
+                        origin,
+                    },
+                )
+            }
             Err(error) => {
                 self.module_store.remove_modules(&graph.module_ids)?;
                 Err(error)
@@ -216,9 +300,9 @@ impl Engine {
             return Ok(None);
         };
         let _budget = self.budget();
-        let saved = script
-            .context
-            .with(|ctx| call_hot_hook(&ctx, HOT_SAVE).map(|data| Persistent::save(&ctx, data)));
+        let saved = script.context.with(|ctx| {
+            call_hot_hook(&ctx, &script.hooks.hot_save).map(|data| Persistent::save(&ctx, data))
+        });
         self.attribute_interrupt(self.settle(saved))
             .map(Some)
             .map_err(|error| {
@@ -231,38 +315,101 @@ impl Engine {
             })
     }
 
+    /// Builds the script's environment in its context (a group's, created by its first
+    /// script) and imports its entry module.
     fn mount(
-        &self,
+        &mut self,
         script_id: &str,
-        entry_module_id: &str,
+        graph: &RuntimeModuleGraph,
         hot_data: Option<HotData>,
-    ) -> Result<
-        (
-            Context,
-            Persistent<Object<'static>>,
-            ScriptSignals,
-            HostPromises,
-        ),
-        VmError,
-    > {
-        let _budget = self.budget();
-        let context = new_context(&self.runtime, self.builtins)?;
+        group: Option<&str>,
+    ) -> Result<Mounted, VmError> {
+        // The guard borrows a handle of its own, not `self`, which the group lookup
+        // below borrows mutably.
+        let execution = Arc::clone(&self.execution);
+        let _budget = execution.enter(self.execution_timeout);
+        let created_group = group.is_some_and(|name| !self.groups.contains_key(name));
+        let target = match self.target(group) {
+            Ok(target) => target,
+            Err(error) => return self.attribute_interrupt(self.settle(Err(error))),
+        };
+        if group.is_some() {
+            self.module_store.mark_grouped(graph.graph_id)?;
+        }
         let signals = ScriptSignals::default();
         let host_promises = HostPromises::default();
-        let exports = context.with(|ctx| {
-            self.install_native_functions(&ctx, &signals, script_id, &host_promises)?;
-            install_hot_data(&ctx, hot_data)?;
-            self.run_prelude(&ctx)?;
-            import_exports(&ctx, entry_module_id)
+        let mounted = target.context.with(|ctx| {
+            let (env, hooks) = self.build_env(
+                &ctx,
+                &target.prelude,
+                script_id,
+                &signals,
+                &host_promises,
+                hot_data,
+            )?;
+            if group.is_none() {
+                target
+                    .prelude
+                    .install_globals
+                    .clone()
+                    .restore(&ctx)
+                    .map_err(js_error)?
+                    .call::<_, ()>((env,))
+                    .catch(&ctx)
+                    .map_err(caught_js_error)?;
+            } else {
+                self.envs
+                    .insert(graph.graph_id, Persistent::save(&ctx, env));
+            }
+            let exports = import_exports(&ctx, &graph.entry_module_id)?;
+            Ok((exports, hooks))
         });
-        let exports = self.attribute_interrupt(self.settle(exports))?;
-        Ok((context, exports, signals, host_promises))
+        match self.attribute_interrupt(self.settle(mounted)) {
+            Ok((exports, hooks)) => Ok(Mounted {
+                context: target.context,
+                exports,
+                signals,
+                host_promises,
+                hooks,
+            }),
+            Err(error) => {
+                self.envs.remove(graph.graph_id);
+                if let Some(name) = group.filter(|_| created_group) {
+                    self.groups.remove(name);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// The context a script mounts into: a new one of its own, or its group's, created
+    /// the first time the group is used.
+    fn target(&mut self, group: Option<&str>) -> Result<Target, VmError> {
+        if let Some(existing) = group.and_then(|name| self.groups.get(name)) {
+            return Ok(Target {
+                context: existing.context.clone(),
+                prelude: existing.prelude.clone(),
+            });
+        }
+        let context = new_context(&self.runtime, self.builtins)?;
+        let prelude = context.with(|ctx| self.run_prelude(&ctx))?;
+        if let Some(name) = group {
+            self.groups.insert(
+                Box::from(name),
+                ScriptGroup {
+                    context: context.clone(),
+                    prelude: prelude.clone(),
+                    scripts: 0,
+                },
+            );
+        }
+        Ok(Target { context, prelude })
     }
 
     /// Runs the context prelude in `ctx`. The first call compiles it and keeps the
     /// bytecode; every later context loads that instead of parsing and compiling the
     /// source again, which was most of the cost of mounting a script.
-    fn run_prelude(&self, ctx: &Ctx<'_>) -> Result<(), VmError> {
+    fn run_prelude(&self, ctx: &Ctx<'_>) -> Result<Prelude, VmError> {
         let declared =
             match self.prelude.get() {
                 // SAFETY: QuickJS does not verify bytecode. These bytes were written by this
@@ -281,19 +428,36 @@ impl Engine {
             }
             .catch(ctx)
             .map_err(caught_js_error)?;
-        let (_, evaluated) = declared.eval().catch(ctx).map_err(caught_js_error)?;
-        evaluated.finish::<()>().catch(ctx).map_err(caught_js_error)
+        let (module, evaluated) = declared.eval().catch(ctx).map_err(caught_js_error)?;
+        evaluated
+            .finish::<()>()
+            .catch(ctx)
+            .map_err(caught_js_error)?;
+        let export = |name: &str| {
+            module
+                .get::<_, Function<'_>>(name)
+                .map(|function| Persistent::save(ctx, function))
+                .map_err(js_error)
+        };
+        Ok(Prelude {
+            make_env: export("makeEnv")?,
+            install_globals: export("installGlobals")?,
+        })
     }
 
-    /// Installs the host functions and the `console` hook, bound to `script_id`, and the
-    /// hooks through which the prelude reports handlers and timers to `signals`.
-    fn install_native_functions(
+    /// Builds the environment of script `script_id`: its host functions, bound to its id,
+    /// the hooks through which its handlers and timers report to `signals`, its `console`
+    /// sink and the state the previous version saved. Returns it with the functions the
+    /// engine calls.
+    fn build_env<'js>(
         &self,
-        ctx: &Ctx<'_>,
-        signals: &ScriptSignals,
+        ctx: &Ctx<'js>,
+        prelude: &Prelude,
         script_id: &str,
+        signals: &ScriptSignals,
         host_promises: &HostPromises,
-    ) -> Result<(), VmError> {
+        hot_data: Option<HotData>,
+    ) -> Result<(Object<'js>, ScriptHooks), VmError> {
         let functions = Object::new(ctx.clone()).map_err(js_error)?;
         self.registry
             .install_native_functions(&functions, script_id, host_promises)
@@ -310,13 +474,43 @@ impl Engine {
                 .set_prototype(Some(&function_prototype))
                 .map_err(js_error)?;
         }
-        let globals = ctx.globals();
-        globals
-            .set(NATIVE_FUNCTIONS_GLOBAL, functions)
+        let timers = timer_hooks(ctx, &self.timer_clock, &signals.next_timer)?;
+        let hooks = Object::new(ctx.clone()).map_err(js_error)?;
+        hooks.set("native", functions).map_err(js_error)?;
+        hooks
+            .set("handlers", signals.events.hook(ctx)?)
             .map_err(js_error)?;
-        signals.events.install_hook(ctx)?;
-        self.console.install(ctx, script_id, &self.module_store)?;
-        install_timer_hooks(ctx, &self.timer_clock, &signals.next_timer)
+        hooks
+            .set(
+                "console",
+                self.console.writer(ctx, script_id, &self.module_store)?,
+            )
+            .map_err(js_error)?;
+        hooks.set("now", timers.now).map_err(js_error)?;
+        hooks.set("schedule", timers.schedule).map_err(js_error)?;
+        if let Some(hot_data) = hot_data {
+            let data = hot_data.restore(ctx).map_err(js_error)?;
+            hooks.set("hotData", data).map_err(js_error)?;
+        }
+        let env = prelude
+            .make_env
+            .clone()
+            .restore(ctx)
+            .map_err(js_error)?
+            .call::<_, Object<'js>>((hooks,))
+            .catch(ctx)
+            .map_err(caught_js_error)?;
+        let hook = |name: &str| {
+            env.get::<_, Function<'js>>(name)
+                .map(|function| Persistent::save(ctx, function))
+                .map_err(js_error)
+        };
+        let script_hooks = ScriptHooks {
+            hot_save: hook("hotSave")?,
+            hot_dispose: hook("hotDispose")?,
+            timers_run: hook("timersRun")?,
+        };
+        Ok((env, script_hooks))
     }
 
     /// Swaps `script` in, then retires the version it replaces, whose failed `dispose`
@@ -334,7 +528,8 @@ impl Engine {
     }
 
     /// Runs the `ctx.hot.dispose` callbacks of a version no longer in `scripts`, then
-    /// releases its modules; the context drops with `script`.
+    /// releases its modules and its place in its group; the context drops with the last
+    /// script that holds it.
     fn retire(&mut self, script: EngineScript) -> Result<Disposed, VmError> {
         for guard in script.request_guards.borrow_mut().drain(..) {
             guard.cancel();
@@ -345,6 +540,15 @@ impl Engine {
         let disposed = self.dispose(&script);
         script.host_promises.cancel();
         self.module_store.remove_modules(&script.module_ids)?;
+        self.envs.remove(script.graph_id);
+        if let Some(name) = &script.group
+            && let Some(group) = self.groups.get_mut(&**name)
+        {
+            group.scripts -= 1;
+            if group.scripts == 0 {
+                self.groups.remove(&**name);
+            }
+        }
         self.forget_unused_modules();
         Ok(disposed)
     }
@@ -354,7 +558,7 @@ impl Engine {
         let _budget = self.budget();
         let disposed = script
             .context
-            .with(|ctx| call_hot_hook(&ctx, HOT_DISPOSE).map(|_| ()));
+            .with(|ctx| call_hot_hook(&ctx, &script.hooks.hot_dispose).map(|_| ()));
         self.attribute_interrupt(self.settle(disposed))
     }
 
@@ -388,24 +592,13 @@ fn import_exports(
     Ok(Persistent::save(ctx, exports))
 }
 
-/// Hands the previous version's saved state to the prelude, which moves it to
-/// `ctx.hot.data`.
-fn install_hot_data(ctx: &Ctx<'_>, hot_data: Option<HotData>) -> Result<(), VmError> {
-    let Some(hot_data) = hot_data else {
-        return Ok(());
-    };
-    let data = hot_data.restore(ctx).map_err(js_error)?;
-    ctx.globals().set(HOT_DATA_GLOBAL, data).map_err(js_error)
-}
-
-/// Calls one of the `ctx.hot` hooks the prelude locked on the context's global object.
-fn call_hot_hook<'js>(ctx: &Ctx<'js>, hook: &str) -> Result<JsValue<'js>, VmError> {
-    let hooks = ctx
-        .globals()
-        .get::<_, Object<'js>>(HOT_GLOBAL)
-        .map_err(js_error)?;
-    hooks
-        .get::<_, Function<'js>>(hook)
+/// Calls one of the hooks of a script's `ctx.hot`.
+fn call_hot_hook<'js>(
+    ctx: &Ctx<'js>,
+    hook: &Persistent<Function<'static>>,
+) -> Result<JsValue<'js>, VmError> {
+    hook.clone()
+        .restore(ctx)
         .map_err(js_error)?
         .call::<_, JsValue<'js>>(())
         .catch(ctx)

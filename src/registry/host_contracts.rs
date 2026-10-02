@@ -3,6 +3,8 @@
 mod bindings;
 mod declarations;
 mod import_modules;
+
+pub(crate) use import_modules::HostModuleStyle;
 mod interface;
 mod memory;
 mod sdk;

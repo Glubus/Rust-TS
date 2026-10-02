@@ -1,4 +1,6 @@
-use super::declarations::{EVENT_CONTEXT_TYPE, HOT_CONTEXT_TYPE, render_typescript_declarations};
+use super::declarations::{
+    ENV_MODULE_TYPE, EVENT_CONTEXT_TYPE, HOT_CONTEXT_TYPE, render_typescript_declarations,
+};
 use super::sdk::render_typescript_sdk;
 use super::{HostContractRegistry, InMemoryHostContractRegistry};
 use crate::contract::{
@@ -373,7 +375,7 @@ fn dts_generates_function_declaration_from_contract_model() {
 }
 
 /// The declarations' closing `ctx` section, typing `ctx.on` and `ctx.off` only when
-/// events exist.
+/// events exist, and the `rustts:env` module that exports it.
 fn ctx_declaration(with_events: bool) -> String {
     let (event_context, events) = if with_events {
         (
@@ -383,9 +385,11 @@ fn ctx_declaration(with_events: bool) -> String {
     } else {
         (String::new(), "")
     };
+    let ctx_type = format!("{events}{{ readonly hot: HostHotContext }}");
     format!(
-        "{event_context}{}\n\ndeclare const ctx: {events}{{ readonly hot: HostHotContext }};\n",
-        HOT_CONTEXT_TYPE.trim()
+        "{event_context}{}\n\ndeclare const ctx: {ctx_type};\n\n{}\n",
+        HOT_CONTEXT_TYPE.trim(),
+        ENV_MODULE_TYPE.trim().replace("__CTX__", &ctx_type)
     )
 }
 

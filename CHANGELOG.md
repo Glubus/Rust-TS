@@ -141,6 +141,17 @@
   and a quarter less memory. See
   [Script Built-ins](docs/guides/engine.md#script-built-ins).
 
+- Context groups: `Engine::load_script_in(group, id, source)` and
+  `Engine::load_project_in(group, id, entry)` load scripts that trust each other into one
+  shared QuickJS context. Each script keeps its own events, timers, `console`,
+  `Caller` identity, `ctx.hot` state and lifecycle, and reaches them with
+  `import { ctx, console, setTimeout } from "rustts:env"` (also valid in a context of
+  its own); the generated declarations type that module. A group is a trust boundary:
+  its scripts share the built-ins and the global object. On a loaded development machine
+  loading 400 scripts took 90 ms instead of 383 ms and delivering an event to 1000
+  scripts 2.7 ms instead of 4.4 ms. See
+  [Context Groups](docs/guides/engine.md#context-groups).
+
 ### Fixes
 
 - A load that ran out of memory failed with `non-error exception: Null`. It now says

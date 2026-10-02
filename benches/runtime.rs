@@ -25,6 +25,14 @@ const MOD_PACK_ENTRY: &str = concat!(
     "/tests/projects/realistic_mod_pack/src/main.ts"
 );
 const MANY_SMALL_SCRIPT_COUNT: usize = 400;
+/// Scripts per context group in the grouped benches.
+const GROUP_SIZE: usize = 10;
+const GROUPED_FRAME_SCRIPT: &str = r#"
+import { ctx } from "rustts:env";
+let total = 0;
+ctx.on("frame", (event: { dt: number }) => { total += event.dt; });
+export {};
+"#;
 const MEMORY_REPORT_SCRIPT_COUNTS: &[usize] = &[100, 400, 800, 1000];
 const FRAME_SCRIPT_COUNTS: &[usize] = &[1, 50, 250, 500, 1000];
 const FRAME_DURATION: Duration = Duration::from_micros(500);
@@ -56,6 +64,7 @@ fn runtime_benchmarks(c: &mut Criterion) {
     bench_cold_project_load(c);
     bench_sdk_generation(c);
     bench_many_small_scripts_memory_shape(c);
+    bench_grouped_load(c);
     bench_frame_budget(c);
 }
 
@@ -69,7 +78,8 @@ fn bench_engine_new(c: &mut Criterion) {
 /// One `ctx.on("frame")` handler per script, as in the 500 µs frame (2000 fps) the
 /// scripts share with render, input and audio. Throughput is scripts per frame, so
 /// the report shows the cost per script and where it stops being linear.
-/// `advance_timers` is measured with every script's timer due on each call.
+/// `advance_timers` is measured with every script's timer due on each call, and `emit`
+/// again with the scripts spread over context groups of `GROUP_SIZE` scripts.
 fn bench_frame_budget(c: &mut Criterion) {
     let frame = json!({ "dt": 0.0005, "tick": 1 });
     let mut group = c.benchmark_group("frame_budget");
@@ -77,9 +87,13 @@ fn bench_frame_budget(c: &mut Criterion) {
     for &script_count in FRAME_SCRIPT_COUNTS {
         let events = scripts_engine(FRAME_SCRIPT, script_count);
         let timers = scripts_engine(TIMER_SCRIPT, script_count);
+        let grouped = grouped_engine(GROUPED_FRAME_SCRIPT, script_count);
         group.throughput(Throughput::Elements(script_count as u64));
         group.bench_function(format!("emit_{script_count}"), |b| {
             b.iter(|| black_box(events.emit("frame", &frame).expect("emit frame")));
+        });
+        group.bench_function(format!("emit_{script_count}_grouped"), |b| {
+            b.iter(|| black_box(grouped.emit("frame", &frame).expect("emit frame")));
         });
         group.bench_function(format!("advance_timers_{script_count}"), |b| {
             b.iter(|| {
@@ -102,6 +116,47 @@ fn scripts_engine(source: &str, script_count: usize) -> Engine {
             .expect("load script");
     }
     engine
+}
+
+/// [`scripts_engine`] with the scripts loaded into context groups of `GROUP_SIZE`.
+fn grouped_engine(source: &str, script_count: usize) -> Engine {
+    let mut engine = Engine::new(&many_scripts_options()).expect("create engine");
+    for index in 0..script_count {
+        engine
+            .load_script_in(
+                &format!("group-{}", index / GROUP_SIZE),
+                format!("script-{index}"),
+                source,
+            )
+            .expect("load script");
+    }
+    engine
+}
+
+/// Loading `MANY_SMALL_SCRIPT_COUNT` scripts into a fresh engine, each in a context of
+/// its own and then in groups of `GROUP_SIZE`.
+fn bench_grouped_load(c: &mut Criterion) {
+    let mut group = c.benchmark_group("load_many_scripts");
+    configure_slow(&mut group);
+    for (label, size) in [("own_contexts", 1), ("groups", GROUP_SIZE)] {
+        group.bench_function(format!("{MANY_SMALL_SCRIPT_COUNT}_{label}"), |b| {
+            bench_fresh_engine(
+                b,
+                || Engine::new(&many_scripts_options()).expect("create engine"),
+                |engine| {
+                    for index in 0..MANY_SMALL_SCRIPT_COUNT {
+                        engine.load_script_in(
+                            &format!("group-{}", index / size),
+                            format!("script-{index}"),
+                            GROUPED_FRAME_SCRIPT,
+                        )?;
+                    }
+                    Ok(())
+                },
+            );
+        });
+    }
+    group.finish();
 }
 
 /// First load of an inline script into a fresh engine: a full transpile without a

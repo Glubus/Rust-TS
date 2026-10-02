@@ -4,19 +4,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use rquickjs::prelude::Func;
-use rquickjs::{CatchResultExt, Ctx, Function, Object};
+use rquickjs::{CatchResultExt, Ctx, Function, Persistent};
 
 use super::errors::{caught_js_error, js_error};
 use crate::error::VmError;
-
-/// Reads the engine clock, in milliseconds.
-const NOW_GLOBAL: &str = "__rustts_now";
-/// Records the due time of the context's earliest timer.
-const SCHEDULE_GLOBAL: &str = "__rustts_schedule";
-/// Frozen `{ run }` hook the prelude installs to fire due timers.
-const TIMERS_GLOBAL: &str = "__rustts_timers";
-const TIMERS_RUN: &str = "run";
 
 /// Engine time in milliseconds, advanced only by
 /// [`Engine::advance_timers`](crate::Engine::advance_timers); starts at 0.
@@ -49,28 +40,35 @@ impl NextTimer {
     }
 }
 
-/// Installs the clock and scheduling hooks the prelude builds the timer functions on.
-pub(super) fn install_timer_hooks(
-    ctx: &Ctx<'_>,
-    clock: &TimerClock,
-    next: &NextTimer,
-) -> Result<(), VmError> {
-    let globals = ctx.globals();
-    let clock = Rc::clone(&clock.0);
-    globals
-        .set(NOW_GLOBAL, Func::from(move || clock.get()))
-        .map_err(js_error)?;
-    let next = Rc::clone(&next.0);
-    globals
-        .set(SCHEDULE_GLOBAL, Func::from(move |due: f64| next.set(due)))
-        .map_err(js_error)
+/// The clock and scheduling hooks the prelude builds a script's timer functions on:
+/// `now` reads the engine clock, `schedule` records the due time of the script's
+/// earliest timer.
+pub(super) struct TimerHooks<'js> {
+    pub(super) now: Function<'js>,
+    pub(super) schedule: Function<'js>,
 }
 
-/// Fires the context's timers due at `now`, through the prelude's locked hook.
-pub(super) fn run_due_timers(ctx: &Ctx<'_>, now: f64) -> Result<(), VmError> {
-    ctx.globals()
-        .get::<_, Object<'_>>(TIMERS_GLOBAL)
-        .and_then(|timers| timers.get::<_, Function<'_>>(TIMERS_RUN))
+pub(super) fn timer_hooks<'js>(
+    ctx: &Ctx<'js>,
+    clock: &TimerClock,
+    next: &NextTimer,
+) -> Result<TimerHooks<'js>, VmError> {
+    let clock = Rc::clone(&clock.0);
+    let next = Rc::clone(&next.0);
+    Ok(TimerHooks {
+        now: Function::new(ctx.clone(), move || clock.get()).map_err(js_error)?,
+        schedule: Function::new(ctx.clone(), move |due: f64| next.set(due)).map_err(js_error)?,
+    })
+}
+
+/// Fires a script's timers due at `now`, through the `run` function its prelude built.
+pub(super) fn run_due_timers<'js>(
+    ctx: &Ctx<'js>,
+    run: &Persistent<Function<'static>>,
+    now: f64,
+) -> Result<(), VmError> {
+    run.clone()
+        .restore(ctx)
         .map_err(js_error)?
         .call::<_, ()>((now,))
         .catch(ctx)

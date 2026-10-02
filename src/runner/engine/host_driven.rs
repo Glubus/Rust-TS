@@ -36,7 +36,10 @@ impl Engine {
         let mut first_error = None;
         for script in due {
             fired += 1;
-            if let Err(error) = script.context.with(|ctx| run_due_timers(&ctx, now)) {
+            if let Err(error) = script
+                .context
+                .with(|ctx| run_due_timers(&ctx, &script.hooks.timers_run, now))
+            {
                 first_error.get_or_insert(error);
             }
         }

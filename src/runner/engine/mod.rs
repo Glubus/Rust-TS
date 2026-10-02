@@ -2,6 +2,7 @@
 //! Rust/JS boundary natively, without generated source or JSON text.
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +24,9 @@ use super::execution::{ExecutionControl, ExecutionGuard};
 use super::host_promises::HostPromises;
 use super::interrupt::InterruptHandle;
 use super::memory::memory_stats;
-use super::module_loader::{MemoryModuleLoader, MemoryModuleResolver, WorkerModuleStore};
+use super::module_loader::{
+    MemoryModuleLoader, MemoryModuleResolver, ScriptEnvs, WorkerModuleStore,
+};
 use super::promise_rejections::UnhandledRejections;
 use super::tasks::{RequestGuard, ScriptTask};
 use super::timers::{NextTimer, TimerClock};
@@ -80,13 +83,22 @@ pub struct Engine {
     builtins: ScriptBuiltins,
     /// Bytecode of the context prelude, compiled by the first script that mounts.
     prelude: OnceCell<Box<[u8]>>,
+    /// Contexts shared by scripts, by group name.
+    groups: HashMap<Box<str>, ScriptGroup, FxBuildHasher>,
+    /// The environment of every script loaded into a group, for its `rustts:env` module.
+    envs: ScriptEnvs,
     // Declared last: contexts and persistent values must drop before their runtime.
     rejections: UnhandledRejections,
     runtime: Runtime,
 }
 
 struct EngineScript {
+    /// The script's own context, or the one its group shares.
     context: Context,
+    /// The group whose context it shares; `None` for a context of its own.
+    group: Option<Box<str>>,
+    graph_id: u64,
+    hooks: ScriptHooks,
     exports: Persistent<Object<'static>>,
     host_promises: HostPromises,
     tasks: RefCell<Vec<ScriptTask>>,
@@ -94,6 +106,30 @@ struct EngineScript {
     signals: ScriptSignals,
     module_ids: Vec<String>,
     origin: ScriptOrigin,
+}
+
+/// The functions of a script's environment the engine calls: `ctx.hot`'s `save` and
+/// `dispose`, and the one that fires the script's due timers.
+struct ScriptHooks {
+    hot_save: Persistent<Function<'static>>,
+    hot_dispose: Persistent<Function<'static>>,
+    timers_run: Persistent<Function<'static>>,
+}
+
+/// The functions the context prelude exports, which build and expose a script's
+/// environment.
+#[derive(Clone)]
+struct Prelude {
+    make_env: Persistent<Function<'static>>,
+    install_globals: Persistent<Function<'static>>,
+}
+
+/// A context shared by the scripts loaded into one group, and how many they are; the
+/// context goes with the last of them.
+struct ScriptGroup {
+    context: Context,
+    prelude: Prelude,
+    scripts: usize,
 }
 
 /// What a script's context reports to the engine as it registers handlers and timers,
@@ -132,7 +168,8 @@ impl Engine {
     pub fn new(options: &VmOptions) -> Result<Self, VmError> {
         let module_store = WorkerModuleStore::default();
         let execution = Arc::new(ExecutionControl::default());
-        let runtime = new_runtime(options, &module_store, &execution)?;
+        let envs = ScriptEnvs::default();
+        let runtime = new_runtime(options, &module_store, &execution, &envs)?;
         Ok(Self {
             scripts: IndexMap::default(),
             active_tasks: Cell::new(0),
@@ -149,6 +186,8 @@ impl Engine {
             timer_clock: TimerClock::default(),
             builtins: options.builtins,
             prelude: OnceCell::new(),
+            groups: HashMap::default(),
+            envs,
             rejections: UnhandledRejections::install(&runtime),
             runtime,
         })
@@ -235,13 +274,14 @@ fn new_runtime(
     options: &VmOptions,
     module_store: &WorkerModuleStore,
     execution: &Arc<ExecutionControl>,
+    envs: &ScriptEnvs,
 ) -> Result<Runtime, VmError> {
     let runtime = Runtime::new().map_err(js_error)?;
     runtime.set_memory_limit(options.memory_limit_bytes);
     runtime.set_max_stack_size(options.max_stack_size_bytes);
     runtime.set_loader(
         MemoryModuleResolver::new(module_store.clone()),
-        MemoryModuleLoader::new(module_store.clone()),
+        MemoryModuleLoader::new(module_store.clone(), envs.handle()),
     );
     let interrupt = execution.clone();
     runtime.set_interrupt_handler(Some(Box::new(move || interrupt.interrupted())));

@@ -172,9 +172,13 @@ fn registry_supports_fluent_contract_registration() {
     assert_eq!(
         engine.registry().dts().expect("render dts"),
         format!(
-            "type OverlayContext = {{ visible: boolean; }};\n\ndeclare const overlay: OverlayContext;\n\ntype ScoreUpdatePayload = {{ combo: number; }};\n\ntype FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {{\n  export function find(input: FindUserInput): FindUserOutput;\n}}\n\ntype HostEvents = {{\n  \"score.update\": ScoreUpdatePayload;\n}};\n\ntype HostReplies = {{}};\n\n{}\n\n{}\n\ndeclare const ctx: HostEventContext & {{ readonly hot: HostHotContext }};\n",
+            "type OverlayContext = {{ visible: boolean; }};\n\ndeclare const overlay: OverlayContext;\n\ntype ScoreUpdatePayload = {{ combo: number; }};\n\ntype FindUserInput = number;\n\ntype FindUserOutput = string;\n\ndeclare namespace user {{\n  export function find(input: FindUserInput): FindUserOutput;\n}}\n\ntype HostEvents = {{\n  \"score.update\": ScoreUpdatePayload;\n}};\n\ntype HostReplies = {{}};\n\n{}\n\n{}\n\ndeclare const ctx: HostEventContext & {{ readonly hot: HostHotContext }};\n\n{}\n",
             include_str!("../assets/event_context.ts").trim(),
-            include_str!("../assets/hot_context.ts").trim()
+            include_str!("../assets/hot_context.ts").trim(),
+            include_str!("../assets/env_module.ts").trim().replace(
+                "__CTX__",
+                "HostEventContext & { readonly hot: HostHotContext }"
+            )
         )
     );
 }

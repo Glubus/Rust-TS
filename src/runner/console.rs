@@ -4,15 +4,11 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
-use rquickjs::Ctx;
-use rquickjs::prelude::Func;
+use rquickjs::{Ctx, Function};
 
 use super::errors::{js_error, locations_in_typescript};
 use super::module_loader::WorkerModuleStore;
 use crate::error::VmError;
-
-/// Hands `console` output to the prelude, which builds `console` on top of it.
-pub(super) const CONSOLE_GLOBAL: &str = "__rustts_console";
 
 /// Severity of one `console` call, from the method a script called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,25 +73,21 @@ impl ConsoleSink {
         *self.0.borrow_mut() = Box::new(sink);
     }
 
-    /// Installs the native hook the prelude's `console` of script `script_id` writes to;
+    /// The native function the prelude's `console` of script `script_id` writes to;
     /// stack locations in messages point at the TypeScript source.
-    pub(super) fn install(
+    pub(super) fn writer<'js>(
         &self,
-        ctx: &Ctx<'_>,
+        ctx: &Ctx<'js>,
         script_id: &str,
         modules: &WorkerModuleStore,
-    ) -> Result<(), VmError> {
+    ) -> Result<Function<'js>, VmError> {
         let sink = Rc::clone(&self.0);
         let script_id = Box::<str>::from(script_id);
         let modules = modules.clone();
-        ctx.globals()
-            .set(
-                CONSOLE_GLOBAL,
-                Func::from(move |method: String, message: String| {
-                    let message = locations_in_typescript(&message, &modules);
-                    (sink.borrow())(ConsoleLevel::from_method(&method), &script_id, &message);
-                }),
-            )
-            .map_err(js_error)
+        Function::new(ctx.clone(), move |method: String, message: String| {
+            let message = locations_in_typescript(&message, &modules);
+            (sink.borrow())(ConsoleLevel::from_method(&method), &script_id, &message);
+        })
+        .map_err(js_error)
     }
 }

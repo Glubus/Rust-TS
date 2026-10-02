@@ -1,16 +1,21 @@
-// Installed in every script context, once `globalThis.__rustts_native` holds the
-// native host functions, `__rustts_handlers` keeps the engine's copy of each event's
-// handler list and, on a reload, `__rustts_hot_data` holds the previous version's
-// saved state.
-// One module instead of two scripts: the engine compiles it once and loads its bytecode
-// into every context, so a context does not pay for a parse and a compile.
-(() => {
-  // Hot reload: `ctx.hot.data` is what the previous version's `save` returned, which
-  // the engine hands over in `__rustts_hot_data`. The engine only reads the locked
-  // `__rustts_hot` hooks when it replaces or unloads this context.
-  function hotReload() {
-    const data = globalThis.__rustts_hot_data;
-    delete globalThis.__rustts_hot_data;
+// The script environment, built once per script, in a context of its own or in one
+// shared with other scripts (a context group). The engine compiles this module once and
+// loads its bytecode into every context, so a context does not pay for a parse and a
+// compile.
+//
+// `makeEnv(hooks)` returns the script's `ctx`, `console` and timers, and the hooks the
+// engine drives. `hooks` holds what the engine bound to the script: `native` (its host
+// functions), `handlers` (keeps the engine's copy of each event's handler list), `console`
+// (the host sink), `now` and `schedule` (the engine clock and the script's next due
+// time) and, on a reload, `hotData`, the previous version's saved state.
+// `installGlobals(env)` also exposes them as globals, for a script in a context of its
+// own; a script in a group imports them from `rustts:env` instead.
+
+export function makeEnv(hooks) {
+  // Hot reload: `ctx.hot.data` is what the previous version's `save` returned. The
+  // engine only calls the `save` and `dispose` hooks when it replaces or unloads the
+  // script.
+  function hotReload(data) {
     let save = () => undefined;
     const disposers = [];
     const expectFunction = (name, fn) => {
@@ -18,8 +23,19 @@
         throw new TypeError(`ctx.hot.${name} expects a function`);
       }
     };
-    Object.defineProperty(globalThis, "__rustts_hot", {
-      value: Object.freeze({
+    return {
+      api: {
+        data,
+        save(fn) {
+          expectFunction("save", fn);
+          save = fn;
+        },
+        dispose(fn) {
+          expectFunction("dispose", fn);
+          disposers.push(fn);
+        },
+      },
+      hooks: {
         save: () => save(),
         // Every disposer runs even after one throws; the first error is rethrown.
         dispose: () => {
@@ -39,17 +55,6 @@
             throw failure;
           }
         },
-      }),
-    });
-    return {
-      data,
-      save(fn) {
-        expectFunction("save", fn);
-        save = fn;
-      },
-      dispose(fn) {
-        expectFunction("dispose", fn);
-        disposers.push(fn);
       },
     };
   }
@@ -59,8 +64,7 @@
   // has no handler), which keeps a snapshot of its functions: delivering an event
   // looks nothing up by name, skips contexts that do not listen to it, and a
   // delivery in progress keeps the snapshot it took.
-  const setHandlers = globalThis.__rustts_handlers;
-  delete globalThis.__rustts_handlers;
+  const setHandlers = hooks.handlers;
   const handlers = new Map();
   const expectHandler = (method, eventName, handler) => {
     if (typeof eventName !== "string") {
@@ -70,7 +74,7 @@
       throw new TypeError(`${method} expects a function handler`);
     }
   };
-  globalThis.__rustts_on = (eventName, handler) => {
+  const on = (eventName, handler) => {
     expectHandler("ctx.on", eventName, handler);
     let list = handlers.get(eventName);
     if (list === undefined) {
@@ -95,15 +99,15 @@
       setHandlers(eventName, list);
     }
   };
-  globalThis.ctx = {
-    on: globalThis.__rustts_on,
+  const hot = hotReload(hooks.hotData);
+  const ctx = {
+    on,
     off,
-    hot: hotReload(),
+    hot: hot.api,
   };
 
   // `console`: each call joins its arguments into one message for the host sink.
-  const writeConsole = globalThis.__rustts_console;
-  delete globalThis.__rustts_console;
+  const writeConsole = hooks.console;
   const describe = (value) => {
     if (typeof value === "string") {
       return value;
@@ -125,7 +129,7 @@
   const consoleMethod = (level) => (...args) => {
     writeConsole(level, args.map(describe).join(" "));
   };
-  globalThis.console = {
+  const console = {
     debug: consoleMethod("debug"),
     log: consoleMethod("log"),
     info: consoleMethod("info"),
@@ -135,10 +139,8 @@
 
   // Timers on the engine clock, which only the host's `advance_timers` moves. The
   // engine enters this context only once `schedule` says a timer is due.
-  const now = globalThis.__rustts_now;
-  const schedule = globalThis.__rustts_schedule;
-  delete globalThis.__rustts_now;
-  delete globalThis.__rustts_schedule;
+  const now = hooks.now;
+  const schedule = hooks.schedule;
   const timers = new Map();
   let nextTimerId = 1;
   let earliest = Infinity;
@@ -175,70 +177,93 @@
       }
     }
   };
-  globalThis.setTimeout = (callback, delay, ...args) =>
+  const setTimeout = (callback, delay, ...args) =>
     addTimer("setTimeout", callback, delay, args, false);
-  globalThis.setInterval = (callback, delay, ...args) =>
+  const setInterval = (callback, delay, ...args) =>
     addTimer("setInterval", callback, delay, args, true);
-  globalThis.clearTimeout = clearTimer;
-  globalThis.clearInterval = clearTimer;
-  Object.defineProperty(globalThis, "__rustts_timers", {
-    value: Object.freeze({
-      // Fires the timers due at `time` in due order, then creation order; every one
-      // runs even after one throws, and the first error is rethrown.
-      run: (time) => {
-        let due;
-        for (const timer of timers.values()) {
-          if (timer.due <= time) {
-            if (due === undefined) {
-              due = [timer];
-            } else {
-              due.push(timer);
-            }
-          }
-        }
+  // Fires the timers due at `time` in due order, then creation order; every one
+  // runs even after one throws, and the first error is rethrown.
+  const runTimers = (time) => {
+    let due;
+    for (const timer of timers.values()) {
+      if (timer.due <= time) {
         if (due === undefined) {
-          reschedule();
-          return;
+          due = [timer];
+        } else {
+          due.push(timer);
         }
-        if (due.length > 1) {
-          due.sort((left, right) => left.due - right.due || left.id - right.id);
+      }
+    }
+    if (due === undefined) {
+      reschedule();
+      return;
+    }
+    if (due.length > 1) {
+      due.sort((left, right) => left.due - right.due || left.id - right.id);
+    }
+    let failed = false;
+    let failure;
+    for (const timer of due) {
+      if (timers.get(timer.id) !== timer) {
+        continue; // cleared by a callback that ran before it
+      }
+      if (timer.interval === undefined) {
+        timers.delete(timer.id);
+      } else {
+        timer.due += timer.interval;
+      }
+      try {
+        if (timer.args.length === 0) {
+          timer.callback();
+        } else {
+          timer.callback(...timer.args);
         }
-        let failed = false;
-        let failure;
-        for (const timer of due) {
-          if (timers.get(timer.id) !== timer) {
-            continue; // cleared by a callback that ran before it
-          }
-          if (timer.interval === undefined) {
-            timers.delete(timer.id);
-          } else {
-            timer.due += timer.interval;
-          }
-          try {
-            if (timer.args.length === 0) {
-              timer.callback();
-            } else {
-              timer.callback(...timer.args);
-            }
-          } catch (error) {
-            if (!failed) {
-              failed = true;
-              failure = error;
-            }
-          }
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          failure = error;
         }
-        reschedule();
-        if (failed) {
-          throw failure;
-        }
-      },
-    }),
-  });
+      }
+    }
+    reschedule();
+    if (failed) {
+      throw failure;
+    }
+  };
 
-  // Host functions, reachable three ways that all end in the same native function:
-  // host module imports, namespaced globals (`user.find(...)`) and the `__host`
-  // bridge used by the generated SDK.
-  const native = globalThis.__rustts_native;
+  // The host functions bound to this script: what the host module imports of a group
+  // script read, and what `installGlobals` exposes to a script in a context of its own.
+  const native = hooks.native;
+
+  return {
+    ctx,
+    console,
+    setTimeout,
+    setInterval,
+    clearTimeout: clearTimer,
+    clearInterval: clearTimer,
+    native,
+    on,
+    hotSave: hot.hooks.save,
+    hotDispose: hot.hooks.dispose,
+    timersRun: runTimers,
+  };
+}
+
+// Exposes a script's environment as globals, for a script in a context of its own.
+// Host functions are reachable three ways that all end in the same native function:
+// host module imports, namespaced globals (`user.find(...)`) and the `__host` bridge used
+// by the generated SDK.
+export function installGlobals(env) {
+  globalThis.ctx = env.ctx;
+  globalThis.console = env.console;
+  globalThis.setTimeout = env.setTimeout;
+  globalThis.setInterval = env.setInterval;
+  globalThis.clearTimeout = env.clearTimeout;
+  globalThis.clearInterval = env.clearInterval;
+  globalThis.__rustts_on = env.on;
+  globalThis.__rustts_native = env.native;
+  const native = env.native;
 
   const hostFunction = (name) => {
     const fn = native[name];
@@ -269,5 +294,4 @@
     }
     parent[leaf] = native[name];
   }
-})();
-export {};
+}

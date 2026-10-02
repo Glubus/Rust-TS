@@ -12,6 +12,13 @@ pub(super) fn insert_host_modules(store: &mut ModuleStoreInner, modules: BTreeMa
     store.sources.extend(modules);
 }
 
+pub(super) fn insert_group_host_modules(
+    store: &mut ModuleStoreInner,
+    modules: BTreeMap<String, String>,
+) {
+    store.group_host_sources.extend(modules);
+}
+
 pub(super) fn insert_inline(
     store: &mut ModuleStoreInner,
     script_id: &str,
@@ -23,6 +30,7 @@ pub(super) fn insert_inline(
     store.sources.insert(module_id.clone(), source);
     store.origins.insert(module_id.clone(), origin);
     RuntimeModuleGraph {
+        graph_id,
         entry_module_id: module_id.clone(),
         module_ids: vec![module_id],
     }
@@ -43,6 +51,7 @@ pub(super) fn insert_project(
     }
 
     Ok(RuntimeModuleGraph {
+        graph_id,
         entry_module_id: entry_runtime_id,
         module_ids,
     })

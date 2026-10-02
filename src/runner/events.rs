@@ -3,15 +3,11 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use rquickjs::prelude::Func;
 use rquickjs::{Array, CatchResultExt, Ctx, Function, Persistent, Value as JsValue};
 
 use super::errors::{caught_js_error, js_error};
 use crate::contract::JsEncode;
 use crate::error::VmError;
-
-/// Hands the engine an event's handler list whenever the prelude changes it.
-const HANDLERS_HOOK: &str = "__rustts_handlers";
 
 /// Handler lists of one context, by event name, as the prelude hands them over: only
 /// events with at least one handler are listed. Each list is kept as a snapshot of
@@ -45,19 +41,18 @@ impl ListenedEvents {
             .map(|listened| Rc::clone(&listened.handlers))
     }
 
-    /// Installs the hook the prelude hands handler lists to.
-    pub(super) fn install_hook(&self, ctx: &Ctx<'_>) -> Result<(), VmError> {
+    /// The hook the prelude hands handler lists to.
+    pub(super) fn hook<'js>(&self, ctx: &Ctx<'js>) -> Result<Function<'js>, VmError> {
         let events = Rc::downgrade(&self.0);
-        ctx.globals()
-            .set(
-                HANDLERS_HOOK,
-                Func::from(move |event: String, handlers: Option<Array<'_>>| {
-                    let handlers = handlers.map(|list| snapshot(&list)).transpose()?;
-                    record(&events, event, handlers);
-                    rquickjs::Result::Ok(())
-                }),
-            )
-            .map_err(js_error)
+        Function::new(
+            ctx.clone(),
+            move |event: String, handlers: Option<Array<'_>>| {
+                let handlers = handlers.map(|list| snapshot(&list)).transpose()?;
+                record(&events, event, handlers);
+                rquickjs::Result::Ok(())
+            },
+        )
+        .map_err(js_error)
     }
 }
 

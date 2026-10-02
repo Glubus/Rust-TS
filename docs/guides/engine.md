@@ -424,6 +424,53 @@ disabled built-in fails with a `ReferenceError` where it runs, never at load, so
 your scripts with the options you ship. Keep `typed_arrays` on when host functions use
 `NativeBytes`.
 
+### Context Groups
+
+A script loaded with `load_script` or `load_project` gets a QuickJS context of its own:
+nothing it does to the built-ins or the global object reaches another script. A context
+is the main cost of a script: about 80 KiB, and with hundreds of them each event
+delivery gets slower per script (every context touched is another heap in the cache).
+`load_script_in(group, id, source)` and `load_project_in(group, id, entry)` load scripts
+that trust each other into one shared context instead, one per group name:
+
+```rust
+engine.load_script_in("ui-pack", "menu", MENU_SOURCE)?;
+engine.load_script_in("ui-pack", "hud", HUD_SOURCE)?;
+engine.load_script("some-mod", MOD_SOURCE)?; // still a context of its own
+```
+
+A grouped script keeps its own events, timers, `console`, host-function identity
+(`Caller::script_id()` is the script, not the group), `ctx.hot` state, unload and
+reload; the context drops with the group's last script. What it loses is globals: a
+shared context cannot hold one `ctx` or one `console` per script, so a grouped script
+imports them:
+
+```ts
+import { ctx, console, setTimeout } from "rustts:env";
+import { user } from "host-module"; // host functions come from host module imports
+```
+
+`rustts:env` works in a script with a context of its own too, so one source runs both
+ways. A grouped script has none of `ctx`, `console`, the timers, `__host` or the
+namespaced host globals (`user.find(...)`) as globals, which also means the generated
+SDK file (which reads those globals) is not usable from a group, and a host function
+whose contract has no `IMPORT_MODULE` cannot be reached. The generated declarations
+type the module.
+
+**A group is a trust boundary.** Its scripts share the built-ins and the global object:
+one can patch `Array.prototype` or set `globalThis.x` for the others, and a payload an
+event hands to several handlers is the same object. Group the scripts of one author;
+mods of different authors belong in different groups or in contexts of their own.
+`Engine::load_script_in` does not freeze anything. Reloading a script of a group leaves
+its previous modules in the group's context until the context drops (a context of its
+own is dropped with the script), so reloading one script many times grows memory slowly.
+
+What it buys, measured with `cargo bench --bench runtime -- 'load_many_scripts|emit'`
+on a loaded laptop, groups of 10 scripts: loading 400 scripts took 90 ms instead of
+383 ms, and delivering a `{ dt, tick }` event to a one-line handler in every script took
+0.46 ms for 500 scripts instead of 1.46 ms and 2.7 ms for 1000 instead of 4.4 ms. Up to
+250 scripts delivery costs the same; the gain there is loading time and memory.
+
 ### Garbage Collection
 
 QuickJS frees a value as soon as nothing references it. Only objects that reference
