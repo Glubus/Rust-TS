@@ -47,6 +47,18 @@ let total = 0;
 setInterval(() => { total += 1; }, 0);
 export {};
 "#;
+/// A timer that is never due: what most frames see, since a timer rarely fires in the
+/// 500 µs of a frame.
+const IDLE_TIMER_SCRIPT: &str = r#"
+setInterval(() => {}, 1e12);
+export {};
+"#;
+const GROUPED_TIMER_SCRIPT: &str = r#"
+import { setInterval } from "rustts:env";
+let total = 0;
+setInterval(() => { total += 1; }, 0);
+export {};
+"#;
 const MANY_SCRIPTS_MEMORY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 const MEMORY_REPORT_CHILD_ENV: &str = "RUSTTS_MEMORY_REPORT_SCRIPT_COUNT";
 const BYTES_PER_KIB: f64 = 1024.0;
@@ -88,12 +100,35 @@ fn bench_frame_budget(c: &mut Criterion) {
         let events = scripts_engine(FRAME_SCRIPT, script_count);
         let timers = scripts_engine(TIMER_SCRIPT, script_count);
         let grouped = grouped_engine(GROUPED_FRAME_SCRIPT, script_count);
+        let grouped_timers = grouped_engine(GROUPED_TIMER_SCRIPT, script_count);
+        let idle_timers = scripts_engine(IDLE_TIMER_SCRIPT, script_count);
         group.throughput(Throughput::Elements(script_count as u64));
         group.bench_function(format!("emit_{script_count}"), |b| {
             b.iter(|| black_box(events.emit("frame", &frame).expect("emit frame")));
         });
         group.bench_function(format!("emit_{script_count}_grouped"), |b| {
             b.iter(|| black_box(grouped.emit("frame", &frame).expect("emit frame")));
+        });
+        group.bench_function(format!("pump_idle_{script_count}"), |b| {
+            b.iter(|| events.pump().expect("pump"));
+        });
+        group.bench_function(format!("advance_timers_idle_{script_count}"), |b| {
+            b.iter(|| {
+                black_box(
+                    idle_timers
+                        .advance_timers(FRAME_DURATION)
+                        .expect("advance timers"),
+                )
+            });
+        });
+        group.bench_function(format!("advance_timers_{script_count}_grouped"), |b| {
+            b.iter(|| {
+                black_box(
+                    grouped_timers
+                        .advance_timers(FRAME_DURATION)
+                        .expect("advance timers"),
+                )
+            });
         });
         group.bench_function(format!("advance_timers_{script_count}"), |b| {
             b.iter(|| {

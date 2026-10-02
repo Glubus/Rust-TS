@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rquickjs::{Ctx, Result as JsResult, Value as JsValue};
@@ -36,9 +37,17 @@ pub(crate) enum Settlement {
 ///
 /// Every call queues at most one settlement, so the queue never holds more entries than
 /// the calls started.
-#[derive(Default)]
 pub(crate) struct ReplyInbox {
     state: Mutex<InboxState>,
+    /// Raised whenever a settlement is queued, so the engine can tell that no reply
+    /// waits anywhere without looking at every script.
+    wake: Arc<AtomicBool>,
+}
+
+impl Default for ReplyInbox {
+    fn default() -> Self {
+        Self::new(Arc::default())
+    }
 }
 
 #[derive(Default)]
@@ -48,6 +57,18 @@ struct InboxState {
 }
 
 impl ReplyInbox {
+    pub(crate) fn new(wake: Arc<AtomicBool>) -> Self {
+        Self {
+            state: Mutex::default(),
+            wake,
+        }
+    }
+
+    /// Whether a settlement is queued.
+    pub(crate) fn has_ready(&self) -> bool {
+        self.lock().ready.front().is_some()
+    }
+
     pub(crate) fn is_cancelled(&self) -> bool {
         self.lock().cancelled
     }
@@ -73,6 +94,8 @@ impl ReplyInbox {
             return Err(settlement);
         }
         state.ready.push_back((id, settlement));
+        drop(state);
+        self.wake.store(true, Ordering::Release);
         Ok(())
     }
 

@@ -4,6 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use rquickjs::{
     Ctx, Error as JsError, Exception, Function, Persistent, Promise, Result as JsResult,
@@ -50,6 +51,22 @@ struct PendingPromise {
 }
 
 impl HostPromises {
+    /// A scope whose resolvers raise `wake` each time they queue an answer.
+    pub(crate) fn with_wake(wake: Arc<AtomicBool>) -> Self {
+        Self {
+            scope: Rc::new(Scope {
+                inbox: Arc::new(ReplyInbox::new(wake)),
+                pending: RefCell::default(),
+                next_id: Cell::default(),
+            }),
+        }
+    }
+
+    /// Whether an answer waits to be settled, without entering the script's context.
+    pub(crate) fn has_ready(&self) -> bool {
+        self.scope.inbox.has_ready()
+    }
+
     /// A handle for native functions that does not keep this scope alive.
     pub(crate) fn downgrade(&self) -> WeakHostPromises {
         WeakHostPromises(Rc::downgrade(&self.scope))

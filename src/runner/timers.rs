@@ -38,6 +38,39 @@ impl NextTimer {
     pub(super) fn is_due(&self, now: f64) -> bool {
         self.0.get() <= now
     }
+
+    pub(super) fn due(&self) -> f64 {
+        self.0.get()
+    }
+}
+
+/// A time no later than the earliest due time of any script, so a call that moves the
+/// clock to a time before it knows no timer is due without asking every script. It only
+/// ever errs early (a script's timer was cleared or fired, its due time moved later):
+/// the engine then looks at every script and sets it exactly.
+#[derive(Clone)]
+pub(super) struct EarliestDue(Rc<Cell<f64>>);
+
+impl Default for EarliestDue {
+    fn default() -> Self {
+        Self(Rc::new(Cell::new(f64::INFINITY)))
+    }
+}
+
+impl EarliestDue {
+    pub(super) fn get(&self) -> f64 {
+        self.0.get()
+    }
+
+    pub(super) fn set(&self, due: f64) {
+        self.0.set(due);
+    }
+
+    fn lower(&self, due: f64) {
+        if due < self.0.get() {
+            self.0.set(due);
+        }
+    }
 }
 
 /// The clock and scheduling hooks the prelude builds a script's timer functions on:
@@ -52,12 +85,18 @@ pub(super) fn timer_hooks<'js>(
     ctx: &Ctx<'js>,
     clock: &TimerClock,
     next: &NextTimer,
+    earliest: &EarliestDue,
 ) -> Result<TimerHooks<'js>, VmError> {
     let clock = Rc::clone(&clock.0);
     let next = Rc::clone(&next.0);
+    let earliest = earliest.clone();
     Ok(TimerHooks {
         now: Function::new(ctx.clone(), move || clock.get()).map_err(js_error)?,
-        schedule: Function::new(ctx.clone(), move |due: f64| next.set(due)).map_err(js_error)?,
+        schedule: Function::new(ctx.clone(), move |due: f64| {
+            next.set(due);
+            earliest.lower(due);
+        })
+        .map_err(js_error)?,
     })
 }
 

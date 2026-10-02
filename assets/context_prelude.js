@@ -139,15 +139,24 @@ export function makeEnv(hooks) {
 
   // Timers on the engine clock, which only the host's `advance_timers` moves. The
   // engine enters this context only once `schedule` says a timer is due.
+  //
+  // The live timers sit in an array, in creation order, and in a Map by id for
+  // `clearTimeout`; a cleared or finished timer is only marked and swept after the next
+  // run. Plain arrays and indexed loops allocate nothing: iterating a Map creates an
+  // iterator and a result object per step, and the engine runs this every time a timer
+  // is due.
   const now = hooks.now;
   const schedule = hooks.schedule;
-  const timers = new Map();
+  let live = [];
+  const byId = new Map();
   let nextTimerId = 1;
   let earliest = Infinity;
+  let finished = 0;
   const reschedule = () => {
     let due = Infinity;
-    for (const timer of timers.values()) {
-      if (timer.due < due) {
+    for (let i = 0; i < live.length; i++) {
+      const timer = live[i];
+      if (!timer.cancelled && timer.due < due) {
         due = timer.due;
       }
     }
@@ -160,18 +169,31 @@ export function makeEnv(hooks) {
     }
     const wait = Math.max(0, Number(delay) || 0);
     const id = nextTimerId++;
-    const timer = { id, callback, args, due: now() + wait, interval: repeats ? wait : undefined };
-    timers.set(id, timer);
+    const timer = {
+      id,
+      callback,
+      args,
+      due: now() + wait,
+      interval: repeats ? wait : undefined,
+      cancelled: false,
+    };
+    live.push(timer);
+    byId.set(id, timer);
     if (timer.due < earliest) {
       earliest = timer.due;
       schedule(earliest);
     }
     return id;
   };
+  const retire = (timer) => {
+    timer.cancelled = true;
+    byId.delete(timer.id);
+    finished++;
+  };
   const clearTimer = (id) => {
-    const timer = timers.get(id);
+    const timer = byId.get(id);
     if (timer !== undefined) {
-      timers.delete(id);
+      retire(timer);
       if (timer.due === earliest) {
         reschedule();
       }
@@ -181,53 +203,79 @@ export function makeEnv(hooks) {
     addTimer("setTimeout", callback, delay, args, false);
   const setInterval = (callback, delay, ...args) =>
     addTimer("setInterval", callback, delay, args, true);
-  // Fires the timers due at `time` in due order, then creation order; every one
-  // runs even after one throws, and the first error is rethrown.
-  const runTimers = (time) => {
-    let due;
-    for (const timer of timers.values()) {
-      if (timer.due <= time) {
-        if (due === undefined) {
-          due = [timer];
-        } else {
-          due.push(timer);
-        }
+  let failed = false;
+  let failure;
+  const fire = (timer) => {
+    if (timer.cancelled) {
+      return; // cleared by a callback that ran before it
+    }
+    if (timer.interval === undefined) {
+      retire(timer);
+    } else {
+      timer.due += timer.interval;
+    }
+    try {
+      if (timer.args.length === 0) {
+        timer.callback();
+      } else {
+        timer.callback(...timer.args);
+      }
+    } catch (error) {
+      if (!failed) {
+        failed = true;
+        failure = error;
       }
     }
-    if (due === undefined) {
+  };
+  // Fires the timers due at `time` in due order, then creation order; every one
+  // runs even after one throws, and the first error is rethrown. A timer a callback
+  // adds waits for the next call.
+  const runTimers = (time) => {
+    let only;
+    let due;
+    for (let i = 0; i < live.length; i++) {
+      const timer = live[i];
+      if (timer.cancelled || timer.due > time) {
+        continue;
+      }
+      if (only === undefined) {
+        only = timer;
+      } else if (due === undefined) {
+        due = [only, timer];
+      } else {
+        due.push(timer);
+      }
+    }
+    if (only === undefined) {
       reschedule();
       return;
     }
-    if (due.length > 1) {
+    failed = false;
+    failure = undefined;
+    if (due === undefined) {
+      fire(only);
+    } else {
       due.sort((left, right) => left.due - right.due || left.id - right.id);
+      for (let i = 0; i < due.length; i++) {
+        fire(due[i]);
+      }
     }
-    let failed = false;
-    let failure;
-    for (const timer of due) {
-      if (timers.get(timer.id) !== timer) {
-        continue; // cleared by a callback that ran before it
-      }
-      if (timer.interval === undefined) {
-        timers.delete(timer.id);
-      } else {
-        timer.due += timer.interval;
-      }
-      try {
-        if (timer.args.length === 0) {
-          timer.callback();
-        } else {
-          timer.callback(...timer.args);
-        }
-      } catch (error) {
-        if (!failed) {
-          failed = true;
-          failure = error;
+    if (finished > 0) {
+      let kept = 0;
+      for (let i = 0; i < live.length; i++) {
+        if (!live[i].cancelled) {
+          live[kept++] = live[i];
         }
       }
+      live.length = kept;
+      finished = 0;
     }
     reschedule();
     if (failed) {
-      throw failure;
+      const error = failure;
+      failed = false;
+      failure = undefined;
+      throw error;
     }
   };
 

@@ -1,5 +1,6 @@
 //! Work the host drives: timers, Promise pumping and deferred calls and requests.
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rquickjs::{CatchResultExt, Value as JsValue};
@@ -25,24 +26,63 @@ impl Engine {
     /// once, its next due time staying its previous one plus its delay. A throwing
     /// callback does not stop the others; the first error is returned. Timers belong
     /// to the script version that set them: a reload or unload drops them.
+    ///
+    /// A call that finds no timer due, which is most frames, is one comparison however
+    /// many scripts are loaded.
     pub fn advance_timers(&self, elapsed: Duration) -> Result<usize, VmError> {
         let now = self.timer_clock.advance(elapsed);
-        let due = self
-            .scripts
-            .values()
-            .filter(|script| script.signals.next_timer.is_due(now));
+        if now < self.earliest_timer.get() {
+            // No script has a timer due yet: nothing to look at, in any context.
+            return Ok(0);
+        }
         let _budget = self.budget();
         let mut fired = 0;
         let mut first_error = None;
-        for script in due {
-            fired += 1;
-            if let Err(error) = script
-                .context
-                .with(|ctx| run_due_timers(&ctx, &script.hooks.timers_run, now))
+        // Scripts that follow one another in load order and share a context are served
+        // in one visit to it, as `emit` does.
+        let count = self.scripts.len();
+        let mut start = 0;
+        while start < count {
+            let Some((_, first)) = self.scripts.get_index(start) else {
+                break;
+            };
+            let mut end = start + 1;
+            while let Some((_, next)) = self.scripts.get_index(end)
+                && first.shares_context(next)
             {
-                first_error.get_or_insert(error);
+                end += 1;
             }
+            let any_due = (start..end).any(|index| {
+                self.scripts
+                    .get_index(index)
+                    .is_some_and(|(_, script)| script.signals.next_timer.is_due(now))
+            });
+            if any_due {
+                first.context.with(|ctx| {
+                    for index in start..end {
+                        let Some((_, script)) = self.scripts.get_index(index) else {
+                            continue;
+                        };
+                        if !script.signals.next_timer.is_due(now) {
+                            continue;
+                        }
+                        fired += 1;
+                        if let Err(error) = run_due_timers(&ctx, &script.hooks.timers_run, now) {
+                            first_error.get_or_insert(error);
+                        }
+                    }
+                });
+            }
+            start = end;
         }
+        // What the scripts report now, exactly: the next call looks at them only once the
+        // clock gets there.
+        self.earliest_timer.set(
+            self.scripts
+                .values()
+                .map(|script| script.signals.next_timer.due())
+                .fold(f64::INFINITY, f64::min),
+        );
         if fired == 0 {
             // No JavaScript ran, so there is no Promise job to settle.
             return Ok(0);
@@ -79,13 +119,24 @@ impl Engine {
     }
 
     /// Delivers queued host replies on the engine thread and drains their Promise
-    /// jobs under one execution budget. The host clock is not advanced.
+    /// jobs under one execution budget. The host clock is not advanced. A call with no
+    /// answer queued, which is most frames, is one atomic read however many scripts
+    /// are loaded; only a script with an answer waiting is entered.
     pub fn pump(&self) -> Result<(), VmError> {
+        if !self.host_wake.swap(false, Ordering::AcqRel) {
+            // No resolver queued an answer since the last pump.
+            return Ok(());
+        }
         let _budget = self.budget();
         let mut first_error = None;
+        let mut stopped = false;
         for script in self.scripts.values() {
             if self.execution.interrupted() {
+                stopped = true;
                 break;
+            }
+            if !script.host_promises.has_ready() {
+                continue;
             }
             let result = script.context.with(|ctx| {
                 script
@@ -97,6 +148,10 @@ impl Engine {
             if let Err(error) = result {
                 first_error.get_or_insert(error);
             }
+        }
+        if stopped || first_error.is_some() {
+            // Answers may still wait: the next pump looks again.
+            self.host_wake.store(true, Ordering::Release);
         }
         self.attribute_interrupt(self.settle(first_error.map_or(Ok(()), Err)))
     }

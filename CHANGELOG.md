@@ -154,6 +154,19 @@
   scripts 1.5 ms instead of 4.1 ms. See
   [Context Groups](docs/guides/engine.md#context-groups).
 
+- `Engine::pump` and `Engine::advance_timers` cost one atomic read or one comparison on
+  a frame where nothing waits, instead of a look at every script: `pump` entered the
+  context of every loaded script (71 µs per call at 1000 scripts, 15 µs at 250, on the
+  loaded development machine) and `advance_timers` read every script's next due time
+  (1.4 µs at 1000). Both are now about 4 ns. A script is only entered when it has an
+  answer or a timer.
+- A due timer costs less: the prelude keeps timers in an array instead of iterating a
+  `Map` (which allocates an iterator and a result per step), and fires a single due
+  timer without building a list. One script with a timer due on every call went from
+  2.1 to 0.84 µs, 250 of them from 2.3 ms to 0.28 ms and 1000 from 8.2 to 3.8 ms.
+  Scripts of a context group that follow one another are served in one visit, as for
+  events: 1000 grouped scripts took 2.2 ms.
+
 ### Fixes
 
 - A load that ran out of memory failed with `non-error exception: Null`. It now says

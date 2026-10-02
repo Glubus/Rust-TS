@@ -289,6 +289,52 @@ fn a_timer_cleared_by_an_earlier_callback_of_the_same_call_does_not_fire() {
 }
 
 #[test]
+fn a_timer_cleared_before_it_is_due_does_not_hide_the_next_one() {
+    let engine = engine_with(&format!(
+        r#"{TIMER_LOG}
+           const early = setTimeout(() => fired.push("early"), 10);
+           setTimeout(() => fired.push("late"), 50);
+           clearTimeout(early);"#
+    ));
+
+    let at_early = engine
+        .advance_timers(ms(10))
+        .expect("advance to the cleared time");
+    let at_late = engine
+        .advance_timers(ms(40))
+        .expect("advance to the late time");
+
+    assert_eq!((at_early, at_late), (0, 1));
+    assert_eq!(fired(&engine), "late");
+}
+
+#[test]
+fn a_timer_set_by_a_script_loaded_later_fires_before_an_earlier_scripts_later_timer() {
+    let mut engine = engine_with(&format!(
+        r#"{TIMER_LOG}
+           setTimeout(() => fired.push("slow"), 100);"#
+    ));
+    engine
+        .load_script(
+            "quick",
+            &format!(
+                r#"{TIMER_LOG}
+                   setTimeout(() => fired.push("quick"), 10);"#
+            ),
+        )
+        .expect("load second script");
+
+    let count = engine.advance_timers(ms(10)).expect("advance");
+
+    assert_eq!(count, 1, "only the script with a due timer is entered");
+    assert_eq!(fired(&engine), "");
+    assert_eq!(
+        engine.call::<String>("quick", "read", ()).expect("read"),
+        "quick"
+    );
+}
+
+#[test]
 fn a_timer_set_by_a_callback_waits_for_the_next_call() {
     let engine = engine_with(&format!(
         r#"{TIMER_LOG}

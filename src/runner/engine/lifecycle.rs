@@ -337,7 +337,7 @@ impl Engine {
             self.module_store.mark_grouped(graph.graph_id)?;
         }
         let signals = ScriptSignals::default();
-        let host_promises = HostPromises::default();
+        let host_promises = HostPromises::with_wake(Arc::clone(&self.host_wake));
         let mounted = target.context.with(|ctx| {
             let (env, hooks) = self.build_env(
                 &ctx,
@@ -474,7 +474,12 @@ impl Engine {
                 .set_prototype(Some(&function_prototype))
                 .map_err(js_error)?;
         }
-        let timers = timer_hooks(ctx, &self.timer_clock, &signals.next_timer)?;
+        let timers = timer_hooks(
+            ctx,
+            &self.timer_clock,
+            &signals.next_timer,
+            &self.earliest_timer,
+        )?;
         let hooks = Object::new(ctx.clone()).map_err(js_error)?;
         hooks.set("native", functions).map_err(js_error)?;
         hooks

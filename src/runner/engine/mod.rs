@@ -5,6 +5,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use indexmap::IndexMap;
@@ -29,7 +30,7 @@ use super::module_loader::{
 };
 use super::promise_rejections::UnhandledRejections;
 use super::tasks::{RequestGuard, ScriptTask};
-use super::timers::{NextTimer, TimerClock};
+use super::timers::{EarliestDue, NextTimer, TimerClock};
 use super::transpile::Transpiler;
 
 mod dispatch;
@@ -80,6 +81,10 @@ pub struct Engine {
     execution_timeout: Duration,
     console: ConsoleSink,
     timer_clock: TimerClock,
+    /// No later than the earliest due time of any script's timers.
+    earliest_timer: EarliestDue,
+    /// Raised when a resolver queues an answer for any script, lowered by `pump`.
+    host_wake: Arc<AtomicBool>,
     builtins: ScriptBuiltins,
     /// Bytecode of the context prelude, compiled by the first script that mounts.
     prelude: OnceCell<Box<[u8]>>,
@@ -106,6 +111,13 @@ struct EngineScript {
     signals: ScriptSignals,
     module_ids: Vec<String>,
     origin: ScriptOrigin,
+}
+
+impl EngineScript {
+    /// Whether both scripts run in the same context: they are in the same group.
+    fn shares_context(&self, other: &Self) -> bool {
+        self.group.is_some() && self.group == other.group
+    }
 }
 
 /// The functions of a script's environment the engine calls: `ctx.hot`'s `save` and
@@ -184,6 +196,8 @@ impl Engine {
             execution_timeout: options.execution_timeout,
             console: ConsoleSink::default(),
             timer_clock: TimerClock::default(),
+            earliest_timer: EarliestDue::default(),
+            host_wake: Arc::default(),
             builtins: options.builtins,
             prelude: OnceCell::new(),
             groups: HashMap::default(),

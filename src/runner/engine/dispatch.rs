@@ -8,7 +8,7 @@ use crate::error::VmError;
 
 use super::super::errors::{caught_js_error, in_typescript, js_error};
 use super::super::events::deliver;
-use super::{Engine, EngineScript};
+use super::Engine;
 
 /// How a thrown `null` is described: QuickJS throws it when it runs out of memory while
 /// already handling an out of memory.
@@ -103,7 +103,7 @@ impl Engine {
             };
             let mut end = start + 1;
             while let Some((_, next)) = self.scripts.get_index(end)
-                && shares_context(first, next)
+                && first.shares_context(next)
             {
                 end += 1;
             }
@@ -242,9 +242,4 @@ impl Engine {
             result => result,
         }
     }
-}
-
-/// Whether two scripts run in the same context: both are in the same group.
-fn shares_context(first: &EngineScript, second: &EngineScript) -> bool {
-    first.group.is_some() && first.group == second.group
 }
