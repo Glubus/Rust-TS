@@ -11,7 +11,8 @@ use super::super::events::deliver;
 use super::Engine;
 
 /// How a thrown `null` is described: QuickJS throws it when it runs out of memory while
-/// already handling an out of memory.
+/// already handling an out of memory. Built without its assertions, the same failure
+/// surfaces as an exception with no message at all.
 const NULL_EXCEPTION: &str = "non-error exception: Null";
 
 impl Engine {
@@ -215,7 +216,9 @@ impl Engine {
     /// QuickJS could only report as a thrown `null` said as such.
     fn reported(&self, error: VmError) -> VmError {
         match in_typescript(error, &self.module_store) {
-            VmError::Execution { details } if details.starts_with(NULL_EXCEPTION) => {
+            VmError::Execution { details }
+                if details.is_empty() || details.starts_with(NULL_EXCEPTION) =>
+            {
                 let stats = self.memory_stats();
                 if stats.malloc_limit_bytes != 0
                     && stats.malloc_size_bytes * 10 >= stats.malloc_limit_bytes * 9

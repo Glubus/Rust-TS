@@ -17,6 +17,9 @@ derive = ["dep:rustts_macros"]
 uuid = ["dep:uuid"]
 chrono = ["dep:chrono"]
 glam = ["dep:glam"]
+# Builds QuickJS without its internal assertions: JavaScript runs faster, but a JavaScript
+# value the host leaks no longer aborts the process when the engine drops.
+disable-assertions = ["rquickjs/disable-assertions"]
 
 [dependencies]
 oxc = { version = "0.137.0", features = ["codegen", "full", "transformer"] }

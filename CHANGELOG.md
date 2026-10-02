@@ -167,6 +167,11 @@
   Scripts of a context group that follow one another are served in one visit, as for
   events: 1000 grouped scripts took 2.2 ms.
 
+- The `disable-assertions` feature builds QuickJS without its internal assertions:
+  a call-heavy script runs about 23 % faster, host calls and event delivery about 10 %
+  (see [Release builds without QuickJS
+  assertions](docs/guides/engine.md#release-builds-without-quickjs-assertions)).
+
 ### Fixes
 
 - A load that ran out of memory failed with `non-error exception: Null`. It now says

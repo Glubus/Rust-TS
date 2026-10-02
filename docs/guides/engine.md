@@ -536,6 +536,25 @@ let total = answer.recv().expect("script thread replied")?;
 
 ## Performance
 
+### Release builds without QuickJS assertions
+
+QuickJS keeps about 250 internal assertions on, even in a release build. The
+`disable-assertions` feature builds it without them:
+
+```toml
+rustts = { version = "0.4", features = ["disable-assertions"] }
+```
+
+On a loaded development machine it made a call-heavy script (`fib(20)`) about 23 %
+faster (1.07 to 0.82 ms), a script making 1000 host calls about 11 % (154 to 137 µs)
+and delivering an event to one handler about 10 % (402 to 362 ns). Host calls and
+events gain less because most of their time is in the engine, not in QuickJS.
+
+The assertions are also what turns a JavaScript value your Rust code leaked (a `Value`
+or `Persistent` kept past the engine) into an abort when the engine drops; without them
+the leak is silent. Keep the assertions in debug builds and in CI, and turn the feature
+on for the builds you ship.
+
 `cargo bench --bench vs_lua` runs the same workloads on mlua (Lua 5.4), QuickJS
 called directly through rquickjs, and `Engine`. Medians on one Windows machine,
 rquickjs 0.14:
