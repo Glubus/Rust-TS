@@ -275,7 +275,7 @@ fn project_rejects_dynamic_imports() {
 
     assert!(
         matches!(&result, Err(VmError::Resolve { details })
-            if details.contains("dynamic import is not supported")),
+            if details.contains("dynamic import() is not supported; use a static import")),
         "{result:?}"
     );
 }
@@ -291,7 +291,7 @@ fn inline_dynamic_imports_stay_rejected_with_a_disk_cache() {
         let result = engine.load_script("inline", source);
         assert!(
             matches!(&result, Err(VmError::Resolve { details })
-                if details.contains("dynamic import is not supported")),
+                if details.contains("dynamic import() is not supported; use a static import")),
             "attempt {attempt}: {result:?}"
         );
     }

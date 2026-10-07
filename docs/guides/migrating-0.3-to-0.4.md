@@ -136,6 +136,9 @@ provide the new `register_function_with`, `register_function_with_caller`,
   that parses either. Transpile cache artifacts are rebuilt once.
 - `ReloadReport` has a new `dispose_failed` field; add it to struct literals and
   patterns that list every field.
+- A dynamic `import()` now fails with `<path>: dynamic import() is not supported;
+  use a static import` instead of `dynamic import is not supported in V0 module
+  graphs`; update code that matches on the old text.
 
 ## 7. Contract validation
 

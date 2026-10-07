@@ -124,9 +124,10 @@ The project root is the directory of the nearest `tsconfig.json` above the entry
 file, or the entry file's directory when there is none. An import that resolves
 outside the project root, symlinks included, is rejected.
 
-Dynamic `import(...)` is rejected with `VmError::Resolve`, in projects and inline
-scripts alike: the whole graph must be known at load. A missing entry file or an
-unresolvable import fails the load with `VmError::Resolve` too.
+Dynamic `import(...)` is rejected with `VmError::Resolve` (`dynamic import() is not
+supported; use a static import`), in projects and inline scripts alike: the whole
+graph must be known at load. A missing entry file or an unresolvable import fails
+the load with `VmError::Resolve` too.
 
 ## Reloading
 

@@ -15,7 +15,7 @@ pub(super) fn reject_dynamic_imports(
     if detector.found {
         return Err(VmError::Resolve {
             details: format!(
-                "dynamic import is not supported in V0 module graphs: {}",
+                "{}: dynamic import() is not supported; use a static import",
                 source_path.display()
             ),
         });

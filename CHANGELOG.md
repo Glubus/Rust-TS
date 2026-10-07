@@ -67,6 +67,9 @@
   property, as `JSON.parse` does, instead of assigning it: a setter a script put on
   `Object.prototype` no longer runs, and a field named `__proto__` becomes an own
   property instead of changing the prototype.
+- The error for a dynamic `import()` now reads `<path>: dynamic import() is not
+  supported; use a static import` (it was `dynamic import is not supported in V0
+  module graphs`); update code that matches on the old text.
 - Packages that ship both builds now resolve to their ESM entry (the `exports`
   `import` condition, or the `module` field) instead of `main`.
 

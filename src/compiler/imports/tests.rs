@@ -78,6 +78,6 @@ fn rejects_dynamic_imports() {
     assert!(matches!(
         error,
         VmError::Resolve { details }
-            if details.contains("dynamic import is not supported in V0 module graphs")
+            if details.contains("dynamic import() is not supported; use a static import")
     ));
 }
