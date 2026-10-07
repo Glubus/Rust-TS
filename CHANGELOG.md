@@ -236,6 +236,8 @@
 - Packages in `node_modules` resolve as ES modules: `exports` use the `import`,
   `module` and `default` conditions, and packages without `exports` use their
   `module` field before `main`.
+- The transpile cache no longer fails a load: an artifact that cannot be read is a
+  cache miss, and an artifact that cannot be written is skipped.
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an

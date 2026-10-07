@@ -151,48 +151,42 @@ impl Transpiler {
         module_key: &str,
         compile: impl FnOnce(&mut CompilerService) -> Result<TranspiledModule, VmError>,
     ) -> Result<TranspiledModule, VmError> {
-        if let Some(transpiled) = self.remembered(module_key)? {
+        if let Some(transpiled) = self.remembered(module_key) {
             return Ok(transpiled);
         }
         let transpiled = compile(&mut self.compiler)?;
-        self.remember(module_key, &transpiled)?;
+        self.remember(module_key, &transpiled);
         Ok(transpiled)
     }
 
     /// Transpiled module from the memo, else from the disk cache.
-    fn remembered(&mut self, module_key: &str) -> Result<Option<TranspiledModule>, VmError> {
+    fn remembered(&mut self, module_key: &str) -> Option<TranspiledModule> {
         if let Some(transpiled) = self
             .memo
             .get(module_key)
             .and_then(|memo| memo.transpiled.clone())
         {
-            return Ok(Some(transpiled));
+            return Some(transpiled);
         }
-        let Some(transpiled) = self
-            .cache
-            .as_ref()
-            .map(|cache| cache.load(module_key))
-            .transpose()?
-            .flatten()
-        else {
-            return Ok(None);
-        };
+        let transpiled = self.cache.as_ref()?.load(module_key)?;
         self.memo
             .entry(module_key.to_owned())
             .or_default()
             .transpiled = Some(transpiled.clone());
-        Ok(Some(transpiled))
+        Some(transpiled)
     }
 
-    fn remember(&mut self, module_key: &str, transpiled: &TranspiledModule) -> Result<(), VmError> {
+    /// Remembers a transpiled module in the memo and, when it can, in the disk cache.
+    fn remember(&mut self, module_key: &str, transpiled: &TranspiledModule) {
         if let Some(cache) = &self.cache {
-            cache.store(module_key, transpiled)?;
+            // A cache only saves work: one that cannot be written (full disk, removed
+            // or read-only directory) leaves the module in the memo, and the load goes on.
+            let _ = cache.store(module_key, transpiled);
         }
         self.memo
             .entry(module_key.to_owned())
             .or_default()
             .transpiled = Some(transpiled.clone());
-        Ok(())
     }
 }
 

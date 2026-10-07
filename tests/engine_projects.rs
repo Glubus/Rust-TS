@@ -327,6 +327,42 @@ fn inline_cache_artifact_is_shared_by_scripts_with_the_same_source() {
     );
 }
 
+/// A cache only saves work: an artifact that cannot be read, here a directory where
+/// the file should be, and that cannot be written over either, must not fail a load.
+#[test]
+fn an_unreadable_and_unwritable_cache_artifact_does_not_fail_a_load() {
+    let cache = TestCacheDir::new("inline-cache-io-error");
+    let mut engine = Engine::new(&cache.engine_options()).expect("create engine");
+    engine
+        .load_script("math", DEMO_SCRIPT)
+        .expect("load and cache the script");
+    let artifacts: Vec<_> = fs::read_dir(cache.cache_path())
+        .expect("read cache dir")
+        .map(|entry| entry.expect("read cache entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "js"))
+        .collect();
+    assert_eq!(artifacts.len(), 1);
+    for artifact in &artifacts {
+        fs::remove_file(artifact).expect("remove artifact");
+        fs::create_dir(artifact).expect("put a directory in its place");
+    }
+
+    let mut restarted = Engine::new(&cache.engine_options()).expect("restart engine");
+    restarted
+        .load_script("math", DEMO_SCRIPT)
+        .expect("load past an unreadable cache artifact");
+
+    assert_eq!(
+        call(
+            &restarted,
+            "math",
+            "sum",
+            vec![json!({ "left": 20, "right": 22 })]
+        ),
+        json!(42)
+    );
+}
+
 /// The cache holds one artifact per module; loading the same project again, even
 /// from a restarted engine, adds none.
 #[test]

@@ -98,6 +98,10 @@ directories writable only by trusted users. Engines sharing a cache directory do
 not see partially written artifacts. Atomic replacement is not a guarantee of
 durability against every filesystem or power-loss failure.
 
+Cache I/O never fails a load: an artifact that cannot be read is a miss and the
+module is transpiled, and an artifact that cannot be written (full disk, read-only
+directory) is skipped. Only creating the cache directory, in `Engine::new`, can fail.
+
 Each artifact is one transpiled module and its source map, keyed by its source, its
 file extension, and the compiler and crate versions. Import resolution is never
 cached on disk. An engine reuses a project's resolutions in memory only while the

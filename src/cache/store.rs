@@ -24,14 +24,12 @@ impl ScriptCache {
         Ok(Self { root })
     }
 
-    pub(crate) fn load(&self, cache_key: &str) -> Result<Option<TranspiledModule>, VmError> {
-        let path = self.js_path(cache_key);
-        match fs::read_to_string(path) {
-            Ok(artifact) => Ok(verified_payload(&artifact).and_then(transpiled_module)),
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Ok(None),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(VmError::Io(error)),
-        }
+    /// The artifact stored under `cache_key`, if one can be read and verifies. A cache
+    /// only saves work, so an artifact that cannot be read for any reason (missing,
+    /// corrupt, unreadable) is a miss rather than an error.
+    pub(crate) fn load(&self, cache_key: &str) -> Option<TranspiledModule> {
+        let artifact = fs::read_to_string(self.js_path(cache_key)).ok()?;
+        verified_payload(&artifact).and_then(transpiled_module)
     }
 
     pub(crate) fn store(&self, cache_key: &str, module: &TranspiledModule) -> Result<(), VmError> {
@@ -134,7 +132,7 @@ mod tests {
                 });
             }
             for _ in 0..100 {
-                let loaded = cache.load("shared").unwrap().expect("complete artifact");
+                let loaded = cache.load("shared").expect("complete artifact");
                 assert!(loaded == first || loaded == second);
             }
         });
@@ -155,9 +153,9 @@ mod tests {
             legacy_v2.as_str(),
         ] {
             fs::write(cache.js_path("broken"), content).unwrap();
-            assert_eq!(cache.load("broken").unwrap(), None);
+            assert_eq!(cache.load("broken"), None);
         }
         cache.store("broken", &module(legacy_js)).unwrap();
-        assert_eq!(cache.load("broken").unwrap().unwrap(), module(legacy_js));
+        assert_eq!(cache.load("broken").unwrap(), module(legacy_js));
     }
 }
