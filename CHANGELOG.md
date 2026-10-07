@@ -69,6 +69,10 @@
   variants. A setter a script put on `Object.prototype` no longer runs, and a field
   or key named `__proto__` becomes an ordinary own property instead of replacing the
   object's prototype.
+- Fixed-size arrays `[T; N]` are declared as `[T, T, …]` (`N` items) instead of
+  `T[]`. Script code that builds such values with a different length, or types them
+  as `T[]`, may need updating. Schema validation now rejects arrays of the wrong
+  length.
 - The error for a dynamic `import()` now reads `<path>: dynamic import() is not
   supported; use a static import` (it was `dynamic import is not supported in V0
   module graphs`); update code that matches on the old text.
@@ -261,6 +265,11 @@
   inherited setters never run. They define through the QuickJS C API, which costs no
   more than the assignment did for a 16-key object and is about 5 % cheaper for a
   1024-key one.
+- `TsSchema` for `[T; N]` declares a tuple of exactly `N` items, matching the codec,
+  which requires that length. Schema validation and SDK predicates check the length
+  too.
+- `TsSchema` is implemented for `HashMap<K, V, S>` and `HashSet<T, S>` with any
+  hasher, like the codecs.
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an

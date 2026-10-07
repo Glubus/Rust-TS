@@ -125,6 +125,9 @@ provide the new `register_function_with`, `register_function_with_caller`,
   `HostReplies`, `HostEventReply`, `HostEventHandler` and `HostEventContext`, and
   `ctx` gains `ctx.off`. Async host functions render as `Promise<Output>`. Update
   snapshots of the generated text.
+- Fixed-size arrays `[T; N]` are declared as `[T, T, …]` (`N` items) instead of
+  `T[]`. Script code that builds such values with a different length, or types them
+  as `T[]`, may need updating; schema validation rejects arrays of the wrong length.
 - Regenerate the `.d.ts` and SDK files you ship with your scripts.
 
 ## 6. Errors and reloads

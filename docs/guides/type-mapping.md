@@ -41,10 +41,10 @@ numbers. Generated declarations quote property names that are not identifiers
 | `()` | `null` | Decodes from `null` or `undefined`. |
 | `Option<T>` | `T \| null` | `null` and `undefined` decode to `None`. |
 | `Vec<T>`, `VecDeque<T>`, `Box<[T]>` | `T[]` | Decoding requires a JavaScript array. |
-| `[T; N]` | `T[]` | Length must match exactly. |
-| `HashSet<T>`, `BTreeSet<T>` | `T[]` | Duplicates collapse, as in serde. |
-| `HashMap<String, V>`, `BTreeMap<String, V>` | `Record<string, V>` | Plain object; properties `JSON.stringify` would drop are skipped. |
-| `HashMap<{integer}, V>`, `BTreeMap<{integer}, V>` | `Record<number, V>` | Keys are canonical decimal strings in JavaScript. |
+| `[T; N]` | `[T, T, …]` (N items) | Length must match exactly. |
+| `HashSet<T, S>`, `BTreeSet<T>` | `T[]` | Duplicates collapse, as in serde. Any hasher `S`. |
+| `HashMap<String, V, S>`, `BTreeMap<String, V>` | `Record<string, V>` | Plain object with own data properties (a `"__proto__"` key stays an ordinary key); properties `JSON.stringify` would drop are skipped. |
+| `HashMap<{integer}, V, S>`, `BTreeMap<{integer}, V>` | `Record<number, V>` | Keys are canonical decimal strings in JavaScript. |
 | `(A, B, …)` up to 12 elements | `[A, B, …]` | Length must match exactly. |
 | `Box<T>`, `Arc<T>`, `Rc<T>` | `T` | Transparent. |
 | `serde_json::Value` | JSON value | Integers still follow the safe-range rule. |

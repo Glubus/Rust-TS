@@ -4,6 +4,7 @@
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::{BuildHasherDefault, DefaultHasher};
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -110,6 +111,16 @@ struct IndexedPayload {
 struct SetPayload {
     tags: HashSet<String>,
     sorted_scores: BTreeSet<u64>,
+}
+
+type FixedHasher = BuildHasherDefault<DefaultHasher>;
+
+#[derive(TsSchema)]
+#[allow(dead_code)]
+struct CustomHasherPayload {
+    scores: HashMap<String, u32, FixedHasher>,
+    names_by_id: HashMap<u64, String, FixedHasher>,
+    tags: HashSet<String, FixedHasher>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TsSchema)]
@@ -742,14 +753,34 @@ fn derive_ts_schema_for_serde_transparent_newtypes() {
 
 #[test]
 fn derive_ts_schema_for_fixed_array_fields() {
+    let pair = TsType::Tuple(vec![TsType::Number; 2]);
     assert_eq!(
         FixedPayload::ts_type(),
         TsType::Object(vec![
-            TsField::required("color", TsType::Array(Box::new(TsType::Number))),
-            TsField::required(
-                "points",
-                TsType::Array(Box::new(TsType::Array(Box::new(TsType::Number)))),
-            ),
+            TsField::required("color", TsType::Tuple(vec![TsType::Number; 4])),
+            TsField::required("points", TsType::Tuple(vec![pair.clone(), pair])),
+        ])
+    );
+    FixedPayload::validate_json(&json!({ "color": [1, 2, 3, 4], "points": [[1, 2], [3, 4]] }))
+        .expect("exact lengths are valid");
+    let short =
+        FixedPayload::validate_json(&json!({ "color": [1, 2, 3], "points": [[1, 2], [3, 4]] }))
+            .expect_err("a fixed-size array needs exactly N items");
+    assert!(short.contains("$.color"), "{short}");
+}
+
+#[test]
+fn derive_ts_schema_for_maps_and_sets_with_a_custom_hasher() {
+    let record = |key, value| TsType::Record {
+        key,
+        value: Box::new(value),
+    };
+    assert_eq!(
+        CustomHasherPayload::ts_type(),
+        TsType::Object(vec![
+            TsField::required("scores", record(TsRecordKey::String, TsType::Number)),
+            TsField::required("names_by_id", record(TsRecordKey::Number, TsType::String)),
+            TsField::required("tags", TsType::Array(Box::new(TsType::String))),
         ])
     );
 }

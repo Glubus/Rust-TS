@@ -229,7 +229,17 @@ macro_rules! array_schemas {
     };
 }
 
-array_schemas!(Vec, VecDeque, HashSet, BTreeSet);
+array_schemas!(Vec, VecDeque, BTreeSet);
+
+impl<T: TsSchema, S> TsSchema for HashSet<T, S> {
+    fn ts_type() -> TsType {
+        array_of::<T>()
+    }
+
+    fn schema_dependencies() -> Vec<Schema> {
+        element_dependencies::<T>()
+    }
+}
 
 impl<T: TsSchema> TsSchema for Box<[T]> {
     fn ts_type() -> TsType {
@@ -241,9 +251,10 @@ impl<T: TsSchema> TsSchema for Box<[T]> {
     }
 }
 
+/// A tuple of exactly `N` items, since the codecs accept no other length.
 impl<T: TsSchema, const N: usize> TsSchema for [T; N] {
     fn ts_type() -> TsType {
-        array_of::<T>()
+        TsType::Tuple(vec![schema_type_ref::<T>(); N])
     }
 
     fn schema_dependencies() -> Vec<Schema> {
@@ -276,7 +287,7 @@ transparent_schemas!(Box, Arc, Rc);
 macro_rules! record_schemas {
     ($record_key:expr => $($key:ty),+ $(,)?) => {
         $(
-            impl<T: TsSchema> TsSchema for HashMap<$key, T> {
+            impl<T: TsSchema, S> TsSchema for HashMap<$key, T, S> {
                 fn ts_type() -> TsType {
                     record_of::<T>($record_key)
                 }
@@ -365,10 +376,7 @@ mod tests {
             BTreeSet::<bool>::ts_type(),
             TsType::Array(Box::new(TsType::Boolean))
         );
-        assert_eq!(
-            <[u8; 16]>::ts_type(),
-            TsType::Array(Box::new(TsType::Number))
-        );
+        assert_eq!(<[u8; 3]>::ts_type(), TsType::Tuple(vec![TsType::Number; 3]));
         assert_eq!(
             HashMap::<String, bool>::ts_type(),
             TsType::Record {
