@@ -19,7 +19,7 @@ cd rustts-hello
 Add dependencies:
 
 ```text
-cargo add rustts@0.3 --features derive
+cargo add rustts@0.4 --features derive
 cargo add serde --features derive
 cargo add serde_json
 ```
