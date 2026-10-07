@@ -67,6 +67,8 @@
   property, as `JSON.parse` does, instead of assigning it: a setter a script put on
   `Object.prototype` no longer runs, and a field named `__proto__` becomes an own
   property instead of changing the prototype.
+- Packages that ship both builds now resolve to their ESM entry (the `exports`
+  `import` condition, or the `module` field) instead of `main`.
 
 ### Added
 
@@ -231,6 +233,9 @@
 - Configs that a project's `tsconfig.json` `extends` through a relative or absolute
   path are watched: editing `paths` or `baseUrl` in a base config is picked up by
   `reload_changed` and by the next `load_project`.
+- Packages in `node_modules` resolve as ES modules: `exports` use the `import`,
+  `module` and `default` conditions, and packages without `exports` use their
+  `module` field before `main`.
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an

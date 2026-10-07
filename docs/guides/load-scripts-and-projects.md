@@ -111,6 +111,10 @@ The project graph is resolved from the entry file, following:
 - package imports from project-local `node_modules`
 - type-only imports and re-exports, ignored at runtime
 
+Packages resolve as ES modules: `exports` conditions `import`, `module` and
+`default` (never `require` or `node`), and for a package without `exports`, its
+`module` field before `main`.
+
 An import naming a registered host module (a contract's `IMPORT_MODULE`) always
 resolves to that module, never to a file or package of the same name. A script
 never reaches another script's modules: only the host modules and its own graph

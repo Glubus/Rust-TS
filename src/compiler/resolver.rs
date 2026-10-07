@@ -118,6 +118,14 @@ fn resolve_options(tsconfig_path: Option<&Path>) -> ResolveOptions {
             .map(|extension| (*extension).to_owned())
             .collect(),
         main_files: vec![String::from("index")],
+        // Scripts are ES modules: a package's `exports` resolve through the conditions
+        // of an `import` (never `require` or `node`, whose targets may be CommonJS),
+        // and a package without `exports` through its `module` entry before `main`.
+        condition_names: ["import", "module", "default"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        main_fields: ["module", "main"].into_iter().map(String::from).collect(),
         modules: vec![String::from("node_modules")],
         node_path: false,
         builtin_modules: false,

@@ -241,6 +241,23 @@ fn project_resolves_package_imports_from_local_node_modules() {
     );
 }
 
+/// `exports` resolve through the `import` condition, never `require` or `node`, and a
+/// package without `exports` through its `module` entry before `main`: the CommonJS
+/// files of the fixture would fail to evaluate.
+#[test]
+fn project_resolves_esm_packages_through_import_conditions_and_module_entries() {
+    let mut engine = engine();
+
+    engine
+        .load_project("project", fixture("esm_package/main.ts"))
+        .expect("load project with ESM packages");
+
+    assert_eq!(
+        call(&engine, "project", "run", vec![json!(4)]),
+        json!("esm:12:module")
+    );
+}
+
 #[test]
 fn project_rejects_unresolved_package_imports() {
     let result = engine().load_project("project", fixture("invalid_bare_import/main.ts"));
