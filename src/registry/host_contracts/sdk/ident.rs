@@ -1,3 +1,5 @@
+use super::super::declarations::is_identifier;
+
 pub(super) fn identifier(name: &str) -> String {
     if is_identifier(name) {
         name.to_owned()
@@ -16,16 +18,6 @@ pub(super) fn property_name(name: &str) -> String {
 
 pub(super) fn indent(depth: usize) -> String {
     "  ".repeat(depth)
-}
-
-fn is_identifier(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-
-    (first == '_' || first == '$' || first.is_ascii_alphabetic())
-        && chars.all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
 }
 
 fn is_reserved_word(name: &str) -> bool {

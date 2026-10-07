@@ -284,7 +284,33 @@ fn render_object_type<'a>(
 
 fn render_field(field: &TsField) -> String {
     let optional = if field.optional { "?" } else { "" };
-    format!("{}{}: {};", field.name, optional, render_ts_type(&field.ty))
+    format!(
+        "{}{}: {};",
+        render_property_key(&field.name),
+        optional,
+        render_ts_type(&field.ty)
+    )
+}
+
+/// `name` as a property key in a type literal: bare when it is an identifier (reserved
+/// words included, which are legal there), a string literal otherwise.
+fn render_property_key(name: &str) -> String {
+    if is_identifier(name) {
+        name.to_owned()
+    } else {
+        render_string_literal(name)
+    }
+}
+
+/// Whether `name` is an ASCII JavaScript identifier name (reserved words included).
+pub(super) fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first == '_' || first == '$' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
 }
 
 /// `[key: string]: ...` admitting `rest` plus every declared field's type, because

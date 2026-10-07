@@ -252,6 +252,9 @@
   bytes instead of failing with `expected array, got object`. `NaN` and `±Infinity`
   now pass `number` schemas, matching the native codec. `serde_json::Value` decoding
   still rejects non-finite numbers.
+- Generated `.d.ts` and SDK types quote property names that are not identifiers (for
+  example `#[serde(rename_all = "kebab-case")]` fields such as `"max-speed"`), so they
+  are valid TypeScript. Reserved words such as `default` stay bare.
 - Map, `serde_json::Value`, `#[serde(flatten)]` and internally tagged newtype encoders
   define own data properties instead of assigning them, as derived struct encoders do
   (see Migration): a `"__proto__"` key no longer replaces the object's prototype, and

@@ -112,6 +112,16 @@ struct SetPayload {
     sorted_scores: BTreeSet<u64>,
 }
 
+#[derive(Debug, Serialize, Deserialize, TsSchema)]
+#[serde(rename_all = "kebab-case")]
+struct KebabSettings {
+    max_speed: f64,
+    #[serde(rename = "default")]
+    fallback: bool,
+    #[serde(rename = "2d")]
+    flat: bool,
+}
+
 #[derive(TsSchema)]
 #[allow(dead_code)]
 struct HostResourcePayload {
@@ -741,6 +751,66 @@ fn derive_ts_schema_for_fixed_array_fields() {
                 TsType::Array(Box::new(TsType::Array(Box::new(TsType::Number)))),
             ),
         ])
+    );
+}
+
+struct ApplySettings;
+
+impl HostContract for ApplySettings {
+    const NAME: &'static str = "settings.apply";
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Function
+    }
+}
+
+impl HostFunctionSignature for ApplySettings {
+    type Input = KebabSettings;
+    type Output = KebabSettings;
+}
+
+impl HostFunction for ApplySettings {
+    fn call(input: Self::Input) -> Result<Self::Output, VmError> {
+        Ok(input)
+    }
+}
+
+#[test]
+fn renamed_fields_that_are_not_identifiers_are_quoted_in_declarations() {
+    let registry = InMemoryHostContractRegistry::new();
+    registry
+        .function::<ApplySettings>()
+        .expect("register kebab-case host function");
+    let dts = registry.dts().expect("render declarations");
+    let sdk = registry.sdk().expect("render SDK");
+
+    let settings =
+        r#"type KebabSettings = { "max-speed": number; default: boolean; "2d": boolean; };"#;
+    assert!(dts.contains(settings), "{dts}");
+    assert!(sdk.contains(settings), "{sdk}");
+
+    let cache_dir = support::TestCacheDir::new("derive-schema-quoted-keys-tsc");
+    let sdk_path = cache_dir.path().join("sdk.ts");
+    let usage = format!(
+        "{sdk}\n\
+const sample: KebabSettings = {{ \"max-speed\": 1.5, default: true, \"2d\": false }};\n\
+// @ts-expect-error a quoted field keeps its declared type\n\
+const wrong: KebabSettings = {{ \"max-speed\": \"fast\", default: true, \"2d\": false }};\n\
+if (models.KebabSettings.is(sample)) {{\n\
+  models.KebabSettings.create(sample)[\"max-speed\"].toFixed();\n\
+}}\n\
+const applied: KebabSettings = call(\"settings.apply\", sample);\n\
+export {{ wrong, applied }};\n"
+    );
+    std::fs::write(&sdk_path, usage).expect("write sdk");
+    let Some(output) = support::run_tsc(&sdk_path) else {
+        return;
+    };
+    assert!(
+        output.status.success(),
+        "generated sdk failed tsc\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

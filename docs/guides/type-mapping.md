@@ -23,6 +23,11 @@ The native path is stricter than JSON text in three places:
    `null`.
 3. `NativeBytes` crosses as a `Uint8Array`.
 
+Contract validation follows the native codec, not JSON text: it checks a
+`Uint8Array` or `ArrayBuffer` as its bytes and accepts `NaN` and `±Infinity` as
+numbers. Generated declarations quote property names that are not identifiers
+(`"display-name": string`).
+
 ## Built-In Types
 
 | Rust | TypeScript | Notes |
