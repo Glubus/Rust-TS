@@ -1,11 +1,30 @@
+//! `rustts-sdk`: writes the TypeScript declarations and SDK for host contract descriptors.
+
 use std::env;
 use std::error::Error;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use rustts::{HostContractDescriptor, SdkFileNames, write_host_sdk_files_with_names};
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let args = ExportArgs::parse(env::args().skip(1))?;
+fn main() -> ExitCode {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("{}", usage());
+        return ExitCode::SUCCESS;
+    }
+
+    match run(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
+    let args = ExportArgs::parse(args)?;
     let descriptors = read_descriptors(&args.descriptors_path)?;
     let written = write_host_sdk_files_with_names(&args.output_dir, &descriptors, &args.names)?;
 
@@ -31,7 +50,6 @@ impl ExportArgs {
             match flag.as_str() {
                 "--types" => names.types = required_arg(args.next(), "missing --types value")?,
                 "--sdk" => names.sdk = required_arg(args.next(), "missing --sdk value")?,
-                "--help" | "-h" => return Err(usage().into()),
                 other => return Err(format!("unknown argument `{other}`\n{}", usage()).into()),
             }
         }

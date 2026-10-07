@@ -316,6 +316,9 @@
   changed the host functions every other script saw, and `hostFunction instanceof
   Function` was false in all but that first script. Each host function now has its own
   script's `Function.prototype`.
+- `rustts-sdk --help` (or `-h`) prints its usage to stdout and exits with 0; it
+  printed the usage as an error and exited with 1. Other errors print `error: …` on
+  stderr and exit with 1.
 
 ## 0.3.0 — 2026-09-25
 
