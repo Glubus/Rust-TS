@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::contract::{
     Caller, EncodeReply, HostFunctionSignature, HostResolver, JsDecode, JsEncode, ReplyValue,
-    js_value_to_json,
+    js_value_to_validation_snapshot,
 };
 use crate::error::VmError;
 use crate::runner::execution::ExecutionControl;
@@ -96,7 +96,7 @@ fn check_input<'js>(
         return Ok(());
     };
     validator
-        .validate_input(&js_value_to_json(ctx, input.clone())?)
+        .validate_input(&js_value_to_validation_snapshot(ctx, input.clone())?)
         .map_err(js_host_error)
 }
 
@@ -110,7 +110,7 @@ fn check_output<'js>(
         return Ok(());
     };
     validator
-        .validate_output(&js_value_to_json(ctx, output.clone())?)
+        .validate_output(&js_value_to_validation_snapshot(ctx, output.clone())?)
         .map_err(js_host_error)
 }
 
@@ -167,7 +167,7 @@ struct ValidatedReply<T> {
 impl<T: JsEncode + Send> ReplyValue for ValidatedReply<T> {
     fn into_js<'js>(self: Box<Self>, ctx: &Ctx<'js>) -> JsResult<JsValue<'js>> {
         let output = self.output.encode_js(ctx)?;
-        let snapshot = js_value_to_json(ctx, output.clone())?;
+        let snapshot = js_value_to_validation_snapshot(ctx, output.clone())?;
         self.validator
             .validate_output(&snapshot)
             .map_err(|error| Exception::throw_message(ctx, &error.to_string()))?;

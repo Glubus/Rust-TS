@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 
+use super::bridge::snapshot_number;
 use super::{Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsType};
 
 pub(crate) fn validate_schema_with_options(
@@ -148,9 +149,11 @@ fn validate_literal(literal: &TsLiteral, value: &Value, path: &str) -> Result<()
         .ok_or_else(|| format!("{path}: expected literal {}", literal_label(literal)))
 }
 
+/// A snapshot's non-finite stand-ins compare as the numbers they stand for.
 fn literal_number_matches(expected: &str, value: &Value) -> bool {
     value
-        .as_f64()
+        .as_number()
+        .and_then(snapshot_number)
         .and_then(|number| {
             expected
                 .parse::<f64>()

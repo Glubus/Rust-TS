@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use rustts::{
     Engine, HostContract, HostContractKind, HostFunction, HostFunctionSignature, HostResolver,
-    JsDecode, JsEncode, Schema, TsField, TsSchema, TsType, VmContractValidation, VmError,
-    VmOptions, VmUnknownFieldValidation,
+    JsDecode, JsEncode, NativeBytes, Schema, TsField, TsSchema, TsType, VmContractValidation,
+    VmError, VmOptions, VmUnknownFieldValidation,
 };
 use serde_json::{Value, json};
 
@@ -106,6 +106,8 @@ function_contract!(
     BadOutput, "validation.badOutput", "validation", "badOutput", NumberValue => NumberValue
 );
 function_contract!(Tag, "tags.add", "tags", "add", IdObject => TagResult);
+function_contract!(BytesEcho, "bytes.echo", "bytes", "echo", NativeBytes => NativeBytes);
+function_contract!(NumberEcho, "numbers.echo", "numbers", "echo", f64 => f64);
 
 impl HostFunction for Echo {
     fn call(input: Self::Input) -> Result<Self::Output, VmError> {
@@ -442,4 +444,71 @@ fn an_async_output_is_not_checked_when_only_inputs_are() {
     engine.pump().expect("pump");
 
     assert_eq!(pending.take().expect("finished").expect("value"), "8");
+}
+
+/// An engine validating inputs and outputs of `bytes.echo` and `numbers.echo`, with the
+/// script calling them loaded as `natives`.
+fn natives_engine() -> Engine {
+    let mut engine = engine(VmContractValidation::InputsAndOutputs);
+    engine
+        .registry()
+        .function_with::<BytesEcho>(Ok)
+        .and_then(|registry| registry.function_with::<NumberEcho>(Ok))
+        .expect("register native contracts");
+    engine
+        .load_script(
+            "natives",
+            r#"
+            import { bytes, numbers } from "test";
+            export function echoView() {
+                const out = bytes.echo(new Uint8Array([1, 2, 3]));
+                return out instanceof Uint8Array ? Array.from(out) : null;
+            }
+            export function echoBuffer() {
+                return Array.from(bytes.echo(new Uint8Array([4, 5]).buffer as any));
+            }
+            export function echoObject() { return bytes.echo({ 0: 1 } as any); }
+            export function echoNonFinite() {
+                return [numbers.echo(NaN), numbers.echo(Infinity), numbers.echo(-Infinity)]
+                    .map(String);
+            }
+            export function echoString() { return numbers.echo("1" as any); }
+            "#,
+        )
+        .expect("load natives script");
+    engine
+}
+
+#[test]
+fn native_bytes_and_non_finite_numbers_pass_input_and_output_validation() {
+    let engine = natives_engine();
+
+    let view: Vec<u8> = engine.call("natives", "echoView", ()).expect("echo view");
+    let buffer: Vec<u8> = engine
+        .call("natives", "echoBuffer", ())
+        .expect("echo buffer");
+    let non_finite: Vec<String> = engine
+        .call("natives", "echoNonFinite", ())
+        .expect("echo non-finite numbers");
+
+    assert_eq!(view, [1, 2, 3]);
+    assert_eq!(buffer, [4, 5]);
+    assert_eq!(non_finite, ["NaN", "Infinity", "-Infinity"]);
+}
+
+#[test]
+fn byte_and_number_schemas_still_reject_other_values() {
+    let engine = natives_engine();
+
+    let object = engine.call::<Value>("natives", "echoObject", ());
+    let string = engine.call::<Value>("natives", "echoString", ());
+
+    assert_fails_with(
+        object,
+        &["input validation failed", "expected array, got object"],
+    );
+    assert_fails_with(
+        string,
+        &["input validation failed", "expected number, got string"],
+    );
 }

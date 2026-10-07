@@ -241,6 +241,11 @@
   `module` field before `main`.
 - The transpile cache no longer fails a load: an artifact that cannot be read is a
   cache miss, and an artifact that cannot be written is skipped.
+- Contract validation (`VmContractValidation::Inputs`/`InputsAndOutputs`) no longer
+  rejects `NativeBytes` values: a `Uint8Array` or `ArrayBuffer` is checked as its
+  bytes instead of failing with `expected array, got object`. `NaN` and `±Infinity`
+  now pass `number` schemas, matching the native codec. `serde_json::Value` decoding
+  still rejects non-finite numbers.
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an

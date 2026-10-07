@@ -15,7 +15,7 @@ mod schema;
 pub(crate) mod validation;
 
 pub use base::HostContract;
-pub(crate) use bridge::{js_value_to_json, json_to_js_value};
+pub(crate) use bridge::{js_value_to_json, js_value_to_validation_snapshot, json_to_js_value};
 pub use callback::{HostCallback, HostRequest};
 pub use caller::Caller;
 pub use codec::{
