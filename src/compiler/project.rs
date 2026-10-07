@@ -38,6 +38,25 @@ pub(crate) struct DiscoveredModule {
     pub(crate) resolved_requests: BTreeMap<String, String>,
 }
 
+/// A project load that failed, with the files it had looked at so far: module files,
+/// the one that failed included, and what resolution depended on. A change to any of
+/// them may fix the load, so they are watched like the files of a loaded version.
+#[derive(Debug)]
+pub(crate) struct ProjectFailure {
+    pub(crate) error: VmError,
+    pub(crate) watched: WatchedFiles,
+}
+
+impl From<VmError> for ProjectFailure {
+    /// A failure before any project file was looked at.
+    fn from(error: VmError) -> Self {
+        Self {
+            error,
+            watched: WatchedFiles::default(),
+        }
+    }
+}
+
 /// What the discovery of one project learned, reused by its next discovery.
 ///
 /// Resolution only depends on the project structure (which files exist,
@@ -66,13 +85,14 @@ struct KnownModule {
 /// Walks the static import graph from `entry_path`, reusing `previous` when it is the
 /// state of the same project. `imports_of` returns the static import requests of one
 /// module source; requests naming `external_modules` stay unresolved for the module
-/// loader. Returns the graph and the state for the next discovery.
+/// loader. Returns the graph and the state for the next discovery, or the error with
+/// the files looked at before it.
 pub(crate) fn discover_project(
     entry_path: &Path,
     external_modules: &BTreeSet<String>,
     previous: Option<ProjectState>,
     imports_of: &mut ImportsOf<'_>,
-) -> Result<(DiscoveredProject, ProjectState), VmError> {
+) -> Result<(DiscoveredProject, ProjectState), ProjectFailure> {
     let entry_path = normalize_entry_path(entry_path)?;
     let (resolver, structure, known, structure_unchanged) = match previous {
         Some(state)
@@ -102,21 +122,27 @@ pub(crate) fn discover_project(
         structure,
         modules: BTreeMap::new(),
     };
-    if let Some(tsconfig) = resolver.tsconfig_path() {
+    // `paths` and `baseUrl` may come from any config of the `extends` chain.
+    for tsconfig in resolver.tsconfig_files() {
         discovery.structure.watch(tsconfig);
     }
-    discovery.visit(entry_path.clone())?;
+    let visited = discovery.visit(entry_path.clone());
 
     let Discovery {
         structure,
-        modules: visited,
+        modules: visited_modules,
         ..
     } = discovery;
     let mut watched = structure.clone();
-    let mut modules = Vec::with_capacity(visited.len());
-    let mut known = HashMap::with_capacity(visited.len());
-    for (path, module) in visited {
-        watched.watch_stamped(&path, module.stamp);
+    for (path, module) in &visited_modules {
+        watched.watch_stamped(path, module.stamp);
+    }
+    if let Err(error) = visited {
+        return Err(ProjectFailure { error, watched });
+    }
+    let mut modules = Vec::with_capacity(visited_modules.len());
+    let mut known = HashMap::with_capacity(visited_modules.len());
+    for (path, module) in visited_modules {
         modules.push(DiscoveredModule {
             module_id: module_id(&path),
             display_path: module.display_path.clone(),
@@ -175,14 +201,21 @@ impl Discovery<'_> {
         let stamp = FileStamp::of(&path);
         let module = match self.known.remove(&path) {
             Some(known) if stamp.is_some() && known.stamp == stamp && self.structure_unchanged => {
-                known
+                Ok(known)
             }
             Some(known) if stamp.is_some() && known.stamp == stamp => {
-                self.resolve_module(&path, stamp, known.source)?
+                self.resolve_module(&path, stamp, known.source)
             }
-            _ => {
-                let source = fs::read_to_string(&path)?;
-                self.resolve_module(&path, stamp, source)?
+            _ => fs::read_to_string(&path)
+                .map_err(VmError::from)
+                .and_then(|source| self.resolve_module(&path, stamp, source)),
+        };
+        let module = match module {
+            Ok(module) => module,
+            Err(error) => {
+                // Fixing this file may fix the project: it is watched as it was read.
+                self.structure.watch_stamped(&path, stamp);
+                return Err(error);
             }
         };
         for package_json in &module.package_jsons {

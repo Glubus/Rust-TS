@@ -1,9 +1,11 @@
 //! Project module resolution backed by `oxc_resolver`.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use oxc_resolver::{
-    ResolveOptions, Resolver, TsconfigDiscovery, TsconfigOptions, TsconfigReferences,
+    ExtendsField, ResolveOptions, Resolver, TsConfig, TsconfigDiscovery, TsconfigOptions,
+    TsconfigReferences,
 };
 
 use crate::error::VmError;
@@ -14,7 +16,9 @@ const MODULE_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs
 pub(crate) struct ModuleResolver {
     resolver: Resolver,
     project_root: PathBuf,
-    tsconfig_path: Option<PathBuf>,
+    /// The `tsconfig.json` found for the entry, then the configs it `extends`,
+    /// directly or not.
+    tsconfig_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -32,17 +36,23 @@ impl ModuleResolver {
         let tsconfig_path = find_tsconfig(entry_dir);
         let project_root = project_root(entry_dir, tsconfig_path.as_deref())?;
         let resolver = Resolver::new(resolve_options(tsconfig_path.as_deref()));
+        let tsconfig_files = tsconfig_path
+            .as_deref()
+            .map(tsconfig_chain)
+            .unwrap_or_default();
 
         Ok(Self {
             resolver,
             project_root,
-            tsconfig_path,
+            tsconfig_files,
         })
     }
 
-    /// The `tsconfig.json` this project resolves `paths` and `baseUrl` with.
-    pub(crate) fn tsconfig_path(&self) -> Option<&Path> {
-        self.tsconfig_path.as_deref()
+    /// The `tsconfig.json` this project resolves `paths` and `baseUrl` with, then the
+    /// configs it `extends` through a relative or absolute path, at any depth: what a
+    /// change to the project's resolution settings shows up in.
+    pub(crate) fn tsconfig_files(&self) -> &[PathBuf] {
+        &self.tsconfig_files
     }
 
     /// Canonical root of the project: the `tsconfig.json` directory, else the entry's.
@@ -126,6 +136,55 @@ fn find_tsconfig(start_dir: &Path) -> Option<PathBuf> {
         .ancestors()
         .map(|dir| dir.join("tsconfig.json"))
         .find(|candidate| candidate.is_file())
+}
+
+/// `tsconfig` and the configs it extends, following `extends` the way the resolver
+/// does for relative and absolute paths. Configs taken from packages (`"@scope/base"`,
+/// `"#config"`) live in `node_modules`, which is not watched, and are not followed. A
+/// config that cannot be read or parsed ends its branch; it is listed all the same, so
+/// fixing it shows up as a change.
+fn tsconfig_chain(tsconfig: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![tsconfig.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        if files.contains(&path) {
+            continue;
+        }
+        let extends = fs::read_to_string(&path)
+            .ok()
+            .and_then(|json| TsConfig::parse(false, &path, &path, json).ok())
+            .and_then(|config| config.extends);
+        let directory = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        files.push(path);
+        let specifiers = match &extends {
+            Some(ExtendsField::Single(specifier)) => std::slice::from_ref(specifier),
+            Some(ExtendsField::Multiple(specifiers)) => specifiers.as_slice(),
+            None => &[],
+        };
+        pending.extend(
+            specifiers
+                .iter()
+                .filter(|specifier| {
+                    specifier.starts_with('.') || Path::new(specifier).is_absolute()
+                })
+                .map(|specifier| extended_config_file(&directory.join(specifier))),
+        );
+    }
+    files
+}
+
+/// The file an `extends` path names: the file itself, a directory's `tsconfig.json`,
+/// else the path with `.json` appended.
+fn extended_config_file(path: &Path) -> PathBuf {
+    if path.is_file() {
+        return path.to_path_buf();
+    }
+    if path.is_dir() {
+        return path.join("tsconfig.json");
+    }
+    let mut file = path.as_os_str().to_owned();
+    file.push(".json");
+    PathBuf::from(file)
 }
 
 fn project_root(entry_dir: &Path, tsconfig_path: Option<&Path>) -> Result<PathBuf, VmError> {

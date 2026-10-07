@@ -57,4 +57,10 @@ impl WatchedFiles {
             *stamp = FileStamp::of(path);
         }
     }
+
+    /// Watches every path of `other` with its stamp, replacing the stamp of a path
+    /// both watch.
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
 }

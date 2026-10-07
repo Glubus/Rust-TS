@@ -147,6 +147,92 @@ fn a_tsconfig_paths_change_reloads_the_project() {
     assert_eq!(label, json!("bb"));
 }
 
+/// The failed reload reached `src/extra.ts`, which the loaded version never imported:
+/// fixing only that file must still reload the project.
+#[test]
+fn fixing_a_module_only_a_failed_reload_imported_reloads_the_project() {
+    let dir = TestCacheDir::new("hot-reload-new-broken-module");
+    let entry = write_project(dir.path(), "export const value = 1;\n");
+    let mut engine = Engine::new(&dir.engine_options()).expect("create engine");
+    engine.load_project("mod", &entry).expect("load project");
+
+    let extra = dir.path().join("src").join("extra.ts");
+    write(&extra, "export const extra = ;\n");
+    write(
+        &entry,
+        &format!("import \"./src/extra\";\n{COUNTING_ENTRY}"),
+    );
+    let broken = engine.reload_changed();
+    write(&extra, "export const extra = 2;\n");
+    let fixed = engine.reload_changed();
+
+    assert!(
+        matches!(broken.failed.as_slice(), [(id, _)] if id == "mod"),
+        "{broken:?}"
+    );
+    assert_eq!(fixed.reloaded, ["mod"], "{fixed:?}");
+    assert_eq!(read(&engine, "mod"), json!({ "value": 1, "calls": 1 }));
+}
+
+/// As above, with a new module that compiles but throws when evaluated.
+#[test]
+fn fixing_a_module_that_threw_in_a_failed_reload_reloads_the_project() {
+    let dir = TestCacheDir::new("hot-reload-new-throwing-module");
+    let entry = write_project(dir.path(), "export const value = 1;\n");
+    let mut engine = Engine::new(&dir.engine_options()).expect("create engine");
+    engine.load_project("mod", &entry).expect("load project");
+
+    let extra = dir.path().join("src").join("extra.ts");
+    write(&extra, "throw new Error(\"not ready\");\n");
+    write(
+        &entry,
+        &format!("import \"./src/extra\";\n{COUNTING_ENTRY}"),
+    );
+    let broken = engine.reload_changed();
+    write(&extra, "export const ready = true;\n");
+    let fixed = engine.reload_changed();
+
+    assert!(
+        matches!(broken.failed.as_slice(), [(id, _)] if id == "mod"),
+        "{broken:?}"
+    );
+    assert_eq!(fixed.reloaded, ["mod"], "{fixed:?}");
+}
+
+/// `paths` set in the config `tsconfig.json` extends.
+#[test]
+fn a_paths_change_in_an_extended_tsconfig_reloads_the_project() {
+    let dir = TestCacheDir::new("hot-reload-tsconfig-extends");
+    let entry = write_extending_project(dir.path());
+    let mut engine = Engine::new(&dir.engine_options()).expect("create engine");
+    engine.load_project("mod", &entry).expect("load project");
+    let before: Value = engine.call("mod", "read", ()).expect("read label");
+
+    write_base_tsconfig(dir.path(), "./bb.ts");
+    let report = engine.reload_changed();
+
+    assert_eq!(before, json!("a"));
+    assert_eq!(report.reloaded, ["mod"], "{report:?}");
+    let label: Value = engine.call("mod", "read", ()).expect("read label");
+    assert_eq!(label, json!("bb"));
+}
+
+#[test]
+fn loading_a_project_again_reads_an_edited_extended_tsconfig() {
+    let dir = TestCacheDir::new("load-tsconfig-extends");
+    let entry = write_extending_project(dir.path());
+    let mut engine = Engine::new(&dir.engine_options()).expect("create engine");
+    engine.load_project("mod", &entry).expect("load project");
+
+    write_base_tsconfig(dir.path(), "./bb.ts");
+    engine
+        .load_project("mod", &entry)
+        .expect("load project again");
+
+    let label: Value = engine.call("mod", "read", ()).expect("read label");
+    assert_eq!(label, json!("bb"));
+}
+
 #[test]
 fn inline_scripts_are_never_reloaded() {
     let dir = TestCacheDir::new("hot-reload-inline");
@@ -180,6 +266,38 @@ fn write_tsconfig(root: &Path, target: &str) {
         "compilerOptions": { "baseUrl": ".", "paths": { "@target": [target] } },
     });
     write(&root.join("tsconfig.json"), &tsconfig.to_string());
+}
+
+/// A project whose `tsconfig.json` takes `@target` from `configs/base.json`, through
+/// two levels of `extends`; returns the entry path.
+fn write_extending_project(root: &Path) -> PathBuf {
+    let entry = root.join("main.ts");
+    write(
+        &entry,
+        "import { label } from \"@target\";\nexport function read() { return label; }\n",
+    );
+    write(&root.join("a.ts"), "export const label = \"a\";\n");
+    write(&root.join("bb.ts"), "export const label = \"bb\";\n");
+    write(
+        &root.join("tsconfig.json"),
+        &json!({ "extends": "./configs/middle" }).to_string(),
+    );
+    write(
+        &root.join("configs").join("middle.json"),
+        &json!({ "extends": "./base.json" }).to_string(),
+    );
+    write_base_tsconfig(root, "./a.ts");
+    entry
+}
+
+fn write_base_tsconfig(root: &Path, target: &str) {
+    let tsconfig = json!({
+        "compilerOptions": { "baseUrl": "..", "paths": { "@target": [target] } },
+    });
+    write(
+        &root.join("configs").join("base.json"),
+        &tsconfig.to_string(),
+    );
 }
 
 fn write(path: &Path, contents: &str) {

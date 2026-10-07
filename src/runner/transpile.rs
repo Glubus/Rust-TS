@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::{ScriptCache, module_cache_key};
 use crate::compiler::{
-    CompiledModule, CompilerService, ModuleOrigin, ProjectState, TranspiledModule, WatchedFiles,
-    discover_project, extract_static_import_requests,
+    CompiledModule, CompilerService, ModuleOrigin, ProjectFailure, ProjectState, TranspiledModule,
+    WatchedFiles, discover_project, extract_static_import_requests,
 };
 use crate::error::VmError;
 
@@ -79,11 +79,12 @@ impl Transpiler {
 
     /// Resolves the project graph from `entry_path` and transpiles every module.
     /// Imports of `external_modules` stay unresolved; the module loader provides them.
+    /// A failure carries the files looked at before it.
     pub(crate) fn project(
         &mut self,
         entry_path: &Path,
         external_modules: &BTreeSet<String>,
-    ) -> Result<TranspiledProject, VmError> {
+    ) -> Result<TranspiledProject, ProjectFailure> {
         let memo = &mut self.memo;
         let previous = self.projects.remove(entry_path);
         let (project, state) = discover_project(
@@ -104,14 +105,18 @@ impl Transpiler {
         )?;
         self.projects.insert(entry_path.to_path_buf(), state);
 
+        let watched = project.watched;
         let mut modules = Vec::with_capacity(project.modules.len());
         let mut module_keys = Vec::with_capacity(project.modules.len());
         for module in project.modules {
             let path = Path::new(&module.display_path);
             let module_key = module_cache_key(&module.source, source_type(path));
-            let transpiled = self.transpiled(&module_key, |compiler| {
+            let transpiled = match self.transpiled(&module_key, |compiler| {
                 compiler.compile_module(&module.source, path)
-            })?;
+            }) {
+                Ok(transpiled) => transpiled,
+                Err(error) => return Err(ProjectFailure { error, watched }),
+            };
             modules.push(CompiledModule {
                 module_id: module.module_id,
                 transpiled_js: transpiled.js,
@@ -128,7 +133,7 @@ impl Transpiler {
             entry_module_id: project.entry_module_id,
             modules,
             module_keys,
-            watched: project.watched,
+            watched,
         })
     }
 

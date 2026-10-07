@@ -141,8 +141,11 @@ script's place in event delivery order.
 
 To reload projects when their files change, call `engine.reload_changed()` from
 your loop, for example once per second during development: it reloads the projects
-whose files changed and reports failures, without starting a thread. See
-[Hot Reload](engine.md#hot-reload).
+whose files changed and reports failures, without starting a thread. It watches the
+modules and their directories, the `tsconfig.json` and the configs it `extends`
+through a relative or absolute path (not configs from packages), the `package.json`
+files resolution read, and, after a failed reload, the files that reload reached.
+See [Hot Reload](engine.md#hot-reload).
 
 ## Unloading
 

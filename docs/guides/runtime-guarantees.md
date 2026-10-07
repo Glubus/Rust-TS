@@ -82,7 +82,11 @@ Preparing both versions temporarily needs memory for both.
 `reload_changed` detects changes through file sizes and modification times. A
 change that keeps both identical (same size, within the filesystem's timestamp
 resolution) is not seen; `load_project` always rereads every module whose stamp
-changed and resolves again whenever the watched structure changed.
+changed and resolves again whenever the watched structure changed. The watched
+files are the project's modules and their directories, its `tsconfig.json` and the
+configs that one `extends` through a relative or absolute path (configs from
+packages are not followed), the `package.json` files resolution read, and, after a
+failed reload, the files that reload reached (a module it newly imported, say).
 
 ## Transpilation cache
 

@@ -226,6 +226,11 @@
   the clock.
 - An interrupt during `ctx.hot.save` or `ctx.hot.dispose` is reported as
   `VmError::Interrupted` instead of `VmError::Execution`.
+- After a failed reload, `reload_changed` also watches the files the failed attempt
+  reached, so fixing a module that only the new version imports triggers the reload.
+- Configs that a project's `tsconfig.json` `extends` through a relative or absolute
+  path are watched: editing `paths` or `baseUrl` in a base config is picked up by
+  `reload_changed` and by the next `load_project`.
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an

@@ -10,6 +10,7 @@ use rquickjs::{
     WriteOptions, qjs,
 };
 
+use crate::compiler::{ProjectFailure, WatchedFiles};
 use crate::config::ScriptBuiltins;
 use crate::error::VmError;
 use crate::registry::{HostModuleStyle, NativeContext};
@@ -150,7 +151,13 @@ impl Engine {
     ) -> Result<Disposed, VmError> {
         let mut external_modules = self.registry.import_module_names()?;
         external_modules.insert(ENV_SPECIFIER.to_owned());
-        let project = self.transpiler.project(entry_path, &external_modules)?;
+        let project = match self.transpiler.project(entry_path, &external_modules) {
+            Ok(project) => project,
+            Err(ProjectFailure { error, watched }) => {
+                self.watch_failed_attempt(&id, watched);
+                return Err(error);
+            }
+        };
         self.install_host_modules()?;
         let graph_id = self.next_graph_id();
         let graph = self.module_store.insert_project(
@@ -174,12 +181,14 @@ impl Engine {
     /// `dispose_failed`.
     ///
     /// A project is checked through the size and modification time of its module
-    /// files, their directories, its `tsconfig.json` and the `package.json` files its
-    /// imports resolved through; nothing is read unless one of them changed. Inline
-    /// scripts are never reloaded here. A failed reload keeps the previous version
-    /// running and is reported once: the next report only lists it again after
-    /// another change. Call it from the host loop, for example once per second
-    /// during development; it starts no thread.
+    /// files, their directories, its `tsconfig.json` and the configs that one
+    /// `extends` by path, and the `package.json` files its imports resolved through;
+    /// nothing is read unless one of them changed. Inline scripts are never reloaded
+    /// here. A failed reload keeps the previous version running and is reported once:
+    /// the next report only lists it again after another change, to the previous
+    /// version's files or to those the failed reload had reached (a module it newly
+    /// imported, say). Call it from the host loop, for example once per second during
+    /// development; it starts no thread.
     pub fn reload_changed(&mut self) -> ReloadReport {
         let changed = self
             .scripts
@@ -220,6 +229,19 @@ impl Engine {
             .and_then(|script| script.origin.project.as_mut())
         {
             project.watched.restamp();
+        }
+    }
+
+    /// Adds the files a failed load of project `id` looked at to the files of its
+    /// loaded version: an edit to one of them, such as a module the failed version
+    /// imported first, may fix the load, so [`Engine::reload_changed`] must see it.
+    fn watch_failed_attempt(&mut self, id: &str, watched: WatchedFiles) {
+        if let Some(project) = self
+            .scripts
+            .get_mut(id)
+            .and_then(|script| script.origin.project.as_mut())
+        {
+            project.watched.merge(watched);
         }
     }
 
@@ -290,6 +312,9 @@ impl Engine {
             }
             Err(error) => {
                 self.module_store.remove_modules(&graph.module_ids)?;
+                if let Some(project) = origin.project {
+                    self.watch_failed_attempt(&id, project.watched);
+                }
                 Err(error)
             }
         }
