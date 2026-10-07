@@ -233,9 +233,11 @@
   call that reached the handler. The same holds for `async` host functions and for a
   `console` sink that panics (both returned normally with `"caught"` before). See [Errors And Panics In A Host
   Function](docs/guides/register-host-functions.md#errors-and-panics-in-a-host-function).
-- A load that ran out of memory failed with `non-error exception: Null`. It now says
-  `out of memory` and names `VmOptions::memory_limit_bytes`. The default 16 MiB holds
-  about 200 scripts.
+- An operation that ran out of memory failed with `non-error exception: Null`,
+  `Allocation failed while creating object` or a bare `out of memory`, depending on
+  which allocation failed. Once the allocated memory is within 10 % of the limit, it
+  now always says `out of memory` with the bytes allocated and names
+  `VmOptions::memory_limit_bytes`. The default 16 MiB holds about 200 scripts.
 - Host functions took the `Function.prototype` of the first script loaded, in every
   script (an rquickjs behavior). A script that patched its own `Function.prototype`
   changed the host functions every other script saw, and `hostFunction instanceof

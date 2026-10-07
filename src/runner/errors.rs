@@ -6,9 +6,21 @@ use crate::error::VmError;
 
 use super::module_loader::{RUNTIME_MODULE_PREFIX, WorkerModuleStore};
 
+/// How every out of memory starts once described: QuickJS's own `InternalError`, an
+/// allocation rquickjs failed ([`rquickjs::Error::Allocation`]) and a context the engine
+/// could not create, so the engine reports them alike wherever the allocation failed.
+pub(crate) const OUT_OF_MEMORY: &str = "out of memory";
+
 pub(crate) fn js_error(error: rquickjs::Error) -> VmError {
     VmError::Execution {
-        details: error.to_string(),
+        details: rquickjs_error_details(&error),
+    }
+}
+
+fn rquickjs_error_details(error: &rquickjs::Error) -> String {
+    match error {
+        rquickjs::Error::Allocation => OUT_OF_MEMORY.to_owned(),
+        error => error.to_string(),
     }
 }
 
@@ -33,7 +45,7 @@ pub(crate) fn caught_js_error_details(error: &rquickjs::CaughtError<'_>) -> Stri
     match error {
         rquickjs::CaughtError::Exception(exception) => exception_details(exception),
         rquickjs::CaughtError::Value(value) => js_value_details(value),
-        rquickjs::CaughtError::Error(error) => error.to_string(),
+        rquickjs::CaughtError::Error(error) => rquickjs_error_details(error),
     }
 }
 

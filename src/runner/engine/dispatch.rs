@@ -6,7 +6,7 @@ use rquickjs::{CatchResultExt, CaughtError, Ctx, Value as JsValue};
 use crate::contract::{JsArgs, JsDecode, JsEncode};
 use crate::error::VmError;
 
-use super::super::errors::{caught_js_error, in_typescript, js_error};
+use super::super::errors::{OUT_OF_MEMORY, caught_js_error, in_typescript, js_error};
 use super::super::events::deliver;
 use super::super::host_fn;
 use super::Engine;
@@ -260,12 +260,14 @@ impl Engine {
         }
     }
 
-    /// An error as the host sees it: TypeScript locations, and an out of memory that
-    /// QuickJS could only report as a thrown `null` said as such.
+    /// An error as the host sees it: TypeScript locations, and an out of memory, however
+    /// QuickJS or rquickjs described it, said as such with the limit to raise.
     fn reported(&self, error: VmError) -> VmError {
         match in_typescript(error, &self.module_store) {
             VmError::Execution { details }
-                if details.is_empty() || details.starts_with(NULL_EXCEPTION) =>
+                if details.is_empty()
+                    || details.starts_with(NULL_EXCEPTION)
+                    || details.starts_with(OUT_OF_MEMORY) =>
             {
                 let stats = self.memory_stats();
                 if stats.malloc_limit_bytes != 0
