@@ -18,7 +18,7 @@ use crate::types::{ReloadReport, ScriptId};
 use super::super::errors::{caught_js_error, js_error};
 use super::super::host_fn::HostFnClass;
 use super::super::host_promises::HostPromises;
-use super::super::module_loader::{ENV_SPECIFIER, RuntimeModuleGraph};
+use super::super::module_loader::{ENV_SPECIFIER, RuntimeModuleGraph, WorkerModuleStore};
 use super::super::retained::Retained;
 use super::super::timers::timer_hooks;
 use super::{
@@ -363,7 +363,7 @@ impl Engine {
                 self.envs
                     .insert(graph.graph_id, Persistent::save(&ctx, env));
             }
-            let exports = import_exports(&ctx, &graph.entry_module_id)?;
+            let exports = import_exports(&ctx, &self.module_store, &graph.entry_module_id)?;
             Ok((exports, hooks))
         });
         match self.attribute_interrupt(self.settle(mounted)) {
@@ -603,8 +603,15 @@ impl Engine {
     }
 }
 
-fn import_exports(ctx: &Ctx<'_>, entry_module_id: &str) -> Result<Retained, VmError> {
-    let exports = Module::import(ctx, entry_module_id)
+/// Imports a script's entry module, which only the engine may import from outside the
+/// script's graph, and returns its namespace.
+fn import_exports(
+    ctx: &Ctx<'_>,
+    module_store: &WorkerModuleStore,
+    entry_module_id: &str,
+) -> Result<Retained, VmError> {
+    let exports = module_store
+        .host_import(entry_module_id, || Module::import(ctx, entry_module_id))?
         .and_then(|promise| promise.finish::<Object<'_>>())
         .catch(ctx)
         .map_err(caught_js_error)?;

@@ -14,4 +14,7 @@ pub(super) struct ModuleStoreInner {
     /// TypeScript origin of each script module, by runtime module id; host modules
     /// have none.
     pub(super) origins: HashMap<String, ModuleOrigin>,
+    /// The script entry module the engine itself is importing, which no other graph's
+    /// module imports; cleared by its resolution.
+    pub(super) host_import: Option<String>,
 }

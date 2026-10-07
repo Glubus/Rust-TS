@@ -6,10 +6,15 @@ use crate::runner::module_loader::graph::{
 };
 
 pub(super) fn resolve_from_store(
-    store: &ModuleStoreInner,
+    store: &mut ModuleStoreInner,
     base: &str,
     name: &str,
 ) -> JsResult<String> {
+    if store.host_import.as_deref() == Some(name) {
+        store.host_import = None;
+        return Ok(name.to_owned());
+    }
+
     // A script in a context group reaches its own environment and its own instance of
     // each host module, since the context has no per-script globals to read.
     if let Some(graph_id) = graph_of(base).filter(|id| store.grouped_graphs.contains(id)) {
@@ -21,7 +26,12 @@ pub(super) fn resolve_from_store(
         }
     }
 
-    if store.sources.contains_key(name) {
+    // Host modules are shared and reachable by name. A script module (or a group
+    // script's environment or host instance) is only reachable from its own graph:
+    // naming another script's module id must not hand out that script's module.
+    if store.sources.contains_key(name)
+        && graph_of(name).is_none_or(|graph_id| graph_of(base) == Some(graph_id))
+    {
         return Ok(name.to_owned());
     }
 

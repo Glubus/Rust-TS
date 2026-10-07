@@ -215,6 +215,10 @@
 
 ### Fixes
 
+- A script can no longer import another script's modules by naming their internal
+  ids (`rustts://graph/<n>/...`, `rustts:env/<n>`, `rustts:host/<n>/...`), statically
+  or through a run-time `import()`; only host modules and modules of the script's own
+  graph resolve.
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an

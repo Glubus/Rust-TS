@@ -112,7 +112,9 @@ The project graph is resolved from the entry file, following:
 - type-only imports and re-exports, ignored at runtime
 
 An import naming a registered host module (a contract's `IMPORT_MODULE`) always
-resolves to that module, never to a file or package of the same name.
+resolves to that module, never to a file or package of the same name. A script
+never reaches another script's modules: only the host modules and its own graph
+resolve, in a context group too.
 
 The project root is the directory of the nearest `tsconfig.json` above the entry
 file, or the entry file's directory when there is none. An import that resolves

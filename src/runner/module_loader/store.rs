@@ -82,11 +82,25 @@ impl WorkerModuleStore {
     }
 
     pub(super) fn resolve(&self, base: &str, name: &str) -> JsResult<String> {
-        let guard = self
+        let mut guard = self
             .inner
             .lock()
             .map_err(|_| Error::new_resolving_message(base, name, "module store lock poisoned"))?;
-        resolution::resolve_from_store(&guard, base, name)
+        resolution::resolve_from_store(&mut guard, base, name)
+    }
+
+    /// Lets the engine import a script's entry module, `module_id`, from outside its
+    /// graph, once, while `import` runs: a script module is otherwise only reachable
+    /// from its own graph.
+    pub(crate) fn host_import<T>(
+        &self,
+        module_id: &str,
+        import: impl FnOnce() -> T,
+    ) -> std::result::Result<T, VmError> {
+        self.lock_store()?.host_import = Some(module_id.to_owned());
+        let imported = import();
+        self.lock_store()?.host_import = None;
+        Ok(imported)
     }
 
     /// `path:line:column` of the TypeScript behind a 1-based position in a loaded

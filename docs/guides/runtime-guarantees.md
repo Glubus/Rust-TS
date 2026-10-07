@@ -23,6 +23,10 @@ stack limit and garbage collector. This is not process isolation or a per-script
 memory quota. Host functions are capabilities granted to every script of that
 engine.
 
+A script's imports resolve only to the registered host modules and to the modules of
+its own graph. One script cannot import another script's modules, even by naming
+their internal module id, and that holds within a context group too.
+
 ## Execution budget
 
 `VmOptions::execution_timeout` defaults to 5 seconds. It limits each load,
