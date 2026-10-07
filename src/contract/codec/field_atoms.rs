@@ -13,6 +13,8 @@ use rquickjs::{
 };
 use rustc_hash::FxHashMap;
 
+use super::define_atom_property;
+
 /// Atoms by field-name address and length, owned until the runtime is freed.
 struct FieldAtoms {
     runtime: NonNull<qjs::JSRuntime>,
@@ -45,29 +47,7 @@ pub(super) fn define_field<'js>(
     name: &'static str,
     value: JsValue<'js>,
 ) -> JsResult<()> {
-    let atom = field_atom(ctx, name)?;
-    let ctx_ptr = ctx.as_raw().as_ptr();
-    // SAFETY: `value` belongs to `ctx`'s runtime. The property takes its own reference,
-    // since `JS_DefinePropertyValue` consumes the one it is given; `value` then drops
-    // its reference and its context handle as usual.
-    let owned = unsafe { qjs::JS_DupValue(ctx_ptr, value.as_raw()) };
-    drop(value);
-    // SAFETY: `object` belongs to `ctx`; `JS_DefinePropertyValue` takes ownership of
-    // `owned` and only borrows `atom`, which the cache keeps alive for the runtime's
-    // lifetime.
-    let defined = unsafe {
-        qjs::JS_DefinePropertyValue(
-            ctx_ptr,
-            object.as_value().as_raw(),
-            atom,
-            owned,
-            qjs::JS_PROP_C_W_E as _,
-        )
-    };
-    if defined < 0 {
-        return Err(JsError::Exception);
-    }
-    Ok(())
+    define_atom_property(object, field_atom(ctx, name)?, value)
 }
 
 /// The atom of `name`, created on first use in this runtime.

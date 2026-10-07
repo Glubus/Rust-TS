@@ -160,9 +160,11 @@ check behave as before.
   `__rustts_on expects ...`.
 - The `__vm_handlers` global is gone. Handlers change only through `ctx.on` and
   `ctx.off`.
-- `#[derive(TsSchema)]` encoders define each field as an own data property, as
-  `JSON.parse` does: a setter a script put on `Object.prototype` no longer runs, and
-  a field named `__proto__` becomes an own property.
+- Encoders define each field or key as an own data property, as `JSON.parse` does:
+  derived structs (`#[derive(TsSchema)]`), maps, `serde_json::Value`,
+  `#[serde(flatten)]` fields and internally tagged newtype variants. A setter a
+  script put on `Object.prototype` no longer runs, and a field or key named
+  `__proto__` becomes an ordinary own property.
 - Packages in `node_modules` that ship both builds resolve to their ESM entry (the
   `exports` `import` condition, or the `module` field) instead of `main`. Check that
   the scripts still work with the ESM build of each such dependency.

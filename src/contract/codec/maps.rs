@@ -9,7 +9,7 @@ use std::hash::{BuildHasher, Hash};
 use rquickjs::{Ctx, Filter, Object, Result as JsResult, String as JsString, Value as JsValue};
 
 use super::stack_text::StackText;
-use super::{JsDecode, JsEncode, at_path, codec_error, expect_object};
+use super::{JsDecode, JsEncode, at_path, codec_error, define_property, expect_object};
 
 /// Room for the decimal text of any integer key, `-170141183460469231731687303715884105728`.
 const INTEGER_KEY_CAPACITY: usize = 40;
@@ -90,7 +90,7 @@ where
             let value = value
                 .encode_js(ctx)
                 .map_err(|error| at_path(error, format_args!("[{text}]")))?;
-            object.set(text, value)
+            define_property(&object, text, value)
         })?;
     }
     Ok(object.into_value())

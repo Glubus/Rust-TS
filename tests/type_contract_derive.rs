@@ -313,6 +313,37 @@ fn flatten_merges_like_serde() {
     assert_decodes_like_serde::<Open>(&serde_json::to_string(&open).expect("serialize"));
 }
 
+#[test]
+fn a_flattened_proto_key_stays_an_own_property_both_ways() {
+    let open = Open {
+        name: String::from("a"),
+        rest: BTreeMap::from([(String::from("__proto__"), json!({ "polluted": true }))]),
+    };
+    let own_key = with_js(|ctx| {
+        let encoded = open.encode_js(ctx).expect("encode natively");
+        let check: rustts::js::Function<'_> = ctx
+            .eval(
+                "(o) => Object.getPrototypeOf(o) === Object.prototype \
+                 && Object.prototype.hasOwnProperty.call(o, '__proto__') \
+                 && o.polluted === undefined",
+            )
+            .expect("compile check");
+        check.call::<_, bool>((encoded,)).expect("run check")
+    });
+    assert!(
+        own_key,
+        "the encoded `__proto__` key must be an own property"
+    );
+
+    let decoded = with_js(|ctx| {
+        let parsed = ctx
+            .json_parse(r#"{"name":"a","__proto__":{"polluted":true}}"#)
+            .expect("JSON.parse");
+        Open::decode_js(ctx, parsed).expect("decode natively")
+    });
+    assert_eq!(decoded, open);
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TsSchema)]
 #[serde(deny_unknown_fields)]
 struct Strict {

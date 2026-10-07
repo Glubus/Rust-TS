@@ -336,6 +336,22 @@ fn json_values_cross_structurally() {
 }
 
 #[test]
+fn proto_keys_of_maps_and_json_objects_stay_own_properties() {
+    let own_proto = "(o) => Object.getPrototypeOf(o) === Object.prototype \
+        && Object.prototype.hasOwnProperty.call(o, '__proto__') \
+        && o.__proto__ !== Object.prototype && o.polluted === undefined";
+    let map = HashMap::from([(String::from("__proto__"), json!({ "polluted": true }))]);
+    let tree = BTreeMap::from([(String::from("__proto__"), 1_u8)]);
+    let value = json!({ "__proto__": { "polluted": true } });
+
+    assert!(check_encoded(&map, own_proto));
+    assert!(check_encoded(&tree, own_proto));
+    assert!(check_encoded(&value, own_proto));
+    assert_round_trips(&[map]);
+    assert_round_trips(&[value]);
+}
+
+#[test]
 fn native_bytes_encode_as_uint8_array() {
     let bytes = NativeBytes::new(vec![1, 2, 255]);
 

@@ -256,6 +256,90 @@ pub fn expect_object<'js>(value: JsValue<'js>, rust: &'static str) -> JsResult<O
         .map_err(|value| mismatch(&value, rust, "object"))
 }
 
+/// Defines `object[key] = value` as an own enumerable, writable, configurable data
+/// property, as `JSON.parse` would. Unlike `Object::set`, it never runs a setter, so a
+/// `"__proto__"` key stays an ordinary property instead of replacing the prototype.
+pub(crate) fn define_property<'js>(
+    object: &Object<'js>,
+    key: &str,
+    value: JsValue<'js>,
+) -> JsResult<()> {
+    // SAFETY: the context of `object` is live and `key` is valid UTF-8 of `key.len()`
+    // bytes, which QuickJS copies.
+    let atom = unsafe {
+        qjs::JS_NewAtomLen(
+            object.ctx().as_raw().as_ptr(),
+            key.as_ptr().cast(),
+            key.len() as _,
+        )
+    };
+    define_with_new_atom(object, atom, value)
+}
+
+/// [`define_property`] with a key that is a JavaScript value, such as a property name
+/// read from another object.
+pub(crate) fn define_property_named<'js>(
+    object: &Object<'js>,
+    key: &JsValue<'js>,
+    value: JsValue<'js>,
+) -> JsResult<()> {
+    // SAFETY: `key` is a live value of the context of `object`; `JS_ValueToAtom` only
+    // borrows it.
+    let atom = unsafe { qjs::JS_ValueToAtom(object.ctx().as_raw().as_ptr(), key.as_raw()) };
+    define_with_new_atom(object, atom, value)
+}
+
+/// Defines the property `atom`, a reference just created for it, and releases `atom`.
+fn define_with_new_atom<'js>(
+    object: &Object<'js>,
+    atom: qjs::JSAtom,
+    value: JsValue<'js>,
+) -> JsResult<()> {
+    if atom == qjs::JS_ATOM_NULL {
+        return Err(JsError::Exception);
+    }
+    let defined = define_atom_property(object, atom, value);
+    // SAFETY: `atom` is the reference the caller created; nothing else kept it.
+    unsafe { qjs::JS_FreeAtom(object.ctx().as_raw().as_ptr(), atom) };
+    defined
+}
+
+/// [`define_property`] with an atom key, which it only borrows. It goes through the C
+/// API directly: `Object::prop` would build and release two `undefined` accessor values,
+/// each holding the context, for every property.
+pub(crate) fn define_atom_property<'js>(
+    object: &Object<'js>,
+    atom: qjs::JSAtom,
+    value: JsValue<'js>,
+) -> JsResult<()> {
+    /// A data property, enumerable, writable and configurable, failing with an exception.
+    const FLAGS: u32 = qjs::JS_PROP_HAS_VALUE
+        | qjs::JS_PROP_HAS_ENUMERABLE
+        | qjs::JS_PROP_HAS_WRITABLE
+        | qjs::JS_PROP_HAS_CONFIGURABLE
+        | qjs::JS_PROP_C_W_E
+        | qjs::JS_PROP_THROW;
+    let ctx = object.ctx().as_raw().as_ptr();
+    // SAFETY: `object` and `value` belong to `ctx`; `JS_DefineProperty` only borrows
+    // them and `atom`, which the caller keeps alive, and takes its own reference to
+    // `value` for the property. `value` then drops its reference as usual.
+    let defined = unsafe {
+        qjs::JS_DefineProperty(
+            ctx,
+            object.as_value().as_raw(),
+            atom,
+            value.as_raw(),
+            qjs::JS_UNDEFINED,
+            qjs::JS_UNDEFINED,
+            FLAGS as _,
+        )
+    };
+    if defined < 0 {
+        return Err(JsError::Exception);
+    }
+    Ok(())
+}
+
 /// Decodes item `index` of `array`, prefixing errors with `[index]`.
 pub(crate) fn decode_item<'js, T: JsDecode>(
     ctx: &Ctx<'js>,

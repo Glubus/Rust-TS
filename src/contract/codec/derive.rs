@@ -10,7 +10,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use super::field_atoms::define_field;
 pub use super::js_text::JsText;
-use super::{JsDecode, JsEncode, at_path, codec_error};
+use super::{JsDecode, JsEncode, at_path, codec_error, define_property_named};
 
 /// Encodes `value` through the serde_json reference path (`#[rustts(codec = "json")]`).
 pub fn json_encode<'js, T: Serialize + ?Sized>(
@@ -175,7 +175,7 @@ pub fn merge_object<'js>(
         })?;
     for property in source.props::<JsString<'js>, JsValue<'js>>() {
         let (key, value) = property?;
-        target.set(key.into_value(), value)?;
+        define_property_named(target, key.as_value(), value)?;
     }
     Ok(())
 }
@@ -192,7 +192,7 @@ pub fn object_without<'js>(
     for property in object.props::<JsString<'js>, JsValue<'js>>() {
         let (key, value) = property?;
         if !excluded.contains(&JsText::new(key.clone(), "object key")?.as_str()) {
-            rest.set(key.into_value(), value)?;
+            define_property_named(&rest, key.as_value(), value)?;
         }
     }
     Ok(rest)

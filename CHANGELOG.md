@@ -63,10 +63,12 @@
   functions render `Promise<Output>` in generated declarations and SDK.
 - `VmOptions` has a new `builtins` field; add it to struct literals that list every
   field (`..VmOptions::default()` keeps working).
-- Derived encoders (`#[derive(TsSchema)]`) define each field as an own data
-  property, as `JSON.parse` does, instead of assigning it: a setter a script put on
-  `Object.prototype` no longer runs, and a field named `__proto__` becomes an own
-  property instead of changing the prototype.
+- Encoders define each field or key as an own data property, as `JSON.parse` does,
+  instead of assigning it: derived structs (`#[derive(TsSchema)]`), maps,
+  `serde_json::Value`, `#[serde(flatten)]` fields and internally tagged newtype
+  variants. A setter a script put on `Object.prototype` no longer runs, and a field
+  or key named `__proto__` becomes an ordinary own property instead of replacing the
+  object's prototype.
 - The error for a dynamic `import()` now reads `<path>: dynamic import() is not
   supported; use a static import` (it was `dynamic import is not supported in V0
   module graphs`); update code that matches on the old text.
@@ -246,6 +248,12 @@
   bytes instead of failing with `expected array, got object`. `NaN` and `±Infinity`
   now pass `number` schemas, matching the native codec. `serde_json::Value` decoding
   still rejects non-finite numbers.
+- Map, `serde_json::Value`, `#[serde(flatten)]` and internally tagged newtype encoders
+  define own data properties instead of assigning them, as derived struct encoders do
+  (see Migration): a `"__proto__"` key no longer replaces the object's prototype, and
+  inherited setters never run. They define through the QuickJS C API, which costs no
+  more than the assignment did for a 16-key object and is about 5 % cheaper for a
+  1024-key one.
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an

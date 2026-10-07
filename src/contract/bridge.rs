@@ -8,7 +8,9 @@ use rquickjs::{
 use serde_json::{Map, Number, Value};
 
 use super::JsEncode;
-use super::codec::{array_length, at_index, at_path, cautious_capacity, exact_integer};
+use super::codec::{
+    array_length, at_index, at_path, cautious_capacity, define_property, exact_integer,
+};
 
 /// Stand-ins for the non-finite numbers in a validation snapshot, where `serde_json`
 /// numbers must be finite. No JavaScript number snapshots to an unsigned integer above
@@ -174,7 +176,7 @@ pub(crate) fn json_to_js_value<'js>(ctx: &Ctx<'js>, value: &Value) -> JsResult<J
         Value::Object(values) => {
             let object = Object::new(ctx.clone())?;
             for (key, value) in values {
-                object.set(key.as_str(), json_to_js_value(ctx, value)?)?;
+                define_property(&object, key.as_str(), json_to_js_value(ctx, value)?)?;
             }
             Ok(object.into_value())
         }
