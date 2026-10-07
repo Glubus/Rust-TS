@@ -55,6 +55,19 @@ use expand::expand_ts_schema;
 ///   field type's `TsSchema`, which is then not required.
 /// - `#[rustts(rename = "fieldName")]` and `#[rustts(optional)]`: field overrides for
 ///   `schema_only` types (elsewhere they would make the schema disagree with the codecs).
+///
+/// # Panics
+///
+/// A `#[serde(flatten)]` field or an internally tagged newtype variant merges its type's
+/// schema into the surrounding object. Types written as scalars, strings, sequences,
+/// tuples, arrays or `HashMap`/`BTreeMap` with integer keys are compile errors; the
+/// derive cannot see through other types, so the generated `TsSchema::ts_type()` (and
+/// registering a contract that uses the type) panics when:
+///
+/// - the merged type's schema is not an object, a string-keyed map, `serde_json::Value`
+///   or unit: an enum, a newtype over a scalar, an integer-keyed map behind a type alias;
+/// - a merged field has the same name as another field of the object;
+/// - two flattened maps have different value types.
 #[proc_macro_derive(TsSchema, attributes(rustts, serde))]
 pub fn derive_ts_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);

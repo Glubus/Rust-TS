@@ -1,7 +1,7 @@
 //! Compile-time checks: shapes TsSchema cannot describe, and serde attributes the native
 //! codec cannot mirror without an explicit `#[rustts(codec = "json")]` opt-in.
 
-use syn::{DeriveInput, Error, Fields, Result, Type};
+use syn::{DeriveInput, Error, Fields, GenericArgument, PathArguments, Result, Type};
 
 use crate::attrs::{JsonOnly, SchemaOnly};
 use crate::directions::Directions;
@@ -17,7 +17,7 @@ pub(crate) fn check(container: &Container<'_>, input: &DeriveInput) -> Result<()
         check_flatten_types(shape)?;
         check_field_codecs(shape)?;
     }
-    check_internal_tuple_variants(container)?;
+    check_internal_variants(container)?;
     if container.codecs() == Directions::NONE {
         return Ok(());
     }
@@ -69,43 +69,118 @@ fn check_flatten_placement(shape: &Shape<'_>) -> Result<()> {
     }
 }
 
-/// Rejects flattened fields whose type is syntactically never an object or a map; other
-/// types are checked when the schema is built.
+/// Rejects flattened fields whose type is syntactically never an object or a string-keyed
+/// map; other types are checked when the schema is built.
 fn check_flatten_types(shape: &Shape<'_>) -> Result<()> {
-    match shape
+    shape
         .fields
         .iter()
         .filter(|field| field.attrs.flatten)
         .map(|field| field.option_inner().unwrap_or(field.ty))
-        .find(|ty| is_never_object(ty))
-    {
-        Some(ty) => Err(Error::new_spanned(
-            ty,
-            "serde flatten requires a struct or map type",
+        .try_for_each(|ty| check_mergeable(ty, "serde flatten requires a struct or map type"))
+}
+
+/// Rejects `ty`, which serde merges into the surrounding object (a flattened field or an
+/// internally tagged newtype payload), when it is syntactically never an object or a
+/// string-keyed map.
+fn check_mergeable(ty: &Type, requirement: &str) -> Result<()> {
+    if is_never_object(ty) {
+        return Err(Error::new_spanned(ty, requirement));
+    }
+    match numeric_map_key(ty) {
+        Some(key) => Err(Error::new_spanned(
+            key,
+            "serde cannot merge a map with numeric keys into an object; use a string-keyed map",
         )),
         None => Ok(()),
     }
 }
 
+const INTEGER_TYPES: &[&str] = &[
+    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
+];
+
 /// Scalars, strings, sequences, non-empty tuples and arrays: values serde cannot flatten.
 fn is_never_object(ty: &Type) -> bool {
     const NON_OBJECT_TYPES: &[&str] = &[
-        "bool", "char", "str", "String", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16",
-        "i32", "i64", "i128", "isize", "f32", "f64", "Vec", "VecDeque", "HashSet", "BTreeSet",
+        "bool", "char", "str", "String", "f32", "f64", "Vec", "VecDeque", "HashSet", "BTreeSet",
     ];
-    match ty {
+    match peel(ty) {
         Type::Array(_) | Type::Slice(_) => true,
         Type::Tuple(tuple) => !tuple.elems.is_empty(),
-        Type::Reference(reference) => is_never_object(&reference.elem),
-        Type::Paren(inner) => is_never_object(&inner.elem),
-        Type::Group(inner) => is_never_object(&inner.elem),
         Type::Path(path) if path.qself.is_none() => {
             path.path.segments.last().is_some_and(|segment| {
-                NON_OBJECT_TYPES.contains(&segment.ident.to_string().as_str())
+                let name = segment.ident.to_string();
+                NON_OBJECT_TYPES.contains(&name.as_str()) || INTEGER_TYPES.contains(&name.as_str())
             })
         }
         _ => false,
     }
+}
+
+/// The key type of a `HashMap` or `BTreeMap` written with an integer key.
+fn numeric_map_key(ty: &Type) -> Option<&Type> {
+    let Type::Path(path) = peel(ty) else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if path.qself.is_some() || !matches!(segment.ident.to_string().as_str(), "HashMap" | "BTreeMap")
+    {
+        return None;
+    }
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    let key = arguments.args.iter().find_map(|argument| match argument {
+        GenericArgument::Type(key) => Some(key),
+        _ => None,
+    })?;
+    is_integer(key).then_some(key)
+}
+
+fn is_integer(ty: &Type) -> bool {
+    match peel(ty) {
+        Type::Path(path) if path.qself.is_none() => path
+            .path
+            .get_ident()
+            .is_some_and(|ident| INTEGER_TYPES.contains(&ident.to_string().as_str())),
+        _ => false,
+    }
+}
+
+/// `ty` without references, parentheses and invisible groups.
+fn peel(ty: &Type) -> &Type {
+    match ty {
+        Type::Reference(reference) => peel(&reference.elem),
+        Type::Paren(inner) => peel(&inner.elem),
+        Type::Group(inner) => peel(&inner.elem),
+        _ => ty,
+    }
+}
+
+/// Internally tagged variants merge their payload into the tag's object: tuple variants
+/// cannot, newtype payloads must be structs or string-keyed maps.
+fn check_internal_variants(container: &Container<'_>) -> Result<()> {
+    let (Tagging::Internal { .. }, Body::Enum(variants)) = (container.tagging(), &container.body)
+    else {
+        return Ok(());
+    };
+    for variant in variants {
+        match variant.shape.style {
+            Style::Tuple => {
+                return Err(Error::new_spanned(
+                    variant.original,
+                    "serde internally tagged tuple enum variants are not supported",
+                ));
+            }
+            Style::Newtype => check_mergeable(
+                variant.shape.fields[0].ty,
+                "serde internally tagged newtype variants require a struct or map type",
+            )?,
+            Style::Unit | Style::Struct => {}
+        }
+    }
+    Ok(())
 }
 
 fn check_field_codecs(shape: &Shape<'_>) -> Result<()> {
@@ -117,23 +192,6 @@ fn check_field_codecs(shape: &Shape<'_>) -> Result<()> {
         Some(field) => Err(Error::new_spanned(
             field.original,
             "`#[rustts(with)]` and `#[rustts(codec = \"json\")]` both choose this field's codec; keep one",
-        )),
-        None => Ok(()),
-    }
-}
-
-fn check_internal_tuple_variants(container: &Container<'_>) -> Result<()> {
-    let (Tagging::Internal { .. }, Body::Enum(variants)) = (container.tagging(), &container.body)
-    else {
-        return Ok(());
-    };
-    match variants
-        .iter()
-        .find(|variant| variant.shape.style == Style::Tuple)
-    {
-        Some(variant) => Err(Error::new_spanned(
-            variant.original,
-            "serde internally tagged tuple enum variants are not supported",
         )),
         None => Ok(()),
     }

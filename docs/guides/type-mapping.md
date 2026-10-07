@@ -115,8 +115,11 @@ The index signature also admits the declared fields' types, as TypeScript requir
 schema validation checks declared fields against their own types, every other key
 against `V`, and strict validation accepts those extra keys. Flattening a value that
 is neither a struct nor a string-keyed map is a compile error when the field type
-shows it (`String`, `Vec<T>`, tuples, …) and a panic naming the problem when the
-schema is built otherwise.
+shows it (`String`, `Vec<T>`, tuples, `HashMap<u32, V>` and other integer-keyed maps,
+…), and a panic naming the problem when the schema is built otherwise: the type is
+hidden behind an alias or a newtype, a merged field duplicates another, or two
+flattened maps have different value types. The payload of an internally tagged
+newtype variant, which serde merges the same way, follows the same rule.
 
 Missing fields decode like serde: `Option<T>` becomes `None`, fields with
 `default` take their default, anything else fails.

@@ -1,0 +1,17 @@
+error: serde cannot merge a map with numeric keys into an object; use a string-keyed map
+ --> tests/ui/derive_schema/flatten_numeric_map_key.rs:9:20
+  |
+9 |     extra: HashMap<u32, String>,
+  |                    ^^^
+
+error: serde cannot merge a map with numeric keys into an object; use a string-keyed map
+  --> tests/ui/derive_schema/flatten_numeric_map_key.rs:15:21
+   |
+15 |     Scores(BTreeMap<i64, f64>),
+   |                     ^^^
+
+error: serde internally tagged newtype variants require a struct or map type
+  --> tests/ui/derive_schema/flatten_numeric_map_key.rs:21:11
+   |
+21 |     Count(u32),
+   |           ^^^

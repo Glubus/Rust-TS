@@ -84,6 +84,12 @@ TypeScript). A schema for a type that does not declare it can no longer be
 written by hand; implement `TsSchema`, `JsDecode` and `JsEncode` for a wrapper type
 when you need that.
 
+`#[derive(TsSchema)]` now rejects at compile time a `#[serde(flatten)]` field over
+an integer-keyed `HashMap` or `BTreeMap`, and a `#[serde(tag = "…")]` enum with a
+newtype variant over such a map or a scalar. Use a string-keyed map or a struct
+payload. These types already panicked at registration, so no working code is
+affected.
+
 ## 3. Move `schema()` to `HostContext`
 
 `HostContract::schema()` is gone. Functions and callbacks take their schema from

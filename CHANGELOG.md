@@ -73,6 +73,11 @@
   `T[]`. Script code that builds such values with a different length, or types them
   as `T[]`, may need updating. Schema validation now rejects arrays of the wrong
   length.
+- Types with `#[serde(flatten)]` on an integer-keyed `HashMap` or `BTreeMap`, or
+  `#[serde(tag = "…")]` enums with a newtype variant over such a map or a scalar, no
+  longer compile with `#[derive(TsSchema)]`. Use a string-keyed map or a struct
+  payload. These types already panicked at registration, so no working code is
+  affected.
 - The error for a dynamic `import()` now reads `<path>: dynamic import() is not
   supported; use a static import` (it was `dynamic import is not supported in V0
   module graphs`); update code that matches on the old text.
@@ -270,6 +275,10 @@
   too.
 - `TsSchema` is implemented for `HashMap<K, V, S>` and `HashSet<T, S>` with any
   hasher, like the codecs.
+- `#[derive(TsSchema)]` on a `#[serde(flatten)]` map with integer keys
+  (`HashMap<u32, _>`, `BTreeMap<i64, _>`, …), or on an internally tagged newtype
+  variant over such a map or a scalar, is a compile error. Before, building the schema
+  panicked when the contract was registered.
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an
