@@ -9,6 +9,13 @@ It fits the way a game or an application already works: its main loop, simulatio
 step or command handler calls into scripts when it needs them. RustTS spawns no
 threads and has no event loop; nothing runs unless the host calls `Engine`.
 
+[`examples/game_loop.rs`](https://github.com/Glubus/Rust-TS/blob/main/examples/game_loop.rs)
+puts most of this page together in one frame loop: a [context group](#context-groups)
+of two scripts, [timers](#timers), [events](#events), [requests](#requests), an async
+host function resumed by [`pump`](#deferred-script-results), and a reload that
+[keeps state](#keep-state-across-reloads). Run it with
+`cargo run --example game_loop --features derive`.
+
 ## Load And Call
 
 ```rust
@@ -46,14 +53,18 @@ engine.emit("user.found", &UserFoundPayload { user_id: 7 })?;
 - `load_project(id, entry_path)` loads a multi-file project from its entry file:
   the static ESM graph is resolved from disk (relative imports, `index` modules,
   `tsconfig.json` `paths` and `baseUrl`, packages in the project's
-  `node_modules`).
-- Dynamic `import()` is rejected at load in both cases.
+  `node_modules`, resolved as ESM: see
+  [Supported Project Imports](load-scripts-and-projects.md#supported-project-imports)).
+- Dynamic `import()` is rejected at load in both cases, with
+  `dynamic import() is not supported; use a static import`.
 - `unload_script(id)` removes a script and releases its modules, after running its
   `ctx.hot.dispose` callbacks (see [Keep State Across Reloads](#keep-state-across-reloads)).
 
-Each script runs in its own QuickJS context: scripts do not share globals. All
-scripts of one `Engine` share its QuickJS runtime, and so its memory limit, stack
-limit and garbage collector. See
+Each script runs in its own QuickJS context, unless it is loaded into a
+[context group](#context-groups): scripts do not share globals. A script can import
+the registered host modules and its own modules, never another script's, in a group
+or not. All scripts of one `Engine` share its QuickJS runtime, and so its memory
+limit, stack limit and garbage collector. See
 [Load Scripts And Projects](load-scripts-and-projects.md) for details.
 
 ## Events
@@ -66,7 +77,9 @@ scripts had at least one handler.
   that script's handlers.
 - A reload keeps the script's place in the delivery order.
 - A handler that throws does not stop the others: every handler runs, then `emit`
-  returns the first error.
+  returns the first error. An exhausted [execution budget](#execution-budget) or an
+  interrupt does stop it: delivery ends at the handler that hit it, and later
+  handlers do not run. The same holds for `request`.
 - `ctx.off(event, handler)` removes the first registration of `handler`. A delivery
   already in progress still runs it. A script whose last handler for an event is
   removed is no longer entered for that event.
@@ -176,7 +189,10 @@ ctx.on("round.start", async () => {
 - A timer fires at most once per call: one set from a callback waits for the next
   call even with a zero delay, and an interval several periods late fires once,
   its next due time staying its previous one plus its delay.
-- A throwing callback does not stop the others; the first error is returned.
+- A throwing callback does not stop the others; the first error is returned. An
+  exhausted [execution budget](#execution-budget) or an interrupt does: firing ends
+  at the timer that hit it, and the timers of the scripts not reached yet stay due
+  for the next `advance_timers`.
 - Timers belong to the script version that set them: a reload or unload drops
   them. Restart them from the new version, with `ctx.hot` for their state.
 - The callback must be a function; a string of code is rejected.
@@ -265,13 +281,15 @@ for (id, error) in &report.dispose_failed {
 
 - A project is checked through the size and modification time of its module
   files, the directories from each module up to the project root, its
-  `tsconfig.json` and the `package.json` files its imports resolved through. When
-  nothing changed, the check reads no file.
+  `tsconfig.json` and the configs that one `extends` through a relative or absolute
+  path (not configs from packages), and the `package.json` files its imports
+  resolved through. When nothing changed, the check reads no file.
 - A reload only reads, parses and transpiles the modules whose files changed. While
   no file was added or removed and `tsconfig.json` / `package.json` are unchanged,
   the imports of unchanged modules are not resolved again either.
 - A failed reload keeps the previous version running and is reported once; the
-  project is retried after its next change.
+  project is retried after its next change, to the previous version's files or to
+  those the failed reload reached (a module it newly imported, say).
 - Inline scripts (`load_script`) have no files and are never reloaded here.
 - Changes outside the watched paths (for example a new file in a `paths` fallback
   directory that holds no loaded module) need an explicit `load_project`.
@@ -353,7 +371,10 @@ let result = engine.call::<()>("rules", "simulate", ());
 
 `interrupt` stops the operation in progress (load, call, emit, request or
 `advance_timers`); the engine stays usable. A request made while nothing runs has
-no effect on the next operation.
+no effect on the next operation. An `emit`, `request` or `advance_timers` stops at
+the handler or timer the interrupt or the exhausted budget reached; later ones do
+not run. An interrupt that reaches a `ctx.hot.save` or `ctx.hot.dispose` callback
+is reported as `VmError::Interrupted` by the load or `unload_script` that ran it.
 
 ## Transpilation Cache
 
@@ -373,10 +394,20 @@ let engine = Engine::new(&VmOptions {
 The directory is created if it does not exist. The cache holds one artifact per
 module, keyed by the module source, its file extension, and the compiler and crate
 versions: two projects sharing a file share its artifact, and editing one file of a
-project transpiles that file only. Import resolution is never cached on disk; it
-runs on every load. See
-[Runtime Guarantees](runtime-guarantees.md#transpilation-cache) for integrity and
-atomic writes.
+project transpiles that file only. Import resolution is never cached on disk. In
+memory, loading a project again reuses its resolver and resolutions while the
+watched structure (directories, `tsconfig.json`, `package.json`, registered host
+modules) is unchanged: an unchanged module is neither read, parsed nor resolved
+again. See [Runtime Guarantees](runtime-guarantees.md#transpilation-cache) for
+integrity and atomic writes.
+
+Nothing ever removes an artifact: the cache grows with every distinct version of
+every module (and with each compiler or crate upgrade). Delete the directory to
+reclaim the space; the next loads rebuild what they need.
+
+Cache I/O never fails a load: an artifact that cannot be read is a miss, and one
+that cannot be written (full disk, read-only directory) is skipped. Only creating
+the directory, in `Engine::new`, can fail.
 
 Independently of the disk cache, an `Engine` remembers in memory the transpiled
 modules of its loaded scripts, so reloads within one run never transpile an
@@ -470,11 +501,11 @@ mods of different authors belong in different groups or in contexts of their own
 its previous modules in the group's context until the context drops (a context of its
 own is dropped with the script), so reloading one script many times grows memory slowly.
 
-What it buys, measured with `cargo bench --bench runtime -- 'load_many_scripts|emit'`
-on a loaded laptop, groups of 10 scripts loaded one after another: loading 400 scripts
-took 90 ms instead of 383 ms, and delivering a `{ dt, tick }` event to a one-line
-handler in every script took 45 µs for 250 scripts instead of 302 µs, 0.34 ms for 500
-instead of 2.0 ms and 1.1 ms for 1000 instead of 4.6 ms. The gap is the cost of building
+What it buys, measured with `cargo bench --bench runtime --features derive -- 'load_many_scripts|emit'`
+on an otherwise idle Windows development machine, groups of 10 scripts loaded one after
+another: loading 400 scripts took 32 ms instead of 164 ms, and delivering a `{ dt, tick }`
+event to a one-line handler in every script took 19 µs for 250 scripts instead of 84 µs,
+52 µs for 500 instead of 208 µs and 128 µs for 1000 instead of 565 µs. The gap is the cost of building
 the event in each context: every context has its own object shapes, which a shared
 context reuses. Scripts of a group loaded
 between scripts of other groups are served one visit per run, so load a group's scripts
@@ -560,25 +591,23 @@ the leak is silent. Keep the assertions in debug builds and in CI, and turn the 
 on for the builds you ship.
 
 `cargo bench --bench vs_lua` runs the same workloads on mlua (Lua 5.4), QuickJS
-called directly through rquickjs, and `Engine`. Medians on one Windows machine,
-rquickjs 0.14:
+called directly through rquickjs, and `Engine`. Criterion estimates from one run on an
+otherwise idle Windows development machine, rquickjs 0.14, default features (QuickJS
+assertions on):
 
 | Workload | mlua | QuickJS direct | `Engine` |
 | --- | --- | --- | --- |
-| Call `sum(a, b)` | 36 ns | 71 ns | 130 ns |
-| Call with a 20-field object in and out | 2.76 µs | 2.46 µs | 2.65 µs |
-| One call making 1,000 host calls¹ | 24.7 µs | 62.8 µs | 74.9 µs |
-| Pure compute, `fib(20)` | 294 µs | 968 µs | 896 µs |
-| Event to one handler | 181 ns | 135 ns | 250 ns |
-| Reload a small script | 8.7 µs | 72 µs | 156 µs |
+| Call `sum(a, b)` | 52 ns | 96 ns | 83 ns |
+| Call with a 20-field object in and out | 4.44 µs | 3.72 µs | 3.93 µs |
+| One call making 1,000 host calls | 35.4 µs | 90.6 µs | 78.9 µs |
+| Pure compute, `fib(20)` | 427 µs | 1.22 ms | 1.09 ms |
+| Event to one handler | 264 ns | 174 ns | 143 ns |
+| Reload a small script | 11.2 µs | 112 µs | 326 µs |
 
-QuickJS itself is about 3× slower than Lua on pure compute; `Engine` adds tens of
-nanoseconds per crossing on top of it. The `Engine` reload runs with the default
-options, without a disk cache, so it transpiles the TypeScript every time.
+QuickJS itself is about 3× slower than Lua on pure compute. `Engine` calls with
+numbers and events take raw-value fast paths that the direct rquickjs code in the
+bench does not, so they come out ahead of it. The direct QuickJS reload only creates a
+context and evaluates JavaScript; the `Engine` reload loads a changed TypeScript source
+(two variants alternate) with the default options, without a disk cache.
 Run `cargo run --release --example native_roundtrip` for a quick check of the same
 comparison.
-
-¹ Measured when the direct QuickJS script called a global `inc`, while the `Engine`
-script calls `math.inc` from its host module. The bench now uses `math.inc` on both
-sides; with the same member access, a host call through `Engine` costs the same as
-through QuickJS directly (about 100 ns each on the development machine).

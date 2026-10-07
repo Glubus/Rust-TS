@@ -57,6 +57,10 @@ required-features = ["derive"]
 name = "vs_lua"
 harness = false
 
+[[example]]
+name = "game_loop"
+required-features = ["derive"]
+
 [profile.release]
 opt-level = 3
 lto = "fat"

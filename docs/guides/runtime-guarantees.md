@@ -18,10 +18,14 @@ that owns it, one at a time. RustTS starts no threads and runs no background wor
 between two calls, no script code runs, and timers only fire in `advance_timers`.
 
 Each script owns a separate QuickJS context and ESM module graph, so scripts do not
-share globals. Scripts of the same `Engine` share its QuickJS runtime: memory limit,
-stack limit and garbage collector. This is not process isolation or a per-script
-memory quota. Host functions are capabilities granted to every script of that
-engine.
+share globals, unless they are loaded into one context group: scripts loaded with
+`Engine::load_script_in` or `load_project_in` under the same group name share one
+context, its built-ins and its global object. A group is a trust boundary: put only
+scripts that trust each other in one (see
+[Context Groups](engine.md#context-groups)). Scripts of the same `Engine` share its
+QuickJS runtime: memory limit, stack limit and garbage collector. This is not
+process isolation or a per-script memory quota. Host functions are capabilities
+granted to every script of that engine.
 
 A script's imports resolve only to the registered host modules and to the modules of
 its own graph. One script cannot import another script's modules, even by naming
@@ -44,6 +48,12 @@ unbounded blocking. For hostile native extensions, use a separate process.
 JavaScript state mutations and host side effects made before the interruption
 remain.
 
+`Engine::interrupt_handle` returns an `InterruptHandle` (`Send + Clone`) that stops
+the running load, call, emit, request or timer advance from another thread, at the
+same QuickJS interrupt checks: the operation fails with `VmError::Interrupted` and
+the engine stays usable. An interrupt requested while nothing runs has no effect on
+the next operation. Like the budget, it cannot stop a blocked Rust host function.
+
 An exhausted budget or an interrupt stops an `emit`, `request` or `advance_timers`
 at the handler or timer that hit it: the remaining handlers do not run, and the
 timers of the scripts not reached yet stay due for the next `advance_timers`. An
@@ -54,7 +64,8 @@ Deferred results are observed through `PendingCall`; only engine operations
 execute JavaScript. `HostResolver::resolve` and `reject` enqueue responses from
 any thread, but JavaScript resumes on the engine thread at `pump`. Timer
 advancement is separate. A successful reload or unload cancels pending work
-from the retired script generation; failed reloads leave it running. Neither
+from the retired script generation: its `PendingCall` yields `VmError::Cancelled`,
+and late host replies for it are dropped. Failed reloads leave it running. Neither
 `ctx.hot` nor a host reply migrates an awaiting stack to the new generation.
 
 ## Promises
@@ -108,3 +119,8 @@ cached on disk. An engine reuses a project's resolutions in memory only while th
 watched structure (directories, `tsconfig.json`, `package.json`, registered host
 modules) is unchanged, so new files and configuration changes take effect on the
 next load. Changing one module transpiles that module only.
+
+The cache is content-addressed and never purged: every distinct version of a
+module (and every compiler or crate version) adds an artifact, and nothing removes
+old ones. A cache directory used during development grows with every edit; delete
+the directory to reclaim the space, and the next loads rebuild what they need.

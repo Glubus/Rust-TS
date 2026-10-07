@@ -163,14 +163,15 @@
   `async_function_with` (and `_with_caller`), answer
   via the one-shot `HostResolver<T>` from any thread, then call `Engine::pump`
   on the engine thread to resume scripts. `call_deferred` and `request_deferred`
-  yield `PendingCall` handles across frames; pending work cancels on successful
-  reload or unload but survives failed reload. See
+  yield `PendingCall` handles across frames; pending work ends with the new
+  `VmError::Cancelled` on successful reload or unload of its script, but survives a
+  failed reload. See
   [Deferred Script Results](docs/guides/engine.md#deferred-script-results).
 - Firing a due timer allocates less in the script prelude (no per-call tuple list,
   no sort for a single due timer, no spread for a callback without arguments):
   `advance_timers` with one due script went from about 4.4 to 2.6 µs on the loaded
-  development machine. `cargo bench --bench runtime -- frame_budget` now keeps the
-  per-frame cost of `emit` and `advance_timers` from 1 to 1000 scripts.
+  development machine. `cargo bench --features derive --bench runtime -- frame_budget`
+  now keeps the per-frame cost of `emit` and `advance_timers` from 1 to 1000 scripts.
 - Loading a script costs about half as much: the context prelude is compiled once per
   `Engine` and every context loads its bytecode instead of parsing and compiling the
   source (an empty script went from about 1.5 ms to about 0.8 ms on the loaded
@@ -249,6 +250,9 @@
   encoders as before. `JsEncode::encode_scalar`, `JsDecode::decode_scalar` and
   `JsArgs::encode_scalars` are the hooks, hidden and defaulted: nothing to migrate.
 
+- `examples/game_loop.rs` (`cargo run --example game_loop --features derive`): a
+  context group with timers, events, requests, an async host function resumed by
+  `pump`, and a hot reload that keeps state.
 - `benches/native_bridge.rs` group `native_bridge_encode_objects`: `Engine::call`
   with a 16- and a 1024-entry `HashMap<String, u32>`, `HashMap<u32, u32>` and
   `serde_json::Value` object as its argument.

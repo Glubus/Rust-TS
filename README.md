@@ -2,8 +2,10 @@
 
 Embeddable TypeScript scripting for Rust applications and games.
 
-RustTS is licensed under MIT. Version 0.3 is Engine-only: it removed the worker pool
-(`RustTs`). See [the changelog](CHANGELOG.md) for migration notes.
+RustTS is licensed under MIT. Version 0.4 adds context groups, state-preserving hot
+reload, async host functions, requests, timers and `console`; it changes how host
+contracts are declared. See [the changelog](CHANGELOG.md) and
+[Migrate From 0.3 To 0.4](docs/guides/migrating-0.3-to-0.4.md).
 
 `RustTS` lets a Rust host run TypeScript scripts on its own thread through
 `Engine`, expose typed Rust host functions and callbacks to them, and generate
@@ -22,13 +24,37 @@ scripting layer, not a server runtime.
 
 ## Core Flow
 
-1. Define Rust host contracts with `HostFunction` and `HostCallback`.
+1. Declare Rust host contracts: `HostContract` names a function or event,
+   `HostFunctionSignature` gives a function its `Input` and `Output`, and
+   `HostFunction` implements it as a static function (or register a closure with
+   `function_with`). Events implement `HostCallback`.
 2. Derive `TsSchema` for input/output payloads.
 3. Register contracts in the engine's registry.
 4. Generate TypeScript declaration and SDK files for your package.
 5. Load TypeScript scripts, call their exports and emit events to them.
 
 ```rust
+struct FindUser;
+
+impl HostContract for FindUser {
+    const NAME: &'static str = "user.find";
+
+    fn kind() -> HostContractKind {
+        HostContractKind::Function
+    }
+}
+
+impl HostFunctionSignature for FindUser {
+    type Input = FindUserInput;   // #[derive(TsSchema)]
+    type Output = FindUserOutput; // #[derive(TsSchema)]
+}
+
+impl HostFunction for FindUser {
+    fn call(input: FindUserInput) -> Result<FindUserOutput, VmError> {
+        Ok(FindUserOutput { display_name: format!("user {}", input.user_id) })
+    }
+}
+
 let mut engine = Engine::new(&VmOptions::default())?;
 
 engine
@@ -74,6 +100,11 @@ Useful starting points:
 - [Load Scripts And Projects](docs/guides/load-scripts-and-projects.md)
 - [Use Native Bytes](docs/guides/native-bytes.md)
 - [Runtime Guarantees](docs/guides/runtime-guarantees.md)
+- [Migrate From 0.3 To 0.4](docs/guides/migrating-0.3-to-0.4.md)
+
+[`examples/game_loop.rs`](examples/game_loop.rs) runs a frame loop over a context
+group with timers, events, requests, an async host function and a hot reload that
+keeps state: `cargo run --example game_loop --features derive`.
 
 Build the book with:
 
@@ -87,25 +118,40 @@ The current core is focused on the Rust-first contract model:
 
 - `Engine`: QuickJS (through `rquickjs`) on your own thread, with direct native
   calls in both directions
-- TypeScript transpilation through `oxc`, with an optional disk cache
+- TypeScript transpilation through `oxc`, with an optional disk cache; errors and
+  stacks point at TypeScript file, line and column
 - inline scripts and static ESM project graphs
+- context groups: scripts that trust each other share one QuickJS context
+  (`load_script_in`, `load_project_in`), cheaper to load and to deliver events to
+- hot reload that keeps script state through `ctx.hot` (`save`, `data`, `dispose`)
 - typed host functions, as static functions or closures that can see the calling
-  script, and callbacks, including requests whose handlers reply
+  script, and callbacks, including requests whose handlers reply (`Engine::request`)
+- async host functions answered by the host from any thread (`async_function_with`,
+  `HostResolver`, `Engine::pump`), and deferred script results across frames
+  (`call_deferred`, `request_deferred`, `PendingCall`)
 - `ctx.on` / `ctx.off`, `console` routed to the host, and timers on a clock the host
-  advances
+  advances (`advance_timers`)
 - native Rust ↔ JavaScript value conversion with `serde_json` semantics
 - generated TypeScript declarations and SDK helpers
 - optional contract validation
 - native `Uint8Array` in both directions through `NativeBytes`
-- execution budget per load, call, emit, request and timer advance
+- execution budget per load, call, emit, request and timer advance, and an
+  `InterruptHandle` to stop running JavaScript from another thread
+- garbage collection control (`run_gc`, `set_gc_threshold`) and per-context
+  built-in selection (`VmOptions::builtins`, `ScriptBuiltins`)
+- the `disable-assertions` feature: QuickJS without its internal assertions, for
+  the builds you ship
 
 ## Performance
 
-A Rust → TypeScript call costs about 130 ns and a round trip with a 20-field
-object about 2.7 µs, close to calling QuickJS directly and to mlua (36 ns and
-2.8 µs), on the reference Windows machine. See
-[the Engine guide](docs/guides/engine.md#performance) for the full
-`cargo bench --bench vs_lua` comparison.
+In one `cargo bench --bench vs_lua` run on an otherwise idle Windows development
+machine, a Rust → TypeScript call with two numbers took 83 ns against 52 ns for mlua,
+a round trip with a 20-field object 3.9 µs against 4.4 µs, and an event to one
+handler 143 ns against 264 ns. Pure
+compute is QuickJS speed, about 3× slower than Lua. Context groups, cheaper event
+delivery and the `disable-assertions` feature (about 23 % faster on call-heavy
+scripts) are described in the [changelog](CHANGELOG.md); see
+[the Engine guide](docs/guides/engine.md#performance) for the full comparison.
 
 ## Toolchain
 
@@ -115,11 +161,16 @@ Local checks:
 
 ```text
 cargo fmt --all --check
-cargo clippy --workspace --all-features --all-targets -- -D warnings
-cargo test --workspace --all-features
+cargo clippy --workspace --features derive,uuid,chrono,glam --all-targets -- -D warnings
+cargo test --workspace --features derive,uuid,chrono,glam
 cargo test --workspace --no-default-features
-cargo check --benches --features derive
+cargo check --workspace --all-features --all-targets
+cargo doc --workspace --no-deps --features derive,uuid,chrono,glam   # RUSTDOCFLAGS="-D warnings"
+mdbook build
 ```
+
+Tests run without `disable-assertions`, so QuickJS assertions stay on; the
+`--all-features` check only proves that feature builds.
 
 Install the pinned SDK type checker with `npm ci` before running the tests.
 CI requires it; locally, set `RUSTTS_REQUIRE_TSC=1` to enforce the same rule.

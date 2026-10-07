@@ -169,5 +169,7 @@ memory by the engine. With a cache directory, they are also stored on disk and
 reused by later loads, including in later runs of the application.
 
 The cache works per module: changing one file of a project transpiles that file
-only. The graph itself is always read and resolved from disk. See
+only. Import resolution is never cached on disk. Cache I/O never fails a
+load: an unreadable artifact is a miss, an unwritable one is skipped. The directory
+is never purged; delete it to reclaim space. See
 [Run Scripts With `Engine`](engine.md#transpilation-cache).
