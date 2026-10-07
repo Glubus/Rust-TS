@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::hint::black_box;
 use std::sync::{Arc, OnceLock};
 
@@ -8,13 +9,16 @@ use rquickjs::{
 };
 use rustts::{
     Engine, HostContract, HostContractKind, HostContractRegistry, HostFunction,
-    HostFunctionSignature, NativeBytes, TsSchema, VmContractValidation, VmError, VmOptions,
+    HostFunctionSignature, JsEncode, NativeBytes, TsSchema, VmContractValidation, VmError,
+    VmOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const LARGE_FIELD_COUNT: usize = 64;
 const BYTE_COUNTS: &[usize] = &[1024, 64 * 1024, 1024 * 1024];
+/// Entry counts of the maps and JSON objects `Engine::call` encodes as arguments.
+const OBJECT_ENTRY_COUNTS: &[usize] = &[16, 1024];
 static FIXTURES: OnceLock<Arc<NativeFixtures>> = OnceLock::new();
 
 fn native_bridge_benchmarks(c: &mut Criterion) {
@@ -26,6 +30,7 @@ fn native_bridge_benchmarks(c: &mut Criterion) {
     bench_byte_bridge_shapes(c, &bench);
     bench_integrated_bridge_shapes(c, &integrated_disabled, "validation_disabled");
     bench_integrated_bridge_shapes(c, &integrated_validated, "validation_inputs_outputs");
+    bench_object_encoding(c);
 }
 
 fn bench_struct_bridge_shapes(c: &mut Criterion, bench: &NativeBridgeBench) {
@@ -183,6 +188,55 @@ fn bench_integrated_bridge_shapes(c: &mut Criterion, bench: &IntegratedBridgeBen
     }
 
     group.finish();
+}
+
+/// `Engine::call` with one object argument: a `HashMap` keyed by strings or integers,
+/// or a `serde_json::Value` object. The export only reads one property, so the time is
+/// the encoding of every entry as an own property of a fresh object.
+fn bench_object_encoding(c: &mut Criterion) {
+    let mut engine = Engine::new(&VmOptions::default()).expect("create object engine");
+    engine
+        .load_script("objects", OBJECT_ENCODING_SCRIPT)
+        .expect("load object encoding script");
+
+    let mut group = c.benchmark_group("native_bridge_encode_objects");
+    group.sample_size(30);
+    for &entry_count in OBJECT_ENTRY_COUNTS {
+        let string_map: HashMap<String, u32> = (0..entry_count)
+            .map(|index| (format!("key-{index}"), index as u32))
+            .collect();
+        let integer_map: HashMap<u32, u32> = (0..entry_count)
+            .map(|index| (index as u32, index as u32))
+            .collect();
+        let json_object = Value::Object(
+            (0..entry_count)
+                .map(|index| (format!("key-{index}"), json!(index)))
+                .collect(),
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("hashmap_string_keys", entry_count),
+            &string_map,
+            |b, map| b.iter(|| black_box(call_touch(&engine, map))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("hashmap_integer_keys", entry_count),
+            &integer_map,
+            |b, map| b.iter(|| black_box(call_touch(&engine, map))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("json_object", entry_count),
+            &json_object,
+            |b, object| b.iter(|| black_box(call_touch(&engine, object))),
+        );
+    }
+    group.finish();
+}
+
+fn call_touch(engine: &Engine, object: &impl JsEncode) -> f64 {
+    engine
+        .call("objects", "touch", (object,))
+        .expect("call object encoding export")
 }
 
 fn bench_js_function(
@@ -855,6 +909,12 @@ export function hostValueUint8ArrayFromJsonArrayBytes(byteCount) {
 
 export function hostValueNativeUint8ArrayBytes(byteCount) {
   return sumSparseBytes(hostValue("bench.bytes.native", { byteCount }));
+}
+"#;
+
+const OBJECT_ENCODING_SCRIPT: &str = r#"
+export function touch(object) {
+  return object["key-1"] ?? object[1];
 }
 "#;
 

@@ -220,6 +220,10 @@
   encoders as before. `JsEncode::encode_scalar`, `JsDecode::decode_scalar` and
   `JsArgs::encode_scalars` are the hooks, hidden and defaulted: nothing to migrate.
 
+- `benches/native_bridge.rs` group `native_bridge_encode_objects`: `Engine::call`
+  with a 16- and a 1024-entry `HashMap<String, u32>`, `HashMap<u32, u32>` and
+  `serde_json::Value` object as its argument.
+
 ### Fixes
 
 - A script can no longer import another script's modules by naming their internal
