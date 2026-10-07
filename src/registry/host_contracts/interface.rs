@@ -74,14 +74,14 @@ pub trait HostContractRegistry: Send + Sync {
     /// Registers one host callback contract using `TsSchema` from its payload type.
     fn register_callback<T>(&self) -> Result<(), VmError>
     where
-        T: HostCallback + Send + Sync + 'static,
+        T: HostCallback + 'static,
         T::Payload: TsSchema + JsEncode;
 
     /// Registers one host request, a callback whose handlers reply, using `TsSchema` from
     /// its payload and reply types.
     fn register_request<T>(&self) -> Result<(), VmError>
     where
-        T: HostRequest + Send + Sync + 'static,
+        T: HostRequest + 'static,
         T::Payload: TsSchema + JsEncode,
         T::Reply: TsSchema + JsDecode;
 

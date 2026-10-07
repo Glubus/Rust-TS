@@ -31,13 +31,14 @@ pub use contract::{
 pub use contract::{
     HostCallback, HostCallbackDescriptor, HostContext, HostContract, HostContractAbi,
     HostContractDescriptor, HostContractKind, HostFunction, HostFunctionDescriptor, HostMetadata,
-    NativeBytes, ObjectSchema, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema,
-    TsType, push_schema_dependency, schema_type_ref,
+    MapKey, NativeBytes, Schema, TsEnumVariant, TsField, TsLiteral, TsRecordKey, TsSchema, TsType,
 };
 #[doc(hidden)]
 pub use contract::{
-    at_path as __codec_at_path, codec_error as __codec_error, derive as __derive,
-    expect_array_len as __codec_expect_array_len, expect_object as __codec_expect_object,
+    ObjectSchema as __ObjectSchema, at_path as __codec_at_path, codec_error as __codec_error,
+    derive as __derive, expect_array_len as __codec_expect_array_len,
+    expect_object as __codec_expect_object, push_schema_dependency as __push_schema_dependency,
+    schema_type_ref as __schema_type_ref,
 };
 pub use error::VmError;
 pub use registry::{

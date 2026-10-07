@@ -14,17 +14,31 @@ use super::{JsDecode, JsEncode, at_path, codec_error, define_property, expect_ob
 /// Room for the decimal text of any integer key, `-170141183460469231731687303715884105728`.
 const INTEGER_KEY_CAPACITY: usize = 40;
 
-/// Rust type usable as a map key. Sealed: implemented for `String` and integers.
-pub trait MapKey: Sized {
+/// Key type of a `HashMap` or `BTreeMap` that crosses as a JavaScript object:
+/// `String` and the primitive integers, whose keys cross as their decimal text.
+///
+/// This trait only names the key bound of the map codecs. It is sealed: it cannot be
+/// implemented outside RustTS, and its methods are implementation details.
+pub trait MapKey: Sized + sealed::Sealed {
     /// Calls `write` with the key text.
+    #[doc(hidden)]
     fn with_text<R>(&self, write: impl FnOnce(&str) -> R) -> R;
 
     /// Parses key text, returning it back when it is not a valid key.
+    #[doc(hidden)]
     fn from_text(text: String) -> Result<Self, String>;
 
     /// What a valid key looks like, for error messages.
+    #[doc(hidden)]
     fn expected() -> &'static str;
 }
+
+mod sealed {
+    /// Supertrait that keeps [`MapKey`](super::MapKey) from being implemented elsewhere.
+    pub trait Sealed {}
+}
+
+impl sealed::Sealed for String {}
 
 impl MapKey for String {
     fn with_text<R>(&self, write: impl FnOnce(&str) -> R) -> R {
@@ -43,6 +57,8 @@ impl MapKey for String {
 macro_rules! integer_keys {
     ($($ty:ty),+ $(,)?) => {
         $(
+            impl sealed::Sealed for $ty {}
+
             impl MapKey for $ty {
                 fn with_text<R>(&self, write: impl FnOnce(&str) -> R) -> R {
                     let text = StackText::<INTEGER_KEY_CAPACITY>::format(format_args!("{self}"))

@@ -19,7 +19,8 @@ pub(crate) use bridge::{js_value_to_json, js_value_to_validation_snapshot, json_
 pub use callback::{HostCallback, HostRequest};
 pub use caller::Caller;
 pub use codec::{
-    JsArgs, JsDecode, JsEncode, at_path, codec_error, derive, expect_array_len, expect_object,
+    JsArgs, JsDecode, JsEncode, MapKey, at_path, codec_error, derive, expect_array_len,
+    expect_object,
 };
 pub use context::HostContext;
 pub use function::{HostFunction, HostFunctionSignature};

@@ -32,6 +32,7 @@ use rquickjs::atom::PredefinedAtom;
 use rquickjs::function::Args;
 use rquickjs::{Array, Ctx, Error as JsError, Object, Result as JsResult, Value as JsValue, qjs};
 
+pub use maps::MapKey;
 pub(crate) use number::exact_integer;
 
 /// Upper bound, in bytes, on memory reserved up front from a length the other side

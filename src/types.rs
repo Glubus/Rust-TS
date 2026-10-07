@@ -9,6 +9,7 @@ pub type ScriptId = String;
 
 /// QuickJS memory counters for one [`Engine`](crate::Engine).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MemoryStats {
     /// Total bytes allocated by the QuickJS allocator.
     pub malloc_size_bytes: u64,
@@ -30,6 +31,7 @@ pub struct MemoryStats {
 
 /// Outcome of [`Engine::reload_changed`](crate::Engine::reload_changed).
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct ReloadReport {
     /// Scripts reloaded because their files changed, in load order.
     pub reloaded: Vec<ScriptId>,

@@ -28,7 +28,8 @@ impl HostFunction for FindUser {
 }
 ```
 
-The contract type no longer needs `Send + Sync`.
+The contract type no longer needs `Send + Sync`, whether it is registered as a
+function or as a callback (`callback`, `register_callback`).
 
 ## 2. Drop the JSON registration path
 
@@ -90,6 +91,10 @@ newtype variant over such a map or a scalar. Use a string-keyed map or a struct
 payload. These types already panicked at registration, so no working code is
 affected.
 
+`ObjectSchema`, `push_schema_dependency` and `schema_type_ref` are no longer
+exported at the crate root: they only served the derive's output, which now uses
+hidden aliases. Keep `rustts` and `rustts_macros` at the same version.
+
 ## 3. Move `schema()` to `HostContext`
 
 `HostContract::schema()` is gone. Functions and callbacks take their schema from
@@ -134,20 +139,30 @@ provide the new `register_function_with`, `register_function_with_caller`,
 - Fixed-size arrays `[T; N]` are declared as `[T, T, …]` (`N` items) instead of
   `T[]`. Script code that builds such values with a different length, or types them
   as `T[]`, may need updating; schema validation rejects arrays of the wrong length.
+- `InMemoryHostContractRegistry::types()` is removed; call `dts()`, which returns
+  the same declarations.
 - Regenerate the `.d.ts` and SDK files you ship with your scripts.
 
-## 6. Errors and reloads
+## 6. Errors, reports and matches
 
 - `VmError` is `#[non_exhaustive]`: add a wildcard arm to exhaustive matches.
+- `VmError::Json` is removed, and with it `From<serde_json::Error>`: a host
+  function that used `?` on a `serde_json` error maps it to a `VmError` itself.
+- `TsType`, `HostContractKind` and `HostContractAbi` are `#[non_exhaustive]`: add a
+  wildcard arm to exhaustive matches.
 - `VmError::Execution` stacks name TypeScript locations (`lib/math.ts:8:15`,
   `<id>.ts:3:5`) instead of `rustts://graph/{n}/{path}:{line}:{col}`, and
   `VmError::Transpile` lists `path:line:column: message` diagnostics. Update code
   that parses either. Transpile cache artifacts are rebuilt once.
-- `ReloadReport` has a new `dispose_failed` field; add it to struct literals and
-  patterns that list every field.
 - A dynamic `import()` now fails with `<path>: dynamic import() is not supported;
   use a static import` instead of `dynamic import is not supported in V0 module
   graphs`; update code that matches on the old text.
+- `ReloadReport` has a new `dispose_failed` field. It and `MemoryStats` are
+  `#[non_exhaustive]`: read their fields instead of building them with struct
+  literals or destructuring them without `..`.
+- `MapKey`, the key bound of the `HashMap` and `BTreeMap` codecs, is now exported so
+  generic code can name it. It is sealed: `String` and the primitive integers are the
+  only key types.
 
 ## 7. Contract validation
 
@@ -182,7 +197,9 @@ check behave as before.
 
 `VmOptions` has a new `builtins` field (see [Script
 Built-ins](engine.md#script-built-ins)); add it to struct literals that list every
-field. The default keeps every built-in on, as before.
+field. The default keeps every built-in on, as before. `VmOptions` and
+`ScriptBuiltins` may gain fields in minor releases, so build them with
+`..VmOptions::default()` and `..ScriptBuiltins::NONE` (or `::ALL`).
 
 ## Check Your Migration
 

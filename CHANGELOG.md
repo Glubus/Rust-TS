@@ -5,8 +5,17 @@
 ### Migration
 
 - `VmError` is `#[non_exhaustive]`: add a wildcard arm to exhaustive matches.
-- `ReloadReport` has a new `dispose_failed` field; add it to struct literals and
-  patterns that list every field.
+- `VmError::Json` is removed, and with it the `From<serde_json::Error>` conversion:
+  a host function that used `?` on a `serde_json` error maps it to a `VmError`
+  itself.
+- `TsType`, `HostContractKind` and `HostContractAbi` are `#[non_exhaustive]`: add a
+  wildcard arm to exhaustive matches.
+- `MemoryStats` and `ReloadReport` are `#[non_exhaustive]`: read their fields
+  instead of building them with struct literals or destructuring them without `..`.
+  `ReloadReport` has a new `dispose_failed` field.
+- `VmOptions` and `ScriptBuiltins` stay exhaustive, but new fields may be added in
+  minor releases: build them with `..VmOptions::default()` and
+  `..ScriptBuiltins::NONE` (or `::ALL`).
 - The generated declarations and SDK always declare and export `ctx` (typed with
   `ctx.hot`), even without host events, so their output is no longer empty for a
   registry without contracts. `rusttsSdk.ctx` is always present.
@@ -18,7 +27,8 @@
 - `HostFunction` is split in two: `HostFunctionSignature` holds `Input` and `Output`;
   `HostFunction` only keeps `call`. Move everything but `call` into an
   `impl HostFunctionSignature` block. The contract type no longer needs
-  `Send + Sync` to be registered.
+  `Send + Sync` to be registered, as a function or as a callback (`callback`,
+  `register_callback`).
 - **The JSON registration path is gone.** Values cross natively only, and the schemas
   come from `TsSchema` of the `Input`, `Output` and `Payload` types:
   - Removed: the untyped `function`, `function_with`, `function_with_caller`,
@@ -69,6 +79,15 @@
   variants. A setter a script put on `Object.prototype` no longer runs, and a field
   or key named `__proto__` becomes an ordinary own property instead of replacing the
   object's prototype.
+- `InMemoryHostContractRegistry::types()` is removed: it duplicated `dts()`, which
+  returns the same declarations.
+- `ObjectSchema`, `push_schema_dependency` and `schema_type_ref` are no longer
+  exported at the crate root. They only served `#[derive(TsSchema)]` output, which
+  now uses hidden aliases; derived code is unaffected as long as `rustts` and
+  `rustts_macros` have the same version.
+- `MapKey`, the key bound of the `HashMap` and `BTreeMap` codecs, is exported so the
+  bound can be named. It is sealed: `String` and the primitive integers are the only
+  key types.
 - Fixed-size arrays `[T; N]` are declared as `[T, T, …]` (`N` items) instead of
   `T[]`. Script code that builds such values with a different length, or types them
   as `T[]`, may need updating. Schema validation now rejects arrays of the wrong
@@ -116,8 +135,9 @@
 - `ctx.off(event, handler)` removes a handler; a script without handlers left for
   an event is no longer entered by `emit` for it.
 - `console.debug`, `log`, `info`, `warn` and `error` in scripts, written to stderr
-  by default; `Engine::set_console` routes them, with their `ConsoleLevel` and
-  script id, to the host. Logged error stacks point at the TypeScript source.
+  by default; `Engine::set_console` routes them, with their `ConsoleLevel`
+  (`#[non_exhaustive]`) and script id, to the host. Logged error stacks point at the
+  TypeScript source.
 - Timers on a host-driven clock: `setTimeout`, `setInterval`, `clearTimeout` and
   `clearInterval`, fired by `Engine::advance_timers(elapsed)`, the only thing that
   moves the clock, so they are deterministic. `await`ing a timer works in event

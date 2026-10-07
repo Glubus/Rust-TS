@@ -42,7 +42,7 @@ pub(crate) fn expand_schema_impl(container: &Container<'_>) -> TokenStream {
 
 fn ts_type(container: &Container<'_>) -> TokenStream {
     if let Some(wire_type) = container.wire_type() {
-        return quote!(::rustts::schema_type_ref::<#wire_type>());
+        return quote!(::rustts::__schema_type_ref::<#wire_type>());
     }
     if let Some(field) = container.transparent_field() {
         return fields::type_ref(field);
@@ -92,5 +92,5 @@ fn described_shapes<'c>(container: &'c Container<'_>) -> Vec<(&'c Shape<'c>, boo
 }
 
 fn push_dependency(ty: &Type) -> TokenStream {
-    quote!(::rustts::push_schema_dependency::<#ty>(&mut dependencies);)
+    quote!(::rustts::__push_schema_dependency::<#ty>(&mut dependencies);)
 }

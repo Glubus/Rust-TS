@@ -53,6 +53,10 @@ impl VmUnknownFieldValidation {
 /// run your scripts under the options you ship.
 ///
 /// The default enables everything, as a plain QuickJS context does.
+///
+/// New built-in flags may be added in minor releases, so build values from a constant
+/// with struct update syntax, such as `ScriptBuiltins { date: true, ..ScriptBuiltins::NONE }`,
+/// rather than listing every field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScriptBuiltins {
     /// `RegExp`, regular expression literals, and the string methods that take them.
@@ -95,6 +99,10 @@ impl Default for ScriptBuiltins {
 }
 
 /// Configuration for [`crate::Engine`].
+///
+/// New fields may be added in minor releases, so build options with struct update
+/// syntax, such as `VmOptions { execution_timeout, ..VmOptions::default() }`, rather
+/// than listing every field.
 #[derive(Debug, Clone)]
 pub struct VmOptions {
     /// Directory for transpiled JavaScript artifacts, reused across runs and reloads.

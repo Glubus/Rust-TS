@@ -250,7 +250,7 @@ fn bench_sdk_generation(c: &mut Criterion) {
 
     c.bench_function("sdk_generation", |b| {
         b.iter(|| {
-            let types = engine.registry().types().expect("render types");
+            let types = engine.registry().dts().expect("render types");
             let sdk = engine.registry().sdk().expect("render sdk");
             black_box((types, sdk));
         });

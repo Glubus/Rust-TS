@@ -532,7 +532,7 @@ fn typed_host_function_returns_native_bytes_as_uint8array() {
         .registry()
         .function::<ReadNativeBytes>()
         .expect("register native bytes host function");
-    let declarations = engine.registry().types().expect("render declarations");
+    let declarations = engine.registry().dts().expect("render declarations");
     engine
         .load_script(
             "native-bytes",

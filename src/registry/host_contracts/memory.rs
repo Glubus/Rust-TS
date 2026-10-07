@@ -156,7 +156,7 @@ impl InMemoryHostContractRegistry {
     /// registry for chaining.
     pub fn callback<T>(&self) -> Result<&Self, VmError>
     where
-        T: HostCallback + Send + Sync + 'static,
+        T: HostCallback + 'static,
         T::Payload: TsSchema + JsEncode,
     {
         self.register_callback::<T>()?;
@@ -167,7 +167,7 @@ impl InMemoryHostContractRegistry {
     /// its payload and reply types, and returns the registry for chaining.
     pub fn request<T>(&self) -> Result<&Self, VmError>
     where
-        T: HostRequest + Send + Sync + 'static,
+        T: HostRequest + 'static,
         T::Payload: TsSchema + JsEncode,
         T::Reply: TsSchema + JsDecode,
     {
@@ -242,11 +242,6 @@ impl InMemoryHostContractRegistry {
 
     /// Renders TypeScript declarations from registered host contracts.
     pub fn dts(&self) -> Result<String, VmError> {
-        self.typescript_declarations()
-    }
-
-    /// Renders TypeScript declarations from registered host contracts.
-    pub fn types(&self) -> Result<String, VmError> {
         self.typescript_declarations()
     }
 
@@ -505,7 +500,7 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
 
     fn register_callback<T>(&self) -> Result<(), VmError>
     where
-        T: HostCallback + Send + Sync + 'static,
+        T: HostCallback + 'static,
         T::Payload: TsSchema + JsEncode,
     {
         self.insert_descriptor(callback_descriptor::<T>(None))
@@ -513,7 +508,7 @@ impl HostContractRegistry for InMemoryHostContractRegistry {
 
     fn register_request<T>(&self) -> Result<(), VmError>
     where
-        T: HostRequest + Send + Sync + 'static,
+        T: HostRequest + 'static,
         T::Payload: TsSchema + JsEncode,
         T::Reply: TsSchema + JsDecode,
     {

@@ -61,9 +61,6 @@ pub enum VmError {
         /// line and column.
         details: String,
     },
-    /// JSON serialization or deserialization failed.
-    #[error("json conversion failed: {0}")]
-    Json(#[from] serde_json::Error),
     /// Filesystem operation failed.
     #[error("filesystem error: {0}")]
     Io(#[from] io::Error),

@@ -56,10 +56,10 @@ pub(super) fn object_schema(
 /// `ObjectSchema` expression built by `steps`, which add to `object`.
 pub(super) fn object_block(steps: &[TokenStream]) -> TokenStream {
     if steps.is_empty() {
-        return quote!(::rustts::ObjectSchema::new());
+        return quote!(::rustts::__ObjectSchema::new());
     }
     quote!({
-        let mut object = ::rustts::ObjectSchema::new();
+        let mut object = ::rustts::__ObjectSchema::new();
         #(#steps)*
         object
     })
@@ -77,7 +77,7 @@ pub(super) fn type_ref(field: &Field<'_>) -> TokenStream {
         Some(text) => quote!(::rustts::TsType::TypeRef(::std::string::String::from(#text))),
         None => {
             let ty = field.ty;
-            quote!(::rustts::schema_type_ref::<#ty>())
+            quote!(::rustts::__schema_type_ref::<#ty>())
         }
     }
 }
@@ -89,7 +89,7 @@ pub(super) fn dependency(field: &Field<'_>) -> Option<TokenStream> {
         .attrs
         .ts_type
         .is_none()
-        .then(|| quote!(::rustts::push_schema_dependency::<#ty>(&mut dependencies);))
+        .then(|| quote!(::rustts::__push_schema_dependency::<#ty>(&mut dependencies);))
 }
 
 pub(super) fn shape_dependencies(

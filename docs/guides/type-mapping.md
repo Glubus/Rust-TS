@@ -50,6 +50,9 @@ numbers. Generated declarations quote property names that are not identifiers
 | `serde_json::Value` | JSON value | Integers still follow the safe-range rule. |
 | `NativeBytes` | `Uint8Array` | See [Use Native Bytes](native-bytes.md). |
 
+A map key must implement `MapKey`, a sealed trait implemented for `String` and the
+primitive integers only.
+
 ### Feature-Gated Third-Party Types
 
 Enable the matching RustTS feature (`uuid`, `chrono`, `glam`) to use these types

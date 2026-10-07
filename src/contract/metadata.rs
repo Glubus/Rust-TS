@@ -79,6 +79,7 @@ impl Schema {
 
 /// TypeScript type shape emitted from host schemas.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum TsType {
     /// Unknown type.
     #[default]
@@ -272,6 +273,7 @@ pub struct HostImportBinding {
 
 /// Top-level contract category.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HostContractKind {
     /// Function contract.
     Function,
@@ -329,6 +331,7 @@ pub struct HostFunctionDescriptor {
 
 /// Normalized ABI data for one host contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HostContractAbi {
     /// Function ABI.
     Function {

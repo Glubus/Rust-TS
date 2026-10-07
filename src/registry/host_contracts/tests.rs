@@ -423,11 +423,3 @@ fn sdk_generates_event_wrapper_from_callback_contracts() {
     assert!(sdk.contains("events,"));
     assert!(sdk.contains("ctx,"));
 }
-
-#[test]
-fn types_alias_returns_declaration_output() {
-    let registry = InMemoryHostContractRegistry::new();
-    registry.register_function::<GeneratedFunction>().unwrap();
-
-    assert_eq!(registry.types().unwrap(), registry.dts().unwrap());
-}
