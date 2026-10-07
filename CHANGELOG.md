@@ -219,6 +219,13 @@
   ids (`rustts://graph/<n>/...`, `rustts:env/<n>`, `rustts:host/<n>/...`), statically
   or through a run-time `import()`; only host modules and modules of the script's own
   graph resolve.
+- `emit`, `request`, `request_deferred` and `advance_timers` stop entering handlers
+  and timers once the operation is interrupted or a QuickJS interrupt check finds its
+  execution budget spent, instead of running every remaining one; timers not reached
+  stay due for the next call. The check between two handlers reads two flags, not
+  the clock.
+- An interrupt during `ctx.hot.save` or `ctx.hot.dispose` is reported as
+  `VmError::Interrupted` instead of `VmError::Execution`.
 - A panic in a host function can no longer be swallowed by a script's `try`/`catch`. It
   was stored and re-raised by the next rquickjs call, which a `catch` block in the script
   could precede, so the call returned normally and the panic surfaced later, from an

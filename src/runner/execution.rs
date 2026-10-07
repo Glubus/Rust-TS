@@ -27,6 +27,9 @@ pub(crate) struct ExecutionControl {
     /// The running operation's budget, in nanoseconds, while its clock is pending.
     budget: AtomicU64,
     interrupt_requested: AtomicBool,
+    /// Set when an interrupt check of the running operation stopped it: the budget had
+    /// run out or an interrupt was requested.
+    stopped: AtomicBool,
 }
 
 impl Default for ExecutionControl {
@@ -36,14 +39,28 @@ impl Default for ExecutionControl {
             deadline: AtomicU64::new(NO_DEADLINE),
             budget: AtomicU64::new(0),
             interrupt_requested: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
         }
     }
 }
 
 impl ExecutionControl {
+    /// The QuickJS interrupt check: whether JavaScript must stop now. Once it says so,
+    /// [`ExecutionControl::should_stop`] does too until the next operation starts.
     pub(crate) fn interrupted(&self) -> bool {
         self.start_clock();
-        self.interrupt_requested() || self.budget_expired()
+        let stop = self.interrupt_requested() || self.budget_expired();
+        if stop {
+            self.stopped.store(true, Ordering::Release);
+        }
+        stop
+    }
+
+    /// Whether the running operation must stop entering JavaScript: an interrupt was
+    /// requested, or an interrupt check found its budget used up. It reads no clock, so
+    /// checking between two handlers costs two atomic loads.
+    pub(crate) fn should_stop(&self) -> bool {
+        self.interrupt_requested() || self.stopped.load(Ordering::Acquire)
     }
 
     /// Starts the clock of the running operation's budget if it has not started: from
@@ -88,6 +105,7 @@ impl ExecutionControl {
             .ok()
             .filter(|&nanos| nanos < PENDING);
         self.interrupt_requested.store(false, Ordering::Release);
+        self.stopped.store(false, Ordering::Release);
         match nanos {
             Some(nanos) => {
                 self.budget.store(nanos, Ordering::Release);
@@ -173,5 +191,25 @@ mod tests {
         control.request_interrupt();
         assert!(control.interrupted());
         assert!(!control.budget_expired());
+    }
+
+    #[test]
+    fn handlers_stop_once_a_check_finds_the_budget_used_up_until_the_next_operation() {
+        let control = ExecutionControl::default();
+        let guard = control.enter(Duration::ZERO);
+        assert!(
+            !control.should_stop(),
+            "no check has found the budget used up"
+        );
+
+        assert!(control.interrupted());
+        assert!(control.should_stop());
+
+        drop(guard);
+        let _guard = control.enter(Duration::MAX);
+        assert!(
+            !control.should_stop(),
+            "a new operation starts with its own budget"
+        );
     }
 }

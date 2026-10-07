@@ -52,9 +52,10 @@ impl Engine {
     /// Delivers one event to every handler registered for it, script by script in load
     /// order; returns the number of scripts that had at least one handler. A throwing
     /// handler does not stop the others: every handler runs, then the first error is
-    /// returned. The payload is encoded once per script with handlers and shared by all
-    /// of that script's handlers. Scripts that never registered a handler for `event`
-    /// cost a set lookup.
+    /// returned. An interrupt or an exhausted execution budget does stop them: no
+    /// handler is entered after it. The payload is encoded once per script with
+    /// handlers and shared by all of that script's handlers. Scripts that never
+    /// registered a handler for `event` cost a set lookup.
     pub fn emit<P: JsEncode + ?Sized>(&self, event: &str, payload: &P) -> Result<usize, VmError> {
         self.dispatch(event, payload, false, |_, _, _| Ok(()))
     }
@@ -64,6 +65,7 @@ impl Engine {
     /// registration order. An `async` handler's Promise is awaited first, running
     /// script Promise jobs only. Every handler runs even after one fails, a throw, a
     /// rejection or a reply that does not decode as `R`; the first error is returned.
+    /// An interrupt or an exhausted execution budget stops delivery, as for `emit`.
     /// Register the event with
     /// [`request`](crate::InMemoryHostContractRegistry::request) so the
     /// generated TypeScript types the handlers' reply.
@@ -103,7 +105,10 @@ impl Engine {
         // encoded once, instead of once per script. The order is the load order.
         let count = self.scripts.len();
         let mut start = 0;
-        while start < count {
+        // Set once the operation is interrupted or out of budget: no handler is entered
+        // after that, and the error is already recorded.
+        let mut stopped = false;
+        while start < count && !stopped {
             let Some((first_id, first)) = self.scripts.get_index(start) else {
                 break;
             };
@@ -119,16 +124,20 @@ impl Engine {
                 if let Some(handlers) = first.signals.events.handlers(event) {
                     delivered += 1;
                     let outcome = first.context.with(|ctx| match payload.encode_js(&ctx) {
-                        Ok(payload) => {
-                            deliver(&ctx, &handlers, &payload, keep_results, |returned| {
-                                on_return(first_id, &ctx, returned)
-                            })
-                        }
+                        Ok(payload) => deliver(
+                            &ctx,
+                            &handlers,
+                            &payload,
+                            keep_results,
+                            &self.execution,
+                            |returned| on_return(first_id, &ctx, returned),
+                        ),
                         Err(error) => Err(js_error(error)),
                     });
                     if let Err(error) = outcome {
                         first_error.get_or_insert(error);
                     }
+                    stopped = self.execution.should_stop();
                 }
                 start = end;
                 continue;
@@ -149,12 +158,20 @@ impl Engine {
                                 continue;
                             };
                             delivered += 1;
-                            let outcome =
-                                deliver(&ctx, &handlers, &payload, keep_results, |returned| {
-                                    on_return(script_id, &ctx, returned)
-                                });
+                            let outcome = deliver(
+                                &ctx,
+                                &handlers,
+                                &payload,
+                                keep_results,
+                                &self.execution,
+                                |returned| on_return(script_id, &ctx, returned),
+                            );
                             if let Err(error) = outcome {
                                 first_error.get_or_insert(error);
+                            }
+                            if self.execution.should_stop() {
+                                stopped = true;
+                                break;
                             }
                         }
                     }

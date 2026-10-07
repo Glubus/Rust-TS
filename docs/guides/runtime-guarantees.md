@@ -44,6 +44,12 @@ unbounded blocking. For hostile native extensions, use a separate process.
 JavaScript state mutations and host side effects made before the interruption
 remain.
 
+An exhausted budget or an interrupt stops an `emit`, `request` or `advance_timers`
+at the handler or timer that hit it: the remaining handlers do not run, and the
+timers of the scripts not reached yet stay due for the next `advance_timers`. An
+interrupt that reaches a `ctx.hot.save` or `ctx.hot.dispose` callback also
+surfaces as `VmError::Interrupted`.
+
 Deferred results are observed through `PendingCall`; only engine operations
 execute JavaScript. `HostResolver::resolve` and `reject` enqueue responses from
 any thread, but JavaScript resumes on the engine thread at `pump`. Timer

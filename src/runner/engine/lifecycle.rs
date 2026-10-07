@@ -632,9 +632,11 @@ fn call_hot_hook<'js>(
 }
 
 /// Reports a failed `ctx.hot` callback as [`VmError::Execution`] whose details start
-/// with `outcome`, which says what became of the script.
+/// with `outcome`, which says what became of the script. An interrupt stays
+/// [`VmError::Interrupted`], so the host can tell the stop it asked for from a failure.
 fn hot_hook_error(error: VmError, outcome: &str) -> VmError {
     let details = match error {
+        VmError::Interrupted => return VmError::Interrupted,
         VmError::Execution { details } => details,
         error => error.to_string(),
     };

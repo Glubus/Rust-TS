@@ -25,8 +25,10 @@ impl Engine {
     /// A timer fires at most once per call: one a callback schedules waits for the
     /// next call even with a zero delay, and an interval late by several periods fires
     /// once, its next due time staying its previous one plus its delay. A throwing
-    /// callback does not stop the others; the first error is returned. Timers belong
-    /// to the script version that set them: a reload or unload drops them.
+    /// callback does not stop the others; the first error is returned. An interrupt or
+    /// an exhausted execution budget does: the timers of the scripts not reached yet
+    /// stay due for the next call. Timers belong to the script version that set them:
+    /// a reload or unload drops them.
     ///
     /// A call that finds no timer due, which is most frames, is one comparison however
     /// many scripts are loaded.
@@ -43,7 +45,8 @@ impl Engine {
         // in one visit to it, as `emit` does.
         let count = self.scripts.len();
         let mut start = 0;
-        while start < count {
+        let mut stopped = false;
+        while start < count && !stopped {
             let Some((_, first)) = self.scripts.get_index(start) else {
                 break;
             };
@@ -70,6 +73,10 @@ impl Engine {
                         fired += 1;
                         if let Err(error) = run_due_timers(&ctx, &script.hooks.timers_run, now) {
                             first_error.get_or_insert(error);
+                        }
+                        if self.execution.should_stop() {
+                            stopped = true;
+                            break;
                         }
                     }
                 });

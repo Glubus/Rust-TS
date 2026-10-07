@@ -6,6 +6,7 @@ use std::rc::{Rc, Weak};
 use rquickjs::{Array, Ctx, Function, Value as JsValue, qjs};
 
 use super::errors::{js_error, pending_exception};
+use super::execution::ExecutionControl;
 use super::retained::Retained;
 use crate::error::VmError;
 
@@ -95,7 +96,8 @@ fn record(events: &Weak<RefCell<Vec<Listened>>>, event: String, handlers: Option
 /// Runs every handler with `payload`, the encoded event, even after one throws; returns
 /// the first error of a handler or of `on_return`. With `keep_results`, each returned
 /// value goes to `on_return`; without, it is dropped unread, which skips building a
-/// value around it.
+/// value around it. Once the operation is interrupted or out of budget, no further
+/// handler is entered: the operation reports that error.
 ///
 /// The handler and the payload are only borrowed for each call: delivering to a handler
 /// takes no reference, where `Function::call` would take and release several.
@@ -104,6 +106,7 @@ pub(super) fn deliver<'js>(
     handlers: &[Retained],
     payload: &JsValue<'js>,
     keep_results: bool,
+    execution: &ExecutionControl,
     mut on_return: impl FnMut(JsValue<'js>) -> Result<(), VmError>,
 ) -> Result<(), VmError> {
     let mut first_error = None;
@@ -139,6 +142,9 @@ pub(super) fn deliver<'js>(
         };
         if let Err(error) = outcome {
             first_error.get_or_insert(error);
+        }
+        if execution.should_stop() {
+            break;
         }
     }
     first_error.map_or(Ok(()), Err)

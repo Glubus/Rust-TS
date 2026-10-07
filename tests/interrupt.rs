@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustts::{Engine, VmError, VmOptions};
+use rustts::{Engine, InterruptHandle, VmError, VmOptions};
 
 const SCRIPT: &str = r#"
 export function spin(): void { while (true) {} }
@@ -78,4 +78,152 @@ fn a_timeout_is_not_reported_as_an_interrupt() {
         matches!(result, Err(VmError::Execution { .. })),
         "{result:?}"
     );
+}
+
+/// A script whose `tick` handler and timer count their runs, then never return.
+const RUNAWAY_LISTENER: &str = r#"
+import { ctx, setTimeout } from "rustts:env";
+let ran = 0;
+export function count(): number { return ran; }
+ctx.on("tick", () => { ran += 1; while (true) {} });
+setTimeout(() => { ran += 1; while (true) {} }, 0);
+"#;
+
+const LISTENERS: usize = 20;
+
+fn engine_with_listeners(execution_timeout: Duration) -> Engine {
+    let mut engine = Engine::new(&VmOptions {
+        execution_timeout,
+        ..VmOptions::default()
+    })
+    .expect("create engine");
+    for i in 0..LISTENERS {
+        engine
+            .load_script(format!("s{i}"), RUNAWAY_LISTENER)
+            .expect("load script");
+    }
+    engine
+}
+
+/// How many handlers and timers ran, over every script.
+fn entered(engine: &Engine) -> f64 {
+    (0..LISTENERS)
+        .map(|i| {
+            engine
+                .call::<f64>(&format!("s{i}"), "count", ())
+                .expect("count")
+        })
+        .sum()
+}
+
+/// Runs `operation` while another thread keeps asking, through `handle`, to stop.
+fn interrupted<T>(handle: InterruptHandle, operation: impl FnOnce() -> T) -> T {
+    let finished = Arc::new(AtomicBool::new(false));
+    let interrupter = thread::spawn({
+        let finished = Arc::clone(&finished);
+        move || {
+            while !finished.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(10));
+                handle.interrupt();
+            }
+        }
+    });
+    let result = operation();
+    finished.store(true, Ordering::Release);
+    interrupter.join().expect("interrupter thread");
+    result
+}
+
+#[test]
+fn an_exhausted_budget_stops_an_emit_at_the_handler_that_used_it_up() {
+    let engine = engine_with_listeners(Duration::from_millis(50));
+
+    let result = engine.emit("tick", &1u32);
+
+    assert!(
+        matches!(result, Err(VmError::Execution { .. })),
+        "{result:?}"
+    );
+    assert_eq!(
+        entered(&engine),
+        1.0,
+        "no handler runs after the budget is gone"
+    );
+}
+
+#[test]
+fn an_exhausted_budget_stops_a_request_at_the_handler_that_used_it_up() {
+    let engine = engine_with_listeners(Duration::from_millis(50));
+
+    let result = engine.request::<_, ()>("tick", &1u32);
+
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(
+        entered(&engine),
+        1.0,
+        "no handler runs after the budget is gone"
+    );
+}
+
+#[test]
+fn an_interrupt_stops_an_emit_at_the_handler_it_reached() {
+    let engine = engine_with_listeners(Duration::from_secs(60));
+
+    let result = interrupted(engine.interrupt_handle(), || engine.emit("tick", &1u32));
+
+    assert!(matches!(result, Err(VmError::Interrupted)), "{result:?}");
+    assert_eq!(entered(&engine), 1.0, "no handler runs after the interrupt");
+}
+
+#[test]
+fn an_exhausted_budget_stops_advance_timers_at_the_timer_that_used_it_up() {
+    let engine = engine_with_listeners(Duration::from_millis(50));
+
+    let result = engine.advance_timers(Duration::from_millis(1));
+
+    assert!(
+        matches!(result, Err(VmError::Execution { .. })),
+        "{result:?}"
+    );
+    assert_eq!(
+        entered(&engine),
+        1.0,
+        "no timer fires after the budget is gone"
+    );
+}
+
+#[test]
+fn an_interrupted_hot_save_is_reported_as_an_interrupt() {
+    let mut engine = engine();
+    let spinning_save = r#"
+    import { ctx } from "rustts:env";
+    ctx.hot.save(() => { while (true) {} });
+    export function version(): number { return 1; }
+    "#;
+    engine.load_script("hot", spinning_save).expect("load v1");
+
+    let handle = engine.interrupt_handle();
+    let result = interrupted(handle, || {
+        engine.load_script("hot", "export function version(): number { return 2; }")
+    });
+
+    assert!(matches!(result, Err(VmError::Interrupted)), "{result:?}");
+    let version: f64 = engine.call("hot", "version", ()).expect("call");
+    assert_eq!(version, 1.0, "the previous version keeps running");
+}
+
+#[test]
+fn an_interrupted_hot_dispose_is_reported_as_an_interrupt() {
+    let mut engine = engine();
+    engine
+        .load_script(
+            "hot",
+            r#"import { ctx } from "rustts:env"; ctx.hot.dispose(() => { while (true) {} }); export {};"#,
+        )
+        .expect("load");
+
+    let handle = engine.interrupt_handle();
+    let result = interrupted(handle, || engine.unload_script("hot"));
+
+    assert!(matches!(result, Err(VmError::Interrupted)), "{result:?}");
 }
